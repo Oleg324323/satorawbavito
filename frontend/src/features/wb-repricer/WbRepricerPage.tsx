@@ -196,9 +196,6 @@ const sideNav = [
     { label: 'Объявления', count: '214', icon: 'columns' as const },
     { label: 'Кошельки', count: 'скоро', icon: 'wallet' as const, soon: true },
   ] },
-  { section: 'Производство', items: [
-    { label: 'КИЗ', count: '142', icon: 'tag' as const, warn: true },
-  ] },
   { section: 'Система', items: [
     { label: 'Уведомления', count: '7', icon: 'bell' as const, alert: true },
     { label: 'Настройки', icon: 'settings' as const },

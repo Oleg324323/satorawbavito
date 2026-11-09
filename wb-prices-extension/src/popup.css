@@ -1,0 +1,26 @@
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172237; background: #f6f8fb; }
+* { box-sizing: border-box; }
+body { width: 360px; margin: 0; padding: 20px; font-size: 13px; line-height: 1.45; }
+.brand { color: #5964cb; font-size: 10px; font-weight: 750; letter-spacing: 2px; }
+h1 { margin: 4px 0 8px; font-size: 23px; letter-spacing: -.6px; }
+h2 { margin: 0; font-size: 15px; }
+p { margin: 8px 0; }
+.intro, .muted, .note { color: #607086; }
+.intro { margin-bottom: 18px; }
+label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+input { width: 100%; padding: 10px; border: 1px solid #cbd3df; border-radius: 8px; background: white; font: inherit; }
+button { padding: 10px 12px; border: 0; border-radius: 8px; background: #4958bc; color: white; font: inherit; font-weight: 600; cursor: pointer; }
+form button { width: 100%; margin-top: 8px; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 3px solid #93abff; outline-offset: 2px; }
+.secondary { background: #e7ecf4; color: #34445d; }
+.status-panel { padding: 14px; margin: 16px 0; border: 1px solid #e0e6ef; border-radius: 12px; background: white; }
+.reason { color: #8a4b15; font-size: 12px; }
+.reason:empty { display: none; }
+dl { margin: 12px 0; }
+dl div { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; }
+dt { color: #607086; }
+dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 650; }
+.muted, .note { font-size: 11px; }
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.note { margin-top: 12px; }

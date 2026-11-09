@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 import time
 from typing import Any, Callable, Literal
 
@@ -38,6 +38,7 @@ class AdsAttributionRow:
     budget_cash_kopecks: int | None = None
     budget_netting_kopecks: int | None = None
     budget_total_kopecks: int | None = None
+    spend_source: str = "fullstats"
 
 
 @dataclass(frozen=True)
@@ -46,19 +47,31 @@ class AdsAttributionSnapshot:
     confidence: Confidence
     blocker_ids: list[str]
     source_evidence: list[SourceEvidence]
-    totals: dict[str, int]
+    totals: dict[str, int | None]
     rows: list[AdsAttributionRow]
     cabinet_balance: dict[str, Any] = field(default_factory=dict)
     spend_documents: list[dict[str, Any]] = field(default_factory=list)
     daily_rows: list[dict[str, Any]] = field(default_factory=list)
     search_clusters: list[dict[str, Any]] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    performance_totals: dict[str, int | None] = field(default_factory=dict)
+    daily_performance_totals: dict[str, dict[str, int | None]] = field(default_factory=dict)
+    campaign_membership: dict[str, list[int]] = field(default_factory=dict)
 
 
 def _rate_limit_payload(response: WbApiResponseEnvelope) -> dict[str, int | None] | None:
     if response.rateLimit is None:
         return None
     return response.rateLimit.model_dump(mode="json")
+
+
+def _merge_known_metrics(target: dict, observation: dict) -> None:
+    """One unavailable contribution makes that metric unknown, not a false zero."""
+    for key, value in observation.items():
+        if value is None or (key in target and target[key] is None):
+            target[key] = None
+        else:
+            target[key] = target.get(key, 0) + value
 
 
 def _response_diagnostics(
@@ -119,6 +132,24 @@ def _request_with_retry(
     min_interval_s: float = 0.0,
     max_attempts: int = ADS_RETRY_MAX_ATTEMPTS,
 ) -> WbApiResponseEnvelope:
+    from app.wb_api.report_reads import active_report_read
+    context = active_report_read.get()
+    if context is not None:
+        # Checkpoints skip successful batches on resume. Retry only temporary
+        # failures, cooperatively, within a bounded budget and provider delay.
+        for attempt in range(max_attempts):
+            response = client.request(request)
+            if response.ok or response.statusCode not in {429, 500, 502, 503, 504} or attempt == max_attempts - 1:
+                return response
+            delay = max(min_interval_s, _retry_after_seconds(response, fallback=60 if response.statusCode == 429 else 2 ** attempt))
+            if delay > 300:
+                return response
+            remaining = delay
+            while remaining > 0:
+                context.check()
+                step = min(remaining, 1)
+                time.sleep(step)
+                remaining -= step
     global _ads_fullstats_last_request_at
     last_response: WbApiResponseEnvelope | None = None
     if isinstance(client.inner, FakeWbApiClient):
@@ -495,12 +526,12 @@ def _sku_membership_from_adverts(payload: Any) -> dict[int, set[int]]:
 
 
 def _extract_metrics(node: dict[str, Any]) -> dict[str, int | None]:
-    impressions = _as_int(node.get("views") or node.get("impressions"))
+    impressions = _as_int(node.get("views") if node.get("views") is not None else node.get("impressions"))
     clicks = _as_int(node.get("clicks"))
-    cart_adds = _as_int(node.get("atbs") or node.get("cartAdds"))
+    cart_adds = _as_int(node.get("atbs") if node.get("atbs") is not None else node.get("cartAdds"))
     orders = _as_int(node.get("orders"))
-    spend = _rub_to_kopecks(node.get("sum") or node.get("spend"))
-    revenue = _rub_to_kopecks(node.get("sum_price") or node.get("revenue"))
+    spend = _rub_to_kopecks(node.get("sum") if node.get("sum") is not None else node.get("spend"))
+    revenue = _rub_to_kopecks(node.get("sum_price") if node.get("sum_price") is not None else node.get("revenue"))
     return {
         "impressions": impressions,
         "clicks": clicks,
@@ -566,6 +597,7 @@ def _collect_day_rows(
                         "campaignId": campaign_id,
                         "appType": app_type,
                         "skuId": str(nm_id),
+                        "productName": str(nm_row.get("name") or "").strip() or None,
                         "attributionLevel": "exact_sku" if default_attribution_level == "exact_sku" else "campaign_sku",
                         "adSpendKopecks": metrics.get("ad_spend_kopecks"),
                         "impressions": metrics.get("impressions"),
@@ -742,6 +774,9 @@ def build_ads_attribution_snapshot(
     progress_start: int = 20,
     progress_end: int = 95,
     include_budgets: bool = True,
+    budget_cache: dict[int, dict[str, int | None]] | None = None,
+    budget_collected_callback: Callable[[int, dict[str, int | None]], None] | None = None,
+    performance_only: bool = False,
 ) -> AdsAttributionSnapshot:
     progress_start = max(0, min(100, int(progress_start)))
     progress_end = max(progress_start, min(100, int(progress_end)))
@@ -777,20 +812,26 @@ def build_ads_attribution_snapshot(
     promotion_payload = _payload(promotion.data)
     campaign_ids = _campaign_ids_from_promotion(promotion_payload)
 
-    if progress_callback is not None:
+    if performance_only and promotion_payload.get("adverts") == [] and promotion_payload.get("all") == 0:
+        zero = dict(ad_spend_kopecks=0, impressions=0, clicks=0, cart_adds=0, orders_count=0, orders_kopecks=0)
+        diagnostics = _ads_diagnostics(diagnostics_sources)
+        diagnostics.setdefault("summary", {})["sourceComplete"] = True
+        return AdsAttributionSnapshot(source_status="fresh", confidence="high", blocker_ids=[],
+            source_evidence=[], totals=zero, rows=[], performance_totals=zero,
+            daily_performance_totals={(date_from + timedelta(days=i)).isoformat(): dict(zero)
+                for i in range((date_to-date_from).days+1)}, diagnostics=diagnostics)
+
+    if progress_callback is not None and not performance_only:
         progress_callback(f"{progress_stage_prefix}-balance", "Загружаем баланс рекламы WB", progress_at(0.07))
-    balance = client.request(WbApiRequest(method="GET", path="/adv/v1/balance"))
-    diagnostics_sources.append(
-        _response_diagnostics(
-            source_id="wb-ads-balance",
-            endpoint="GET /adv/v1/balance",
-            response=balance,
-        )
-    )
-    cabinet_balance = _normalize_balance(_payload(balance.data)) if balance.ok else {}
+    cabinet_balance = {}
+    if not performance_only:
+        balance = client.request(WbApiRequest(method="GET", path="/adv/v1/balance"))
+        diagnostics_sources.append(_response_diagnostics(
+            source_id="wb-ads-balance", endpoint="GET /adv/v1/balance", response=balance))
+        cabinet_balance = _normalize_balance(_payload(balance.data)) if balance.ok else {}
 
     spend_documents: list[dict[str, Any]] = []
-    windows = _date_windows(date_from, date_to)
+    windows = [] if performance_only else _date_windows(date_from, date_to)
     for index, (window_from, window_to) in enumerate(windows, start=1):
         if progress_callback is not None:
             pct = progress_at(0.11 + 0.10 * (index - 1) / max(1, len(windows)))
@@ -884,15 +925,23 @@ def build_ads_attribution_snapshot(
         if document.get("paymentType") is not None:
             meta.setdefault("paymentType", document.get("paymentType"))
 
-    campaign_budgets: dict[int, dict[str, int | None]] = {}
+    campaign_budgets = {key: value for key, value in (budget_cache or {}).items() if key in combined_campaign_ids}
     if include_budgets:
         for index, advert_id in enumerate(combined_campaign_ids, start=1):
+            if advert_id in campaign_budgets:
+                continue
             if progress_callback is not None and (index == 1 or index % 10 == 0 or index == len(combined_campaign_ids)):
                 pct = progress_at(0.90 + 0.10 * index / max(1, len(combined_campaign_ids)))
                 progress_callback(f"{progress_stage_prefix}-budget-{index}", f"Загружаем бюджеты РК WB {index}/{len(combined_campaign_ids)}", pct)
             budget = client.request(WbApiRequest(method="GET", path="/adv/v1/budget", query={"id": advert_id}))
             if budget.ok:
                 campaign_budgets[advert_id] = _normalize_budget(_payload(budget.data))
+                if budget_collected_callback is not None:
+                    budget_collected_callback(advert_id, campaign_budgets[advert_id])
+            else:
+                diagnostics_sources.append(_response_diagnostics(source_id="wb-ads-budget", endpoint="GET /adv/v1/budget", response=budget))
+                if budget.statusCode in {401, 403, 429}:
+                    break  # Keep the collected part; don't request every remaining campaign.
 
     rows: list[AdsAttributionRow] = []
     daily_rows: list[dict[str, Any]] = []
@@ -906,6 +955,7 @@ def build_ads_attribution_snapshot(
     }
     has_exact = False
     has_campaign_sku = False
+    daily_performance_totals: dict[str, dict[str, int]] = {}
 
     for campaign in campaigns:
         advert_id = _as_int(campaign.get("advertId") or campaign.get("advertID") or campaign.get("id"))
@@ -913,8 +963,15 @@ def build_ads_attribution_snapshot(
         meta = campaign_meta.get(advert_id or -1, {})
         budget = campaign_budgets.get(advert_id or -1, {})
         campaign_metrics = _extract_metrics(campaign)
-        for key in totals:
-            totals[key] += campaign_metrics.get(key) or 0
+        _merge_known_metrics(totals, campaign_metrics)
+        for observation in campaign.get("days", []) or []:
+            if not isinstance(observation, dict):
+                continue
+            day = str(observation.get("date") or "")[:10]
+            if not day:
+                continue
+            day_totals = daily_performance_totals.setdefault(day, {})
+            _merge_known_metrics(day_totals, _extract_metrics(observation))
 
         nm_rows = _collect_nm_rows(campaign)
         per_sku: dict[int, dict[str, int | None]] = {}
@@ -1076,6 +1133,7 @@ def build_ads_attribution_snapshot(
             if bucket.get(target_key) is None and document.get(source_key) is not None:
                 bucket[target_key] = document.get(source_key)
 
+    performance_totals = dict(totals)
     added_upd_spend = 0
     if group_by == "campaign" and upd_by_campaign:
         for advert_id, document_metrics in upd_by_campaign.items():
@@ -1095,6 +1153,7 @@ def build_ads_attribution_snapshot(
                 rows[index] = replace(
                     row,
                     ad_spend_kopecks=spend_kopecks,
+                    spend_source="spend_document",
                     campaign_name=row.campaign_name or meta.get("name") or document_metrics.get("campaignName"),
                     campaign_type=row.campaign_type or meta.get("type") or document_metrics.get("campaignType"),
                     campaign_status=row.campaign_status or meta.get("status") or document_metrics.get("campaignStatus"),
@@ -1114,6 +1173,7 @@ def build_ads_attribution_snapshot(
                     attribution_level="campaign_only",
                     confidence="low",
                     ad_spend_kopecks=spend_kopecks,
+                    spend_source="spend_document",
                     impressions=None,
                     clicks=None,
                     cart_adds=None,
@@ -1130,7 +1190,8 @@ def build_ads_attribution_snapshot(
                 )
             )
             added_upd_spend += spend_kopecks
-        totals["ad_spend_kopecks"] += added_upd_spend
+        if totals["ad_spend_kopecks"] is not None:
+            totals["ad_spend_kopecks"] += added_upd_spend
     elif not rows and totals["ad_spend_kopecks"] == 0 and upd_by_campaign:
         totals["ad_spend_kopecks"] = sum(int(item.get("ad_spend_kopecks") or 0) for item in upd_by_campaign.values())
 
@@ -1147,9 +1208,13 @@ def build_ads_attribution_snapshot(
         source_status = "partial"
     else:
         source_status = "fresh"
+    if include_budgets and len(campaign_budgets) < len(combined_campaign_ids):
+        source_status = "partial"
 
     return AdsAttributionSnapshot(
         source_status=source_status,
+        performance_totals=performance_totals,
+        daily_performance_totals=daily_performance_totals,
         confidence=confidence,
         blocker_ids=[],
         source_evidence=_build_evidence(
@@ -1171,6 +1236,7 @@ def build_ads_attribution_snapshot(
         spend_documents=spend_documents,
         daily_rows=daily_rows,
         diagnostics=_ads_diagnostics(diagnostics_sources),
+        campaign_membership={str(key): sorted(value) for key, value in membership.items()},
     )
 
 

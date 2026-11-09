@@ -21,10 +21,18 @@ from app.cabinet.store import get_organization_wb_token_secret, get_user_wb_toke
 from app.config import get_settings
 from app.control_plane.auth import actor_from_request, has_permission
 from app.infra.db import get_db_session
+from app.platform.period import Period
+from app.repricer_page_finance import repricer_finance_scope
+from app.repricer_source_provenance import (
+    daily_source_evidence, oldest_source_observation, source_binding_matches, source_observations_fresh,
+)
+from app.platform.economics.legacy_tax import get_legacy_finance_taxes, legacy_finance_tax_revision
+from app.platform.economics.wb_quarterly_tax import tax_consistent_report, assert_current_snapshot
 from app.platform.economics.policies import (
     EconomicsNotFoundError,
     EconomicsService,
     EconomicsValidationError,
+    _legacy_values,
 )
 from app.platform.finance.service import shadow_ingest_legacy_finance_payload
 from app.promotion_excel import ParsedPromotionExcel, normalized_filename, parse_promotion_excel
@@ -33,18 +41,28 @@ from app.repricer_nomenclature_excel import (
     parse_repricer_nomenclature_excel,
 )
 from app.repricer_cache.store import (
+    browser_prices_selected,
     cached_goods_meta,
     compact_heavy_source_cache_rows,
     finance_cache_uses_current_revenue_basis,
     get_covering_source_cache,
+    get_goods_price_revision,
     get_source_cache,
     get_source_cache_fetched_at,
     get_source_cache_meta_fields,
+    get_source_cache_range_revision,
+    get_repricer_sources_revision,
     list_source_cache_ranges_by_prefix,
     list_cached_goods,
+    replace_goods_pages,
     save_goods_page,
     save_source_cache,
 )
+from app.wb_browser_prices import PRICES_KEY as BROWSER_PRICES_KEY, rows_expire_at, timestamp as browser_price_timestamp
+from app.wb_statistics import apply_account_totals, compact_cache, observed_number, project_row, ratio
+from app.wb_repricer_reporting import filtered_campaign_advertising
+from app.wb_repricer_filters import RepricerFilters, compile_filter, saved_attribute_cards
+from app.repricer_promotion_status import promotion_membership, promotion_refresh_metadata, timestamp as promotion_timestamp
 
 SKU_LIST_MAX_ITEMS = 150
 SKU_LIST_PAGE_SIZE_DEFAULT = 150
@@ -52,6 +70,8 @@ from app import repricer_bff as repricer_bff_module
 from app.repricer_execution import (
     StrategyExecuteOptions,
     _commit_illiquid_runtime_step,
+    _has_explicit_strategy,
+    _resolve_strategy_id,
     execute_all_assigned_skus,
     execute_repricer_strategies,
     preview_repricer_strategies,
@@ -75,6 +95,7 @@ from app.repricer_sprint_b import (
     create_price_draft,
 )
 from app.repricer_sync import (
+    ExternalSppRateLimited,
     WbSyncAlreadyRunning,
     _apply_external_spp_prices_to_goods,
     _normalize_period_range,
@@ -157,6 +178,7 @@ LEGACY_REPRICER_MANAGERS: dict[str, str] = {
 
 class AutomationPatchRequest(BaseModel):
     automationEnabled: bool
+    expectedRevision: str | None = None
 
 
 class SkuManagerAssignmentRequest(BaseModel):
@@ -174,6 +196,7 @@ class StrategyAssignmentBulkRequest(BaseModel):
     strategyName: str | None = None
     executeAfterAssign: bool = True
     config: dict[str, Any] | None = None
+    expectedRevisions: dict[str, str] | None = None
 
 
 class SkuGroupUpsertRequest(BaseModel):
@@ -195,12 +218,20 @@ class StrategyExecuteRequest(BaseModel):
     force: bool = False
 
 
+class SkuConfigurationCheckpointRequest(BaseModel):
+    nmId: int = Field(gt=0)
+    expectedRevision: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class StrategyPreviewRequest(BaseModel):
     articleIds: list[str] = Field(default_factory=list)
     scenario: str = "complete"
     force: bool = False
     periodDays: int = Field(default=30, ge=1, le=90)
     inputs: dict[str, Any] | None = None
+    strategyId: str | None = None
+    strategyName: str | None = None
+    config: dict[str, Any] | None = None
 
 
 class PendingPriceApprovalDecisionRequest(BaseModel):
@@ -295,12 +326,19 @@ def _payload_inputs(value: Any) -> dict[str, Any] | None:
 
 
 def _preview_request_from_payload(raw: dict[str, Any]) -> StrategyPreviewRequest:
+    for name in ("strategyId", "strategyName", "config"):
+        expected = dict if name == "config" else str
+        if raw.get(name) is not None and not isinstance(raw[name], expected):
+            raise HTTPException(status_code=422, detail=f"INVALID_{name.upper()}")
     return StrategyPreviewRequest(
         articleIds=_payload_article_ids(raw.get("articleIds")),
         scenario=str(raw.get("scenario") or "complete"),
         force=_payload_bool(raw.get("force"), False),
         periodDays=_payload_int(raw.get("periodDays"), 30, min_value=1, max_value=90),
         inputs=_payload_inputs(raw.get("inputs")),
+        strategyId=raw.get("strategyId"),
+        strategyName=raw.get("strategyName"),
+        config=raw.get("config"),
     )
 
 
@@ -438,6 +476,7 @@ def _refresh_wb_data_sources_and_flush(**kwargs: Any) -> dict[str, Any]:
             kwargs.get("scenario") or "complete",
             wb_token=kwargs.get("wb_token"),
             force=True,
+            organization_id=organization_id,
         )
         result = refresh_wb_data_sources(**kwargs)
         range_start, range_end, resolved_period_days, period_suffix = _repricer_period_context(
@@ -473,6 +512,12 @@ def _request_wb_token(request: Request) -> str | None:
     if not token:
         raise HTTPException(status_code=409, detail="WB_TOKEN_REQUIRED")
     return token
+
+
+def _cached_read_wb_token(request: Request) -> str | None:
+    """Select the cached cabinet connection without requiring a personal credential."""
+    actor = actor_from_request(request)
+    return get_user_wb_token_secret(actor.user_id) or get_organization_wb_token_secret(actor.organization_id)
 
 
 def _ensure_wb_sync_not_running(organization_id: int) -> None:
@@ -821,6 +866,9 @@ def _merge_aggregate_row(target: dict[str, Any], source: dict[str, Any]) -> None
 
 def _rollup_daily_aggregates(daily_aggregates: dict[str, Any], range_start: datetime, range_end: datetime) -> dict[str, dict[str, Any]]:
     rolled: dict[str, dict[str, Any]] = {}
+    payable_evidence: dict[str, list[bool]] = {}
+    components_evidence: dict[str, list[bool]] = {}
+    missing_order_amount: set[str] = set()
     for day_key, day_rows in daily_aggregates.items():
         day = _parse_cache_date(day_key)
         if day is None or day < range_start.date() or day > range_end.date() or not isinstance(day_rows, dict):
@@ -829,8 +877,42 @@ def _rollup_daily_aggregates(daily_aggregates: dict[str, Any], range_start: date
             if not isinstance(source_row, dict):
                 continue
             row = rolled.setdefault(str(nm_id), {})
+            if "orderCount" in source_row and source_row.get("orderSumKopecks") is None:
+                missing_order_amount.add(str(nm_id))
             _merge_aggregate_row(row, source_row)
+            payable_evidence.setdefault(str(nm_id), []).append(repricer_bff_module.settlement_payable_confirmed(source_row))
+            components_evidence.setdefault(str(nm_id), []).append(all(type(source_row.get(key)) is int for key in (
+                "payableKopecks", "logisticsKopecks", "storageKopecks", "acceptanceKopecks", "penaltyKopecks",
+                "deductionKopecks", "loyaltyCostKopecks", "adSpendKopecks", "additionalPaymentKopecks")))
+    for nm_id in missing_order_amount:
+        rolled[nm_id]["orderSumKopecks"] = None
+    for nm_id, evidence in payable_evidence.items():
+        if "payableKopecks" in rolled[nm_id]:
+            rolled[nm_id]["settlementPayableConfirmed"] = all(evidence)
+            rolled[nm_id]["settlementComponentsConfirmed"] = all(components_evidence[nm_id])
+    if range_start.date() != range_end.date():
+        for row in rolled.values():
+            # A period conversion cannot be reconstructed from daily percentages.
+            if "buyoutPct" in row:
+                row["buyoutPct"] = None
+                row["buyoutSource"] = None
     return rolled
+
+
+def _preserve_strategy_unknowns(aggregates, daily, prefix, date_from, date_to):
+    fields = ("orderCount", "cartCount") if prefix == "baskets" else ("ordersUnits",)
+    days = _iter_date_range(date_from, date_to)
+    for nm, total in aggregates.items():
+        for field in fields:
+            values = []
+            for day in days:
+                rows = daily.get(day.isoformat())
+                row = rows.get(nm) if isinstance(rows, dict) else None
+                complete = (isinstance(row, dict) and row.get("coverageState", "ok") in {"ok", "complete"}
+                    and row.get("aggregateComplete", True) is True)
+                values.append(row.get(field) if complete else None)
+            if any(type(value) is not int or value < 0 for value in values):
+                total[field] = None
 
 
 def _covered_cache_from_daily(
@@ -841,13 +923,18 @@ def _covered_cache_from_daily(
     resolved_period_days: int,
     range_start: datetime,
     range_end: datetime,
+    strategy_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     if not _cache_covers_range(cache, range_start, range_end):
         return {}
     daily_aggregates = cache.get("dailyAggregates")
     if not isinstance(daily_aggregates, dict):
         return {}
+    if prefix == "baskets" and not _baskets_range_has_daily_detail(cache, range_start.date(), range_end.date()):
+        return {}
     aggregates = _rollup_daily_aggregates(daily_aggregates, range_start, range_end)
+    if strategy_fingerprint is not None:
+        _preserve_strategy_unknowns(aggregates, daily_aggregates, prefix, range_start.date(), range_end.date())
     if not aggregates and cache.get("aggregates"):
         return {}
     previous_end = range_start - timedelta(days=1)
@@ -873,8 +960,15 @@ def _covered_cache_from_daily(
         "periodDays": cache.get("periodDays"),
         "periodCacheSuffix": cache.get("periodCacheSuffix"),
     }
+    if prefix == "baskets":
+        # WB's order-cohort conversion cannot be reconstructed by summing days.
+        payload["periodConversionState"] = "no_data"
     if prefix == "ads":
         payload["totals"] = _ads_cache_totals(payload)
+    elif prefix == "finance":
+        # Period-wide unassigned charges cannot be copied into a shorter range.
+        payload["diagnostics"] = repricer_bff_module.build_finance_diagnostics_from_aggregates(aggregates)
+        payload["diagnostics"].update(dateFrom=payload["dateFrom"], dateTo=payload["dateTo"])
     return payload
 
 
@@ -897,10 +991,59 @@ def _sync_status_covering_keys(organization_id: int, prefix: str, range_start: d
 
 
 def _compatible_period_source_cache(prefix: str, cache: dict[str, Any]) -> dict[str, Any]:
-    return cache if prefix != "finance" or finance_cache_uses_current_revenue_basis(cache) else {}
+    return cache if prefix != "finance" or (finance_cache_uses_current_revenue_basis(cache) and not cache.get("revenueOnly")) else {}
 
 
 def _load_period_source_cache(
+    organization_id: int, prefix: str, period_suffix: str, resolved_period_days: int,
+    range_start: datetime, range_end: datetime, *, slim: bool = True,
+    require_full_sync_coverage: bool = True, prefer_freshest_covering: bool = False,
+    strategy_fingerprint: str | None = None, strategy_now: datetime | None = None,
+) -> dict[str, Any]:
+    from app.repricer_page_finance import page_projection, load_page_finance
+    if prefix == "finance" and page_projection.get():
+        return load_page_finance(
+            organization_id,
+            range_start.date() if isinstance(range_start, datetime) else range_start,
+            range_end.date() if isinstance(range_end, datetime) else range_end,
+        )
+    result = _load_period_source_cache_base(
+        organization_id, prefix, period_suffix, resolved_period_days, range_start, range_end,
+        slim=slim, require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=prefer_freshest_covering,
+        strategy_fingerprint=strategy_fingerprint, strategy_now=strategy_now,
+    )
+    if prefix == "finance":
+        from app.wb_statistics_finance import load_statistics_finance
+        persisted = load_statistics_finance(organization_id, range_start.date(), range_end.date())
+        if persisted.get("sourceComplete") is True:
+            return persisted
+        if not result and persisted.get("coveredDays"):
+            return persisted
+    if prefix != "finance" or not result:
+        return result
+    ledger = _finance_period_from_operations(organization_id, range_start, range_end)
+    if not ledger:
+        return result
+    result["revenueCoverage"] = {key: ledger[key] for key in ("coverageState", "coveredDays", "requestedDays", "missingDates")}
+    result["revenueFetchedAt"] = ledger["fetchedAt"]
+    if ledger["coverageState"] != "ok":
+        return result
+    # Correct revenue without substituting the trade ledger for expense/payout data.
+    keys = ("sellerRevenueKopecks", "revenueGrossKopecks", "grossSalesKopecks", "returnsKopecks",
+            "sellerRevenueRows", "sellerRevenueMissingRows")
+    daily = result.setdefault("dailyAggregates", {})
+    for rows, correct in [(result.setdefault("aggregates", {}), ledger["aggregates"]),
+                          *[(daily.setdefault(day, {}), ledger["dailyAggregates"].get(day, {}))
+                            for day in daily.keys() | ledger["dailyAggregates"].keys()]]:
+        for nm in rows.keys() | correct.keys():
+            row = rows.setdefault(nm, {})
+            for key in keys:
+                row[key] = correct.get(nm, {}).get(key, 0)
+    return result
+
+
+def _load_period_source_cache_base(
     organization_id: int,
     prefix: str,
     period_suffix: str,
@@ -911,17 +1054,36 @@ def _load_period_source_cache(
     slim: bool = True,
     require_full_sync_coverage: bool = True,
     prefer_freshest_covering: bool = False,
+    strategy_fingerprint: str | None = None,
+    strategy_now: datetime | None = None,
 ) -> dict[str, Any]:
     if require_full_sync_coverage and not _full_sync_covers_range(organization_id, range_start, range_end)[0]:
         return {}
+
+    def compatible(cache):
+        cache = _compatible_period_source_cache(prefix, cache)
+        if strategy_fingerprint is not None and not (
+            source_binding_matches(cache, organization_id=organization_id, fingerprint=strategy_fingerprint)
+            and source_observations_fresh(cache, now=strategy_now or datetime.now(timezone.utc), date_to=range_end.date().isoformat())
+            and cache.get("coverageState", "ok") in {"ok", "complete"}
+            and cache.get("aggregateComplete", True) is True
+        ):
+            return {}
+        return cache
+
     exact_key = f"{prefix}_{period_suffix}"
-    exact = _compatible_period_source_cache(
-        prefix,
-        get_source_cache(organization_id, exact_key, slim=slim) or {},
-    )
+    exact = compatible(get_source_cache(organization_id, exact_key, slim=slim) or {})
+    if exact and (prefix in {"finance", "baskets"} or exact.get("source") == "seller_export") and _cache_matches_range(exact, range_start, range_end):
+        # This report includes unassigned charges for precisely the requested dates.
+        return exact
     if exact and prefer_freshest_covering:
-        covering = _compatible_period_source_cache(
-            prefix,
+        latest = _parse_utc_datetime(get_source_cache_range_revision(
+            organization_id, f"{prefix}_", date_from=range_start.date(), date_to=range_end.date(),
+        ))
+        observed = _parse_utc_datetime(exact.get("fetchedAt"))
+        prefer_freshest_covering = latest is None or observed is None or latest > observed
+    if exact and prefer_freshest_covering:
+        covering = compatible(
             get_covering_source_cache(
                 organization_id,
                 f"{prefix}_",
@@ -938,6 +1100,7 @@ def _load_period_source_cache(
                 resolved_period_days=resolved_period_days,
                 range_start=range_start,
                 range_end=range_end,
+                strategy_fingerprint=strategy_fingerprint,
             )
             if rolled:
                 return rolled
@@ -950,8 +1113,7 @@ def _load_period_source_cache(
             return exact
     day_key = f"{prefix}_{resolved_period_days}"
     fallback = (
-        _compatible_period_source_cache(
-            prefix,
+        compatible(
             get_source_cache(organization_id, day_key, slim=slim) or {},
         )
         if day_key != exact_key
@@ -959,8 +1121,18 @@ def _load_period_source_cache(
     )
     if fallback and _cache_matches_range(fallback, range_start, range_end):
         return fallback
-    covering = _compatible_period_source_cache(
-        prefix,
+    if prefix == "baskets" and strategy_fingerprint is not None:
+        # A refreshed covering container may retain older days. Select each
+        # requested day by its own evidence before projecting a shorter window.
+        stitched = _stitched_period_cache_from_days(
+            organization_id, prefix, range_start.date(), range_end.date(),
+            strategy_fingerprint=strategy_fingerprint, strategy_now=strategy_now,
+        )
+        if stitched:
+            stitched.update(periodDays=resolved_period_days, dateFrom=range_start.date().isoformat(),
+                dateTo=range_end.date().isoformat(), source="stitched_daily_aggregates")
+        return stitched
+    covering = compatible(
         get_covering_source_cache(
             organization_id,
             f"{prefix}_",
@@ -977,14 +1149,14 @@ def _load_period_source_cache(
             resolved_period_days=resolved_period_days,
             range_start=range_start,
             range_end=range_end,
+            strategy_fingerprint=strategy_fingerprint,
         )
         if rolled:
             return rolled
     for covering_key in _sync_status_covering_keys(organization_id, prefix, range_start, range_end):
         if covering_key in {exact_key, day_key}:
             continue
-        covering = _compatible_period_source_cache(
-            prefix,
+        covering = compatible(
             get_source_cache(organization_id, covering_key, slim=slim) or {},
         )
         rolled = _covered_cache_from_daily(
@@ -994,6 +1166,7 @@ def _load_period_source_cache(
             resolved_period_days=resolved_period_days,
             range_start=range_start,
             range_end=range_end,
+            strategy_fingerprint=strategy_fingerprint,
         )
         if rolled:
             return rolled
@@ -1002,7 +1175,8 @@ def _load_period_source_cache(
     # window, so a long custom range routinely straddles two of them; summing
     # the cached days keeps it from resolving to nothing and reporting zeros.
     stitched = _stitched_period_cache_from_days(
-        organization_id, prefix, range_start.date(), range_end.date()
+        organization_id, prefix, range_start.date(), range_end.date(),
+        strategy_fingerprint=strategy_fingerprint, strategy_now=strategy_now,
     )
     if stitched:
         stitched.update(
@@ -1017,26 +1191,82 @@ def _load_period_source_cache(
     return {}
 
 
+def _finance_period_from_operations(organization_id: int, start: datetime, end: datetime) -> dict[str, Any]:
+    """Merge report observations by posting day, then filter by operation date.
+
+    A later report may contain a sale from an earlier day. Replacing an entire
+    sale-day aggregate loses that correction; adding overlapping reports doubles
+    it. The latest complete observation owns each posting day; rrdId owns a row.
+    """
+    from app.repricer_bff import aggregate_finance_report_rows
+
+    metas = list_source_cache_ranges_by_prefix(organization_id, "finance_", limit=100)
+    owned: set[str] = set()
+    operations: dict[str, dict[str, Any]] = {}
+    fetched_at = None
+    for meta in sorted(metas, key=lambda m: str(m.get("fetchedAt") or ""), reverse=True):
+        left, right = _parse_cache_date(meta.get("dateFrom")), _parse_cache_date(meta.get("dateTo"))
+        if not left or not right or right < start.date():
+            continue
+        report_days = {day.isoformat() for day in _iter_date_range(left, right)}
+        available = report_days - owned
+        if not available:
+            continue
+        cache = get_source_cache(organization_id, str(meta.get("sourceKey")), slim=False) or {}
+        rows = cache.get("revenueOperations", cache.get("rows"))
+        if cache.get("sourceComplete") is not True or not isinstance(rows, list):
+            continue
+        # Missing original seller prices cannot silently become zero revenue.
+        if any(str(row.get("docTypeName") or "").lower() in {"продажа", "возврат"}
+               and row.get("retailPriceWithDisc") is None for row in rows):
+            continue
+        for row in rows:
+            posting_day = str(row.get("rrDate") or row.get("rr_dt") or "")[:10]
+            identity = str(row.get("rrdId") or row.get("rrd_id") or "")
+            if posting_day in available and identity and identity not in operations:
+                operations[identity] = row
+        owned.update(report_days)
+        fetched_at = max(fetched_at or "", str(cache.get("fetchedAt") or meta.get("fetchedAt") or ""))
+    wanted = {day.isoformat() for day in _iter_date_range(start.date(), end.date())}
+    covered = wanted & owned
+    if not covered:
+        return {}
+    result = aggregate_finance_report_rows(list(operations.values()), date_from=start, date_to=end)
+    result.pop("rows", None)
+    result.update(fetchedAt=fetched_at, source="finance_operations", sourceComplete=covered == wanted,
+                  coverageState="ok" if covered == wanted else "partial", coveredDays=len(covered),
+                  requestedDays=len(wanted), missingDates=sorted(wanted - covered),
+                  periodDays=len(wanted))
+    return result
+
+
 def _stitched_period_cache_from_days(
     organization_id: int,
     prefix: str,
     date_from: date,
     date_to: date,
+    *,
+    strategy_fingerprint: str | None = None,
+    strategy_now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a period cache by summing whatever daily aggregates are stored."""
+    """Roll up observed days once, retaining freshness and missing-day coverage."""
     wanted = {
         (date_from + timedelta(days=offset)).isoformat()
         for offset in range((date_to - date_from).days + 1)
     }
     seen: set[str] = set()
-    totals: dict[str, dict[str, Any]] = {}
     daily: dict[str, Any] = {}
-    candidates: list[tuple[int, str]] = []
+    source_metadata: dict[str, Any] = {}
+    contributors = {}
+    strategy_daily = prefix == "baskets" and strategy_fingerprint is not None
+    candidates: list[tuple[str, int, str, set[str]]] = []
     for meta in list_source_cache_ranges_by_prefix(organization_id, f"{prefix}_", limit=100):
         if not isinstance(meta, dict):
             continue
         source_key = str(meta.get("sourceKey") or "")
         if not source_key or "detail_status" in source_key or source_key.endswith("detail_active"):
+            continue
+        if meta.get("dailyAggregatesDays") == 0:
             continue
         meta_from = _parse_cache_date(meta.get("dateFrom"))
         meta_to = _parse_cache_date(meta.get("dateTo"))
@@ -1046,32 +1276,71 @@ def _stitched_period_cache_from_days(
             overlap = (min(meta_to, date_to) - max(meta_from, date_from)).days + 1
         else:
             overlap = 0
-        candidates.append((overlap, source_key))
+        known_days = set(meta.get("dailyAggregateDates") or ()) & wanted
+        candidates.append((str(meta.get("fetchedAt") or ""), overlap, source_key, known_days))
 
-    for _overlap, source_key in sorted(candidates, key=lambda item: item[0], reverse=True):
-        if not wanted - seen:
+    for _fetched_at, _overlap, source_key, known_days in sorted(candidates, key=lambda item: item[:2], reverse=True):
+        if not strategy_daily and not wanted - seen:
             break
-        cache = get_source_cache(organization_id, source_key, slim=False) or {}
+        if not strategy_daily and known_days and known_days <= seen:
+            continue
+        cache = _compatible_period_source_cache(
+            prefix, get_source_cache(organization_id, source_key, slim=False) or {}
+        )
+        if strategy_fingerprint is not None and not (
+            source_binding_matches(cache, organization_id=organization_id, fingerprint=strategy_fingerprint)
+            and source_observations_fresh(cache, now=strategy_now or datetime.now(timezone.utc), date_to=date_to.isoformat())
+            and cache.get("aggregateComplete", True) is True
+            and cache.get("coverageState", "ok") in ({"ok", "complete", "partial"} if prefix == "baskets" else {"ok", "complete"})
+        ):
+            continue
         raw_daily = cache.get("dailyAggregates")
         if not isinstance(raw_daily, dict):
             continue
+        if prefix == "finance":
+            source_metadata = {key: cache[key] for key in ("revenueBasis", "financeSchemaVersion")}
         for raw_day, rows in raw_daily.items():
             day = str(raw_day)
-            if day not in wanted or day in seen or not isinstance(rows, dict):
+            if day not in wanted or (day in seen and not strategy_daily) or not isinstance(rows, dict):
+                continue
+            if prefix == "baskets" and not _baskets_range_has_daily_detail(cache, date.fromisoformat(day), date.fromisoformat(day)):
+                continue
+            evidence = daily_source_evidence(cache, day) if prefix == "baskets" else cache
+            if strategy_fingerprint is not None and not (
+                source_binding_matches(evidence, organization_id=organization_id, fingerprint=strategy_fingerprint)
+                and source_observations_fresh(evidence, now=strategy_now or datetime.now(timezone.utc), date_to=date_to.isoformat())
+            ):
+                continue
+            observation = oldest_source_observation(evidence)
+            if strategy_daily and day in contributors and observation <= contributors[day][1]:
                 continue
             seen.add(day)
             daily[day] = rows
-            for nm_id, row in rows.items():
-                if not isinstance(row, dict):
-                    continue
-                accumulated = totals.setdefault(str(nm_id), {})
-                for field, value in row.items():
-                    if isinstance(value, bool) or not isinstance(value, (int, float)):
-                        continue
-                    accumulated[field] = _int_or_zero(accumulated.get(field)) + _int_or_zero(value)
-    if not totals:
+            binding = evidence.get("strategyTokenFingerprint")
+            contributors[day] = (binding if isinstance(binding, str) and binding else None,
+                                 observation, str(cache.get("fetchedAt") or _fetched_at))
+    if not daily:
         return {}
-    return {"aggregates": totals, "dailyAggregates": daily, "count": len(totals)}
+    totals = _rollup_daily_aggregates(
+        daily, datetime.combine(date_from, datetime.min.time()), datetime.combine(date_to, datetime.min.time())
+    )
+    if strategy_fingerprint is not None:
+        _preserve_strategy_unknowns(totals, daily, prefix, date_from, date_to)
+    coverage = {"coverageState": "ok" if wanted == seen else "partial", "coveredDays": len(seen), "requestedDays": len(wanted), "missingDates": sorted(wanted - seen)}
+    if prefix == "baskets":
+        source_metadata["periodConversionState"] = "no_data"
+        for row in totals.values():
+            row.update(coverage)
+    bindings = {item[0] for item in contributors.values()}
+    observations = [item[1] for item in contributors.values()]
+    fetched_at = max(item[2] for item in contributors.values()) or None
+    oldest_fetched_at = min(item[2] for item in contributors.values()) or None
+    if len(bindings) == 1 and None not in bindings:
+        source_metadata["strategyTokenFingerprint"] = next(iter(bindings))
+    source_metadata["oldestSourceFetchedAt"] = (min(observations).isoformat()
+        if observations and all(at is not None for at in observations) else None)
+    return {"aggregates": totals, "dailyAggregates": daily, "count": len(totals), "fetchedAt": fetched_at,
+            "oldestFetchedAt": oldest_fetched_at, **coverage, **source_metadata}
 
 
 def _period_source_cache(
@@ -1086,6 +1355,8 @@ def _period_source_cache(
     require_full_sync_coverage: bool = True,
     prefer_freshest_covering: bool = False,
     memo: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+    strategy_fingerprint: str | None = None,
+    strategy_now: datetime | None = None,
 ) -> dict[str, Any]:
     cache_key = (
         organization_id,
@@ -1097,6 +1368,8 @@ def _period_source_cache(
         slim,
         require_full_sync_coverage,
         prefer_freshest_covering,
+        strategy_fingerprint,
+        strategy_now,
     )
     if memo is not None and cache_key in memo:
         return memo[cache_key]
@@ -1110,6 +1383,7 @@ def _period_source_cache(
         slim=slim,
         require_full_sync_coverage=require_full_sync_coverage,
         prefer_freshest_covering=prefer_freshest_covering,
+        strategy_fingerprint=strategy_fingerprint, strategy_now=strategy_now,
     )
     if memo is not None:
         memo[cache_key] = cache
@@ -1165,9 +1439,24 @@ def _daily_aggregate_dates(cache: dict[str, Any]) -> set[str]:
 def _baskets_range_has_daily_detail(cache: dict[str, Any], range_from: date, range_to: date) -> bool:
     required_days = (range_to - range_from).days + 1
     dates = _daily_aggregate_dates(cache)
+    if cache.get("dailyDetailStatus") in {"partial", "pending", "failed", "paused", "deferred"}:
+        batch_count = _int_or_zero(cache.get("dailyBatchCount"))
+        if batch_count <= 0:
+            return False
+        completed = {(str(chunk.get("date") or ""), chunk.get("chunkIndex"))
+            for chunk in (cache.get("chunks") or []) if isinstance(chunk, dict)
+            and chunk.get("type") == "daily" and chunk.get("status") == "done"}
+        if not all((day.isoformat(), index) in completed
+            for day in _iter_date_range(range_from, range_to) for index in range(batch_count)):
+            return False
+    incomplete_dates = {
+        str(chunk.get("date") or "")
+        for chunk in (cache.get("chunks") or [])
+        if isinstance(chunk, dict) and chunk.get("type") == "daily" and chunk.get("status") != "done"
+    }
     if dates:
         required_dates = {day.isoformat() for day in _iter_date_range(range_from, range_to)}
-        return required_dates.issubset(dates)
+        return required_dates.issubset(dates - incomplete_dates)
     daily_days = _int_or_zero(cache.get("dailyAggregatesDays"))
     return daily_days >= required_days
 
@@ -1464,7 +1753,7 @@ def _save_finance_source_cache(
     canonical_snapshot = shadow_ingest_legacy_finance_payload(
         organization_id,
         payload,
-        observed_at=_utc_now(),
+        observed_at=datetime.now(timezone.utc),
     )
     finance_aggregates = payload.get("aggregates") if isinstance(payload.get("aggregates"), dict) else {}
     cached_goods_nm_ids = {str(nm_id) for nm_id in _nm_ids_from_goods(list_cached_goods(organization_id))}
@@ -1483,7 +1772,9 @@ def _save_finance_source_cache(
     return payload, cached, len(cached_goods_nm_ids), matched_cached_goods_nm_ids
 
 
-def _limited_finance_diagnostics(cache: dict[str, Any], limit: int) -> dict[str, Any]:
+def _limited_finance_diagnostics(
+    cache: dict[str, Any], limit: int, *, finance_taxes: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     aggregates = cache.get("aggregates") if isinstance(cache.get("aggregates"), dict) else {}
     requested_fields = cache.get("requestedFields") if isinstance(cache.get("requestedFields"), list) else None
     diagnostics = (
@@ -1506,6 +1797,7 @@ def _limited_finance_diagnostics(cache: dict[str, Any], limit: int) -> dict[str,
         diagnostics["paidAcceptanceNonzeroRows"] = fallback_diagnostics.get("paidAcceptanceNonzeroRows")
         diagnostics["paidAcceptanceSum"] = fallback_diagnostics.get("paidAcceptanceSum")
     diagnostics.setdefault("requestedFields", requested_fields or [])
+    diagnostics = repricer_bff_module.project_finance_tax_diagnostics(diagnostics, finance_taxes)
     adjustment_rows = diagnostics.get("adjustmentRows") if isinstance(diagnostics.get("adjustmentRows"), list) else []
     diagnostics["adjustmentRowsTotal"] = int(diagnostics.get("adjustmentRowsTotal") or len(adjustment_rows))
     diagnostics["adjustmentRows"] = adjustment_rows[:limit]
@@ -1624,7 +1916,8 @@ def _margin_breakdown_from_rows(
     finance_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
-    totals: dict[str, int] = {}
+    totals: dict[str, Any] = {}
+    missing_tax_reasons: set[str] = set()
     unassigned_components: list[dict[str, Any]] = []
     for row in rows[:limit]:
         meta = row.get("meta") or {}
@@ -1737,7 +2030,7 @@ def _margin_breakdown_from_rows(
                 label="Компенсации и корректировки WB net",
                 operation="+ credit",
                 amount_kopecks=analytics.get("additionalPaymentKopecks"),
-                source="finance paymentSchedule - raw additionalPayment",
+                source="finance -paymentSchedule - raw additionalPayment",
             ),
             _margin_component(
                 key="tax",
@@ -1748,14 +2041,21 @@ def _margin_breakdown_from_rows(
                 note="Уменьшает netProfit, но показывается отдельно от расходов WB.",
             ),
         ]
-        expected_net_profit_kopecks = sum(int(component["effectKopecks"]) for component in components)
+        missing_tax = analytics.get("factTaxState") == "missing"
+        if missing_tax:
+            missing_tax_reasons.add(str(analytics.get("factTaxReason") or "tax_context_missing"))
+        expected_net_profit_kopecks = None if missing_tax else sum(int(component["effectKopecks"]) for component in components)
         actual_net_profit_kopecks = analytics.get("netProfitKopecks")
-        totals["expectedNetProfitKopecks"] = totals.get("expectedNetProfitKopecks", 0) + expected_net_profit_kopecks
+        if expected_net_profit_kopecks is not None:
+            totals["expectedNetProfitKopecks"] = totals.get("expectedNetProfitKopecks", 0) + expected_net_profit_kopecks
         if actual_net_profit_kopecks is not None:
             totals["actualNetProfitKopecks"] = totals.get("actualNetProfitKopecks", 0) + int(actual_net_profit_kopecks)
         if analytics.get("expensesKopecks") is not None:
             totals["expensesKopecks"] = totals.get("expensesKopecks", 0) + int(analytics.get("expensesKopecks") or 0)
         for component in components:
+            if missing_tax and component["key"] == "tax":
+                component["amountKopecks"] = component["effectKopecks"] = None
+                continue
             totals[component["key"]] = totals.get(component["key"], 0) + int(component["amountKopecks"])
             totals[f"{component['key']}Effect"] = totals.get(f"{component['key']}Effect", 0) + int(component["effectKopecks"])
         items.append(
@@ -1774,7 +2074,7 @@ def _margin_breakdown_from_rows(
                 "actualNetProfitKopecks": actual_net_profit_kopecks,
                 "deltaKopecks": (
                     int(actual_net_profit_kopecks) - expected_net_profit_kopecks
-                    if actual_net_profit_kopecks is not None
+                    if actual_net_profit_kopecks is not None and expected_net_profit_kopecks is not None
                     else None
                 ),
                 "components": components,
@@ -1796,6 +2096,11 @@ def _margin_breakdown_from_rows(
         source="diagnostics.storageAcceptance.paidAcceptanceSumKopecks - sum(SKU acceptanceKopecks)",
         raw_total_kopecks=_finance_raw_cost_total(finance_diagnostics, "acceptance"),
     )
+    if missing_tax_reasons:
+        for key in ("tax", "taxEffect", "expectedNetProfitKopecks", "actualNetProfitKopecks"):
+            totals[key] = None
+        totals["factTaxState"] = "missing"
+        totals["factTaxReason"] = sorted(missing_tax_reasons)[0]
     return {
         "formula": (
             "netProfit = revenue + workReturn - cogs - commission - logistics - storage - acceptance "
@@ -1824,7 +2129,9 @@ def _finance_diagnostics_response(
     limit: int,
     refreshed: bool,
 ) -> dict[str, Any]:
-    diagnostics = _limited_finance_diagnostics(cache, limit)
+    diagnostics = _limited_finance_diagnostics(
+        cache, limit, finance_taxes=_repricer_finance_taxes(organization_id, cache, range_start, range_end),
+    )
     return {
         "source": "finance",
         "state": "ok" if cache else "missing_cache",
@@ -1854,6 +2161,7 @@ def _repricer_list_cache_meta(
     date_to: date | None = None,
     require_full_sync_coverage: bool = True,
     period_cache_memo: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+    period_caches: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cache = cached_goods_meta(organization_id)
     range_start, range_end, resolved_period_days, period_suffix = _repricer_period_context(period_days, date_from, date_to)
@@ -1871,8 +2179,10 @@ def _repricer_list_cache_meta(
         else get_source_cache_fetched_at(organization_id, "content_cards")
     )
     cache["promotionsFetchedAt"] = get_source_cache_meta_fields(organization_id, "promotions").get("fetchedAt")
+    promotions_source = get_source_cache(organization_id, "promotions", slim=True) or {}
+    cache.update(promotion_refresh_metadata({**promotions_source, "fetchedAt": cache["promotionsFetchedAt"]}))
     cache["stocksFetchedAt"] = get_source_cache_meta_fields(organization_id, "stocks").get("fetchedAt")
-    period_cache = _period_source_cache(
+    period_cache = period_caches.get("period_stats", {}) if period_caches is not None else _period_source_cache(
         organization_id,
         "period_stats",
         period_suffix,
@@ -1880,11 +2190,14 @@ def _repricer_list_cache_meta(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
-    cache["periodStatsFetchedAt"] = period_cache.get("fetchedAt") or get_source_cache_meta_fields(organization_id, period_key).get("fetchedAt")
-    finance_meta = get_source_cache_meta_fields(organization_id, finance_key)
-    finance_cache = _period_source_cache(
+    cache["periodStatsFetchedAt"] = period_cache.get("fetchedAt") or (
+        get_source_cache_meta_fields(organization_id, period_key).get("fetchedAt") if period_caches is None else None
+    )
+    finance_meta = get_source_cache_meta_fields(organization_id, finance_key) if period_caches is None else {}
+    finance_cache = period_caches.get("finance", {}) if period_caches is not None else _period_source_cache(
         organization_id,
         "finance",
         period_suffix,
@@ -1892,15 +2205,18 @@ def _repricer_list_cache_meta(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     if not finance_cache:
         finance_meta = {}
-    cache["financeFetchedAt"] = finance_cache.get("fetchedAt") or finance_meta.get("fetchedAt")
+    cache["financeFetchedAt"] = finance_cache.get("fetchedAt") if _page_finance_active() else finance_cache.get("fetchedAt") or finance_meta.get("fetchedAt")
     cache["financeCachedGoodsNmIds"] = finance_cache.get("cachedGoodsNmIds") or finance_meta.get("cachedGoodsNmIds")
     cache["financeMatchedNmIds"] = finance_cache.get("matchedCachedGoodsNmIds") or finance_meta.get("matchedCachedGoodsNmIds")
-    ads_meta = get_source_cache_meta_fields(organization_id, ads_key)
-    ads_cache = _period_source_cache(
+    storage_allocation = finance_cache.get("storageAllocation") or {}
+    cache["storageStocksRequired"] = storage_allocation.get("reason") == "stock_snapshot_incomplete"
+    ads_meta = get_source_cache_meta_fields(organization_id, ads_key) if period_caches is None else {}
+    ads_cache = period_caches.get("ads", {}) if period_caches is not None else _period_source_cache(
         organization_id,
         "ads",
         period_suffix,
@@ -1908,6 +2224,7 @@ def _repricer_list_cache_meta(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     ads_totals = _ads_cache_totals(ads_cache)
@@ -1918,6 +2235,8 @@ def _repricer_list_cache_meta(
     cache["adsDateFrom"] = ads_cache.get("dateFrom")
     cache["adsDateTo"] = ads_cache.get("dateTo")
     cache["adsSource"] = ads_cache.get("source")
+    from app.wb_repricer_reporting import campaign_advertising
+    cache["adsCoverageState"] = campaign_advertising(ads_cache, range_start, range_end)["state"]
     cache["adsSpendKopecks"] = ads_totals["adSpendKopecks"]
     cache["adsImpressions"] = ads_totals["adImpressions"]
     cache["adsClicks"] = ads_totals["adClicks"]
@@ -1927,8 +2246,8 @@ def _repricer_list_cache_meta(
     cache["adsLastStatus"] = ads_step.get("status") if ads_step else None
     cache["adsLastError"] = ads_step.get("error") if ads_step else None
     cache["adsLastFinishedAt"] = ads_step.get("finishedAt") if ads_step else None
-    baskets_meta = get_source_cache_meta_fields(organization_id, baskets_key)
-    baskets_cache = _period_source_cache(
+    baskets_meta = get_source_cache_meta_fields(organization_id, baskets_key) if period_caches is None else {}
+    baskets_cache = period_caches.get("baskets", {}) if period_caches is not None else _period_source_cache(
         organization_id,
         "baskets",
         period_suffix,
@@ -1936,9 +2255,25 @@ def _repricer_list_cache_meta(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     cache["basketsFetchedAt"] = baskets_cache.get("fetchedAt") or baskets_meta.get("fetchedAt")
+    cache["basketsCoverageState"] = baskets_cache.get("coverageState") or ("ok" if baskets_cache else "no_data")
+    cache["basketsPeriodConversionState"] = baskets_cache.get("periodConversionState") or ("ok" if baskets_cache and not baskets_cache.get("coveredByCache") else "no_data")
+    cache["basketsCoveredDays"] = baskets_cache.get("coveredDays")
+    from app.wb_repricer_reporting import period_coverage
+    cache["basketsMissingDates"] = period_coverage(baskets_cache, range_start, range_end)["missingDates"]
+    from app.wb_api.source_freshness import source_is_fresh
+    for name, payload in (("periodStats", period_cache), ("finance", finance_cache), ("baskets", baskets_cache), ("ads", ads_cache)):
+        cache[f"{name}OldestFetchedAt"] = payload.get("oldestFetchedAt") or payload.get("fetchedAt")
+        cache[f"{name}FreshnessState"] = "fresh" if source_is_fresh({**payload, "fetchedAt": payload.get("oldestFetchedAt") or payload.get("fetchedAt")}) else "stale"
+    cache["periodCoverage"] = {
+        name: period_coverage(payload, range_start, range_end)
+        for name, payload in (("finance", finance_cache), ("orders", period_cache), ("ads", ads_cache), ("baskets", baskets_cache))
+    }
+    if _page_finance_active():
+        cache["requiredPeriodSources"] = ["finance", "orders", "baskets", "ads"]
     cache["basketsRequestedNmIds"] = baskets_cache.get("requestedNmIds") or baskets_meta.get("requestedNmIds")
     cache["basketsMatchedNmIds"] = baskets_cache.get("matchedNmIds") or baskets_meta.get("matchedNmIds")
     cache["listItemsLimit"] = SKU_LIST_MAX_ITEMS
@@ -1989,6 +2324,40 @@ def _list_repricer_skus_for_request(
     )
 
 
+def _repricer_finance_taxes(
+    organization_id: int, finance_cache: dict[str, Any], range_start: date, range_end: date,
+    *, memo: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    period = Period(range_start.date() if isinstance(range_start, datetime) else range_start,
+                    range_end.date() if isinstance(range_end, datetime) else range_end)
+    key = (organization_id, "finance_taxes", period.cache_key)
+    if memo is not None and key in memo:
+        return memo[key]
+    taxes = get_legacy_finance_taxes(organization_id, finance_cache, period, include_costs=True, use_current_settings=True)
+    # Do not rank SKU profit while some account expenses remain outside SKUs.
+    # Missing reconciliation is not evidence of a zero residual.
+    diagnostics = _limited_finance_diagnostics(finance_cache, limit=1)
+    aggregates = finance_cache.get("aggregates") or {}
+    components = ("logistics", "storage", "acceptance", "penalty", "deduction",
+                  "loyaltyCost", "adSpend", "additionalPayment")
+    reconciled = all(
+        (raw := _finance_raw_cost_total(diagnostics, component)) is not None
+        and raw == sum(_int_or_zero(row.get(f"{component}Kopecks")) for row in aggregates.values())
+        for component in components
+    )
+    campaign_reconciled = all(
+        (raw := _finance_raw_cost_total(diagnostics, component)) is not None
+        and raw == sum(_int_or_zero(row.get(f"{component}Kopecks")) for row in aggregates.values())
+        for component in components if component not in {"deduction", "adSpend"}
+    ) and not any((diagnostics or {}).get("unallocatedRealization", {}).values())
+    for context in taxes.values():
+        context["settlementAllocationConfirmed"] = reconciled
+        context["campaignAllocationConfirmed"] = campaign_reconciled
+    if memo is not None:
+        memo[key] = taxes
+    return taxes
+
+
 def _list_repricer_skus_from_cached_sources(
     organization_id: int,
     scenario: str,
@@ -2006,12 +2375,14 @@ def _list_repricer_skus_from_cached_sources(
     period_cache_memo: dict[tuple[Any, ...], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     cached_goods = list_cached_goods(organization_id)
-    content_cache = get_source_cache(organization_id, "content_cards", slim=True) if include_content else {}
+    # Category IDs from content are needed for tariffs even without rich content.
+    content_cache = get_source_cache(organization_id, "content_cards", slim=True) or {}
     promotions_cache = get_source_cache(organization_id, "promotions", slim=True) or {}
     thresholds_cache = get_source_cache(organization_id, "promotion_thresholds", slim=True) or {}
     stocks_cache = get_source_cache(organization_id, "stocks", slim=True) or {}
     source_cache_kwargs = {
         "require_full_sync_coverage": require_full_sync_coverage,
+        "prefer_freshest_covering": True,
         "memo": period_cache_memo,
     }
     period_cache = _period_source_cache(
@@ -2036,7 +2407,7 @@ def _list_repricer_skus_from_cached_sources(
     cached_baskets_aggregates = baskets_cache.get("aggregates") if isinstance(baskets_cache.get("aggregates"), dict) else {}
     stocks_cache_loaded = bool(stocks_cache.get("fetchedAt"))
     baskets_cache_loaded = bool(baskets_cache.get("fetchedAt"))
-    return list_repricer_skus(
+    rows = list_repricer_skus(
         scenario,
         wb_token=wb_token,
         include_promotions=include_promotions,
@@ -2051,17 +2422,50 @@ def _list_repricer_skus_from_cached_sources(
         stocks_cache_loaded=stocks_cache_loaded,
         cached_period_stats=cached_period_stats,
         cached_finance_aggregates=cached_finance_aggregates,
+        cached_finance_taxes=_repricer_finance_taxes(organization_id, finance_cache, range_start, range_end,
+                                                   memo=period_cache_memo),
         cached_ads_aggregates=cached_ads_aggregates,
         cached_baskets_aggregates=cached_baskets_aggregates,
         baskets_cache_loaded=baskets_cache_loaded,
+        cached_baskets_observed_at=baskets_cache.get("fetchedAt"),
         period_days=period_days,
         sort_by_demand=sort_by_demand,
         allow_commission_tariff_fetch=False,
+        organization_id=organization_id,
     )
+    for row in rows:
+        analytics = row.setdefault("analytics", {})
+        for field, payload in (("financeState", finance_cache), ("periodStatsState", period_cache),
+                               ("adsState", ads_cache), ("basketsState", baskets_cache)):
+            if field in {"financeState", "periodStatsState"}:
+                analytics.setdefault("periodCoverageStates", {})[field] = payload.get("coverageState") or ("ok" if payload else "no_data")
+            elif payload.get("coverageState") == "partial":
+                analytics[field] = "partial"
+            elif field == "adsState":
+                analytics[field] = "ok" if analytics.get("adDataAvailable") and payload else "no_data"
+    if _page_finance_active():
+        from app.wb_repricer_reporting import apply_financial_row_state, apply_campaign_advertising, campaign_advertising
+        apply_financial_row_state(rows, finance_cache)
+        campaign_ads = campaign_advertising(ads_cache, range_start, range_end)
+        apply_campaign_advertising(rows, finance_cache, campaign_ads)
+        from app.wb_repricer_reporting import apply_repricer_economics
+        apply_repricer_economics(rows, finance_cache, campaign_ads,
+            _repricer_finance_taxes(organization_id, finance_cache, range_start, range_end, memo=period_cache_memo))
+    return rows
 
 
-SKU_LIST_SNAPSHOT_VERSION = 6
+SKU_LIST_SNAPSHOT_VERSION = 30
 SKU_LIST_SNAPSHOT_CHUNK_SIZE = 150
+
+
+def _snapshot_source_revision(organization_id, start=None, end=None):
+    start, end = _parse_cache_date(start), _parse_cache_date(end)
+    if not start or not end:
+        return get_repricer_sources_revision(organization_id)
+    # The financial comparison and operational trends depend on the preceding
+    # equal-length period; updates outside both windows are not dependencies.
+    return get_repricer_sources_revision(organization_id,
+        date_from=start - timedelta(days=(end - start).days + 1), date_to=end)
 
 
 def _repricer_sku_snapshot_key(
@@ -2071,10 +2475,13 @@ def _repricer_sku_snapshot_key(
     include_promotions: bool,
     include_content: bool,
     version: int = SKU_LIST_SNAPSHOT_VERSION,
+    view: Literal["sku", "stats"] = "sku",
 ) -> str:
     safe_scenario = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(scenario or "complete")).strip("_") or "complete"
     flags = f"promo{1 if include_promotions else 0}_content{1 if include_content else 0}"
-    return f"sku_list_snapshot_v{version}_{safe_scenario}_{period_suffix}_{flags}"
+    from app.repricer_page_finance import page_projection
+    projection = "_page_finance2_campaign_ads" if page_projection.get() and view == "sku" else ""
+    return f"{view}_list_snapshot_v{version}_{safe_scenario}_{period_suffix}_{flags}{'_metrics3' if view == 'stats' else ''}{projection}"
 
 
 def _repricer_sku_snapshot_chunk_key(snapshot_key: str, chunk_index: int) -> str:
@@ -2088,16 +2495,67 @@ def _load_repricer_sku_snapshot(
     period_suffix: str,
     include_promotions: bool,
     include_content: bool,
+    view: Literal["sku", "stats"] = "sku",
+    state_revision: str | None = None,
+    tax_revision: str | None = None,
 ) -> dict[str, Any] | None:
     snapshot_key = _repricer_sku_snapshot_key(
         scenario,
         period_suffix=period_suffix,
         include_promotions=include_promotions,
         include_content=include_content,
+        view=view,
     )
     cache = get_source_cache(organization_id, snapshot_key, slim=False)
     if not cache or int(cache.get("version") or 0) != SKU_LIST_SNAPSHOT_VERSION:
         return None
+    now = datetime.now(timezone.utc)
+    if cache.get("promotionStatusExpiresAt"):
+        expiry = promotion_timestamp(cache["promotionStatusExpiresAt"])
+        if expiry is None or expiry <= now:
+            return None
+    if cache.get("browserPricesExpireAt"):
+        expiry = browser_price_timestamp(cache["browserPricesExpireAt"])
+        if expiry is None or expiry <= now:
+            return None
+    if str(period_suffix).isdigit():
+        start, end, _days, _suffix = _repricer_period_context(int(period_suffix))
+        if not _cache_matches_range(cache.get("response", {}) if view == "stats" else cache, start, end):
+            return None
+    if cache.get("stateRevision") != (state_revision or _repricer_view_state_revision()):
+        return None
+    if cache.get("taxRevision") == "unavailable" or cache.get("taxRevision") != (
+        tax_revision if tax_revision is not None else legacy_finance_tax_revision(organization_id)
+    ):
+        return None
+    scope = cache.get("response", {}) if view == "stats" else cache
+    if cache.get("sourceRevision") != _snapshot_source_revision(organization_id, scope.get("dateFrom"), scope.get("dateTo")):
+        return None
+    if _page_finance_active() and view == "sku":
+        from app.repricer_page_finance import page_finance_revision
+        first, last = _parse_cache_date(scope.get("dateFrom")), _parse_cache_date(scope.get("dateTo"))
+        if first and last:
+            first -= timedelta(days=(last - first).days + 1)
+        if cache.get("pageFinanceRevision") != page_finance_revision(organization_id, first, last):
+            return None
+    if cache.get("goodsRevision") != cached_goods_meta(organization_id).get("latestFetchedAt"):
+        return None
+    if cache.get("goodsPriceRevision") != get_goods_price_revision(organization_id):
+        return None
+    from app.wb_api.source_freshness import source_is_fresh
+    source_meta = scope.get("cache") or {}
+    for source in ("finance", "periodStats", "baskets"):
+        stored_state = source_meta.get(f"{source}FreshnessState")
+        if stored_state and stored_state != ("fresh" if source_is_fresh({
+                "dateTo": scope.get("dateTo"),
+                "fetchedAt": source_meta.get(f"{source}OldestFetchedAt") or source_meta.get(f"{source}FetchedAt"),
+        }) else "stale"):
+            return None
+    if cache.get("browserPricesRevision") != get_source_cache_fetched_at(organization_id, BROWSER_PRICES_KEY):
+        # Coalesce upload batches from the original read, never extend a price's TTL.
+        read_at = browser_price_timestamp(cache.get("browserPricesReadAt"))
+        if read_at is None or not read_at <= now < read_at + timedelta(seconds=60):
+            return None
     if cache.get("storage") == "chunked":
         cache.setdefault("snapshotKey", snapshot_key)
         return cache
@@ -2117,6 +2575,9 @@ def _load_repricer_sku_snapshot_page(
     include_content: bool,
     page: int,
     page_size: int,
+    view: Literal["sku", "stats"] = "sku",
+    state_revision: str | None = None,
+    tax_revision: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
     snapshot = _load_repricer_sku_snapshot(
         organization_id,
@@ -2124,6 +2585,9 @@ def _load_repricer_sku_snapshot_page(
         period_suffix=period_suffix,
         include_promotions=include_promotions,
         include_content=include_content,
+        view=view,
+        state_revision=state_revision,
+        tax_revision=tax_revision,
     )
     if snapshot is None:
         return None
@@ -2137,22 +2601,75 @@ def _load_repricer_sku_snapshot_page(
         period_suffix=period_suffix,
         include_promotions=include_promotions,
         include_content=include_content,
+        view=view,
     ))
     chunk_size = max(1, int(snapshot.get("chunkSize") or SKU_LIST_SNAPSHOT_CHUNK_SIZE))
     start = (page - 1) * page_size
-    end = start + page_size
+    end = min(start + page_size, int(snapshot.get("total") or 0))
+    if end <= start:
+        return snapshot, []
     first_chunk = start // chunk_size
     last_chunk = (max(start, end - 1)) // chunk_size
     rows: list[dict[str, Any]] = []
     for chunk_index in range(first_chunk, last_chunk + 1):
         chunk = get_source_cache(organization_id, _repricer_sku_snapshot_chunk_key(snapshot_key, chunk_index), slim=False) or {}
+        if snapshot.get("generation") is not None and chunk.get("generation") != snapshot["generation"]:
+            return None
         chunk_items = chunk.get("items") if isinstance(chunk.get("items"), list) else []
         if chunk_items:
             rows.extend(chunk_items)
     offset = start - first_chunk * chunk_size
-    return snapshot, rows[offset : offset + page_size]
+    items = rows[offset : offset + page_size]
+    return (snapshot, items) if len(items) == end - start else None
 
 
+def _save_repricer_list_snapshot(
+    organization_id: int, snapshot_key: str, rows: list[dict[str, Any]], payload: dict[str, Any],
+) -> dict[str, Any]:
+    promotion_expiries = [
+        value for row in rows
+        if (value := promotion_timestamp((row.get("analytics") or row).get("promotionStatusExpiresAt"))) is not None
+    ]
+    if promotion_expiries:
+        payload = {**payload, "promotionStatusExpiresAt": min(promotion_expiries).isoformat()}
+    if _page_finance_active():
+        from app.repricer_page_finance import page_finance_revision
+        first, last = _parse_cache_date(payload.get("dateFrom")), _parse_cache_date(payload.get("dateTo"))
+        if first and last:
+            first -= timedelta(days=(last - first).days + 1)
+        payload = {**payload, "pageFinanceRevision": page_finance_revision(organization_id, first, last)}
+    chunk_size = SKU_LIST_SNAPSHOT_CHUNK_SIZE
+    if any((row.get("analytics") or row.get("metrics") or {}).get("factTaxReason") == "tax_policy_unavailable" for row in rows):
+        payload = {**payload, "taxRevision": "unavailable"}
+    generation = uuid4().hex
+    for chunk_start in range(0, len(rows), chunk_size):
+        chunk_index = chunk_start // chunk_size
+        items = rows[chunk_start : chunk_start + chunk_size]
+        save_source_cache(organization_id, _repricer_sku_snapshot_chunk_key(snapshot_key, chunk_index), {
+            "version": SKU_LIST_SNAPSHOT_VERSION, "snapshotKey": snapshot_key,
+            "generation": generation, "chunkIndex": chunk_index, "chunkSize": chunk_size,
+            "items": items, "itemsReturned": len(items),
+        })
+    return save_source_cache(organization_id, snapshot_key, {
+        **payload, "version": SKU_LIST_SNAPSHOT_VERSION, "storage": "chunked",
+        "browserPricesExpireAt": payload.get("browserPricesExpireAt") or rows_expire_at(rows),
+        "snapshotKey": snapshot_key, "generation": generation, "chunkSize": chunk_size,
+        "chunksCount": (len(rows) + chunk_size - 1) // chunk_size, "total": len(rows),
+        "builtAt": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _repricer_view_state_revision() -> str:
+    # Hydration has already loaded these small inputs; no source JSON is read.
+    state = {name: getattr(repricer_bff_module, name) for name in (
+        "FRONTEND_STRATEGY_ASSIGNMENTS", "SKU_META_OVERRIDES", "SKU_SETTINGS_OVERRIDES",
+        "ALGORITHM_SETTINGS_STATE", "LIQUIDATION_ACTIVE", "NEGATIVE_MARGIN_CONFIRMATIONS",
+        "REPRICER_SKU_GROUPS", "TEMPLATES_STATE",
+    )}
+    return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+@tax_consistent_report
 def _build_repricer_sku_snapshot(
     organization_id: int,
     scenario: str,
@@ -2166,6 +2683,15 @@ def _build_repricer_sku_snapshot(
     include_content: bool = False,
 ) -> dict[str, Any]:
     period_cache_memo: dict[tuple[Any, ...], dict[str, Any]] = {}
+    from app.wb_catalog_loading import require_goods_cache
+    require_goods_cache(organization_id, cached_goods_meta(organization_id))
+    state_revision = _repricer_view_state_revision()
+    tax_revision = legacy_finance_tax_revision(organization_id)
+    source_revision = _snapshot_source_revision(organization_id, range_start, range_end)
+    goods_revision = cached_goods_meta(organization_id).get("latestFetchedAt")
+    goods_price_revision = get_goods_price_revision(organization_id)
+    browser_prices_read_at = datetime.now(timezone.utc).isoformat()
+    browser_prices_revision = get_source_cache_fetched_at(organization_id, BROWSER_PRICES_KEY)
     rows = _list_repricer_skus_from_cached_sources(
         organization_id,
         scenario,
@@ -2190,6 +2716,7 @@ def _build_repricer_sku_snapshot(
         range_end,
         slim=True,
         require_full_sync_coverage=False,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     finance_diagnostics = _limited_finance_diagnostics(finance_cache, limit=1) if finance_cache else None
@@ -2210,6 +2737,7 @@ def _build_repricer_sku_snapshot(
         range_end=range_end,
         finance_diagnostics=finance_diagnostics,
         require_full_sync_coverage=False,
+        prefer_freshest_finance=True,
         period_cache_memo=period_cache_memo,
     )
     snapshot_key = _repricer_sku_snapshot_key(
@@ -2218,27 +2746,15 @@ def _build_repricer_sku_snapshot(
         include_promotions=include_promotions,
         include_content=include_content,
     )
-    chunk_size = SKU_LIST_SNAPSHOT_CHUNK_SIZE
-    chunks_count = 0
-    for chunk_start in range(0, len(rows), chunk_size):
-        chunk_items = rows[chunk_start : chunk_start + chunk_size]
-        chunk_index = chunk_start // chunk_size
-        chunks_count += 1
-        save_source_cache(
-            organization_id,
-            _repricer_sku_snapshot_chunk_key(snapshot_key, chunk_index),
-            {
-                "version": SKU_LIST_SNAPSHOT_VERSION,
-                "snapshotKey": snapshot_key,
-                "chunkIndex": chunk_index,
-                "chunkSize": chunk_size,
-                "items": chunk_items,
-                "itemsReturned": len(chunk_items),
-                "builtAt": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-    payload = {
-        "version": SKU_LIST_SNAPSHOT_VERSION,
+    assert_current_snapshot(organization_id)
+    return _save_repricer_list_snapshot(organization_id, snapshot_key, rows, {
+        "browserPricesRevision": browser_prices_revision,
+        "browserPricesReadAt": browser_prices_read_at,
+        "sourceRevision": source_revision,
+        "goodsRevision": goods_revision,
+        "goodsPriceRevision": goods_price_revision,
+        "stateRevision": state_revision,
+        "taxRevision": tax_revision,
         "scenario": scenario,
         "periodDays": resolved_period_days,
         "periodSuffix": period_suffix,
@@ -2246,20 +2762,9 @@ def _build_repricer_sku_snapshot(
         "dateTo": range_end.date().isoformat(),
         "includePromotions": include_promotions,
         "includeContent": include_content,
-        "storage": "chunked",
-        "snapshotKey": snapshot_key,
-        "chunkSize": chunk_size,
-        "chunksCount": chunks_count,
-        "total": len(rows),
         "summary": summary,
         "cache": cache_meta,
-        "builtAt": datetime.now(timezone.utc).isoformat(),
-    }
-    return save_source_cache(
-        organization_id,
-        snapshot_key,
-        payload,
-    )
+    })
 
 
 def _repricer_row_sort_key(row: dict[str, Any]) -> tuple[int, int, int, str]:
@@ -2421,6 +2926,11 @@ def _int_or_zero(value: Any) -> int:
         return 0
 
 
+def _page_finance_active() -> bool:
+    from app.repricer_page_finance import page_projection
+    return page_projection.get()
+
+
 def _float_or_none(value: Any) -> float | None:
     try:
         if value is None:
@@ -2430,11 +2940,44 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _buyout_summary(rows: list[dict[str, Any]]) -> tuple[int | None, int | None]:
+    facts = [row.get("analytics") or {} for row in rows]
+    confirmed = [fact for fact in facts if fact.get("financeState") == "ok"]
+    if not confirmed:
+        return (None, None) if rows else (0, 0)
+    if any(type(fact.get(key)) is not int for fact in confirmed for key in ("buyoutUnits", "buyoutAmountKopecks")):
+        return None, None
+    return sum(fact["buyoutUnits"] for fact in confirmed), sum(fact["buyoutAmountKopecks"] for fact in confirmed)
+
+
+def _apply_period_reporting(summary, organization_id, start, end, *, ledger, coverage, nm_ids=None, memo=None):
+    if not _page_finance_active():
+        return summary
+    from app.wb_repricer_reporting import apply_summary_availability, financial_totals, period_coverage, load_buyout_comparison
+    apply_summary_availability(summary, coverage, ledger, nm_ids)
+    left, right = _parse_cache_date(start), _parse_cache_date(end)
+    days = (right - left).days + 1
+    previous_left, previous_right = left - timedelta(days=days), left - timedelta(days=1)
+    previous = load_buyout_comparison(organization_id, previous_left, previous_right, memo=memo)
+    previous_coverage = period_coverage(previous, previous_left, previous_right)
+    from app.wb_api.source_freshness import source_is_fresh
+    previous_units, previous_amount = financial_totals(previous, nm_ids)
+    summary["buyoutComparison"] = {
+        **previous_coverage, "dateFrom": str(previous_left), "dateTo": str(previous_right),
+        "units": previous_units, "amountKopecks": previous_amount,
+        "currentState": coverage["finance"]["state"],
+        "source": "finance.rrDate.retailAmount.netSalesUnits",
+        "freshnessState": "fresh" if source_is_fresh({**previous, "fetchedAt": previous.get("oldestFetchedAt") or previous.get("fetchedAt")}) else "stale",
+    }
+    return summary
+
+
 def _repricer_list_summary(
     rows: list[dict[str, Any]],
     *,
     finance_diagnostics: dict[str, Any] | None = None,
     ads_totals: dict[str, Any] | None = None,
+    campaign_ads: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     revenue_kopecks = 0
     margin_kopecks = 0
@@ -2470,11 +3013,19 @@ def _repricer_list_summary(
         for key in ("commission", "logistics", "storage", "acceptance", "penalty", "deduction", "loyaltyCost", "acquiring", "additionalPayment")
     }
     buyer_revenue_kopecks = 0
-    margin_pct_values: list[float] = []
+    fact_tax_reasons: set[str] = set()
+    has_fact_tax_contract = False
+    has_finance_rows = False
 
     for row in rows:
         meta = row.get("meta") or {}
         analytics = row.get("analytics") or {}
+        if analytics.get("factTaxState") is not None:
+            has_fact_tax_contract = True
+            if analytics.get("financeState") != "no_data":
+                has_finance_rows = True
+                if analytics.get("factTaxState") != "configured":
+                    fact_tax_reasons.add(str(analytics.get("factTaxReason") or "tax_context_missing"))
         orders_units = _int_or_zero(analytics.get("ordersUnits"))
         cancelled_orders_units += _int_or_zero(analytics.get("cancelledOrdersUnits"))
         buyer_price_kopecks = _int_or_zero(
@@ -2522,6 +3073,8 @@ def _repricer_list_summary(
 
         if analytics.get("netProfitKopecks") is not None:
             row_margin = _int_or_zero(analytics.get("netProfitKopecks"))
+        elif analytics.get("factTaxState") == "missing":
+            row_margin = 0  # An unknown fact must not be replaced with a current-price plan.
         elif analytics.get("plannedPeriodMarginKopecks") is not None:
             row_margin = _int_or_zero(analytics.get("plannedPeriodMarginKopecks"))
         else:
@@ -2531,10 +3084,6 @@ def _repricer_list_summary(
         baskets_raw = analytics.get("baskets")
         total_baskets += _int_or_zero(baskets_raw if baskets_raw is not None else meta.get("basketsLast7d"))
 
-        margin_pct = _float_or_none(analytics.get("marginPct"))
-        if margin_pct is not None:
-            margin_pct_values.append(margin_pct)
-
         stock_units = _int_or_zero(analytics.get("wbStockUnits"))
         if stock_units > 0 and str(meta.get("status") or "") != "liquidation":
             in_sale += 1
@@ -2542,9 +3091,23 @@ def _repricer_list_summary(
             promo_count += 1
 
     missing_other_expenses_kopecks = 0
+    buyout_units, buyout_amount = _buyout_summary(rows)
+    unallocated_trades = (finance_diagnostics or {}).get("unallocatedRealization", {})
+    if any(unallocated_trades.values()):
+        revenue_kopecks += _int_or_zero(unallocated_trades.get("revenueKopecks"))
+        buyer_revenue_kopecks += _int_or_zero(unallocated_trades.get("revenueKopecks"))
+        sales_units += _int_or_zero(unallocated_trades.get("salesUnits"))
+        returns_units += _int_or_zero(unallocated_trades.get("returnsUnits"))
+        if buyout_units is not None:
+            buyout_units += _int_or_zero(unallocated_trades.get("netSalesUnits"))
+        if buyout_amount is not None:
+            buyout_amount += _int_or_zero(unallocated_trades.get("revenueKopecks"))
+        fact_tax_reasons.add("unallocated_financial_realization")
 
     finance_ad_spend_kopecks = _finance_raw_cost_total(finance_diagnostics, "adSpend")
-    if finance_ad_spend_kopecks is not None:
+    if campaign_ads is not None:
+        ads_totals = {**(ads_totals or {}), "adSpendKopecks": campaign_ads.get("adSpendKopecks")}
+    elif finance_ad_spend_kopecks is not None:
         ads_totals = {**(ads_totals or {}), "adSpendKopecks": finance_ad_spend_kopecks}
     unassigned_ad_spend_kopecks = 0
     if ads_totals is not None:
@@ -2581,23 +3144,90 @@ def _repricer_list_summary(
         for key, amount in unassigned_finance_components.items()
     )
 
-    avg_margin_pct = (margin_kopecks / revenue_kopecks * 100) if revenue_kopecks > 0 else (
-        sum(margin_pct_values) / len(margin_pct_values) if margin_pct_values else 0
-    )
+    # Keep the same ratio for return-dominated periods; zero has no ratio.
+    # Per-SKU percentages are not a substitute for the ratio of totals.
+    if has_fact_tax_contract and not has_finance_rows:
+        fact_tax_reasons.add("finance_missing")
+    avg_margin_pct = (margin_kopecks / revenue_kopecks * 100) if revenue_kopecks != 0 and not fact_tax_reasons else None
     promo_share_pct = round(promo_count / len(rows) * 100) if rows else 0
+    settlement_rows = [row.get("analytics") or {} for row in rows if (row.get("analytics") or {}).get("financeState") != "no_data"]
+    settlement_blockers = sorted({reason for row in settlement_rows for reason in row.get("settlementBlockers", [])})
+    if not settlement_rows or any(row.get("settlementFormulaVersion") != repricer_bff_module.SETTLEMENT_PROFIT_VERSION
+           or type(row.get("settlementProfitKopecks")) is not int for row in settlement_rows):
+        settlement_blockers.append("settlement_rows_incomplete")
+    if any(unassigned_finance_components.get(key, 0) for key in ("commission", "acquiring")):
+        settlement_blockers.append("settlement_unassigned_payable_unconfirmed")
+    settlement_residual = sum((-amount if key == "additionalPayment" else amount)
+        for key, amount in unassigned_finance_components.items() if key not in {"commission", "acquiring"})
+    if finance_ad_spend_kopecks is not None:
+        # Compare Finance promotions only, never the parallel Ads representation.
+        settlement_residual += finance_ad_spend_kopecks - sum(
+            _int_or_zero(row.get("settlementAdvertisingKopecks")) for row in settlement_rows)
+    settlement_profit = None if settlement_blockers else sum(row["settlementProfitKopecks"] for row in settlement_rows) - settlement_residual
+    campaign_profit = (settlement_profit + finance_ad_spend_kopecks - campaign_ads["adSpendKopecks"]
+        if campaign_ads is not None and campaign_ads.get("state") == "ok"
+        and type(campaign_ads.get("adSpendKopecks")) is int and type(finance_ad_spend_kopecks) is int
+        and type(settlement_profit) is int else None)
+    if (campaign_ads is not None and campaign_ads.get("state") == "ok"
+            and type(campaign_ads.get("adSpendKopecks")) is int):
+        # Cabinet totals can include observed residual fees without inventing
+        # per-SKU attribution. Unknown tax/cost/payout still blocks the result.
+        attributed = [row.get("settlementAttributedProfitKopecks") for row in settlement_rows]
+        only_allocation_blocked = all(set(row.get("settlementBlockers") or []) <= {
+            "settlement_account_expenses_unreconciled"} for row in settlement_rows)
+        raw_costs_known = all(_finance_raw_cost_total(finance_diagnostics, key) is not None
+                              for key in (*finance_components, "adSpend"))
+        if (settlement_rows and all(type(value) is int for value in attributed) and only_allocation_blocked
+                and raw_costs_known and not any(unallocated_trades.values())
+                and not any(unassigned_finance_components.get(key, 0) for key in ("commission", "acquiring"))):
+            campaign_profit = sum(attributed) - settlement_residual + finance_ad_spend_kopecks - campaign_ads["adSpendKopecks"]
+    if campaign_ads is not None and campaign_ads.get("state") == "ok" and finance_diagnostics is None:
+        facts = [row.get("analytics") or {} for row in rows]
+        profits = [fact.get("campaignAttributedProfitKopecks") for fact in facts]
+        only_allocation_blocked = all(set(fact.get("settlementBlockers") or []) <= {
+            "settlement_account_expenses_unreconciled"} for fact in facts)
+        campaign_profit = sum(profits) if only_allocation_blocked and all(type(value) is int for value in profits) else None
+    advertising_known = campaign_ads is None or (campaign_ads.get("state") == "ok" and type(campaign_ads.get("adSpendKopecks")) is int)
+    policy_rows = [row.get("analytics") or {} for row in rows
+                   if (row.get("analytics") or {}).get("repricerEconomicsVersion")]
+    if policy_rows:
+        participating = [row for row in policy_rows if row.get("financeState") != "no_data"]
+        values = [row.get("campaignProfitKopecks") for row in participating]
+        campaign_profit = (sum(values) - unassigned_ad_spend_kopecks
+            if participating and advertising_known and all(type(value) is int for value in values) else None)
+        # Assigned deductions were excluded by the product policy; exclude the
+        # account remainder here as well, retaining the original ledger totals.
+        expenses_kopecks -= unassigned_finance_components.get("deduction", 0)
     return {
+        **({"campaignAdvertisingVersion": "wb-repricer-campaign-advertising-v1",
+            "campaignProfitKopecks": campaign_profit, "adSpendState": campaign_ads["state"],
+            "financeAdSpendKopecks": finance_ad_spend_kopecks} if campaign_ads is not None else {}),
+        "settlementFormulaVersion": repricer_bff_module.SETTLEMENT_PROFIT_VERSION,
+        "settlementProfitKopecks": settlement_profit,
+        "finalPayoutKopecks": (
+            sum(row["finalPayoutKopecks"] for row in settlement_rows) - settlement_residual
+            if _page_finance_active() and settlement_rows and all(type(row.get("finalPayoutKopecks")) is int for row in settlement_rows)
+            and not any(unassigned_finance_components.get(key, 0) for key in ("commission", "acquiring"))
+            else None if settlement_blockers else sum(row["finalPayoutKopecks"] for row in settlement_rows) - settlement_residual
+        ),
+        "settlementCogsKopecks": sum(row["settlementCogsKopecks"] for row in settlement_rows) if settlement_rows and all(type(row.get("settlementCogsKopecks")) is int for row in settlement_rows) else None,
+        "settlementBlockers": settlement_blockers,
         "revenueKopecks": revenue_kopecks,
         "sellerRevenueKopecks": revenue_kopecks,
         "buyerRevenueKopecks": buyer_revenue_kopecks,
-        "marginKopecks": margin_kopecks,
+        "marginKopecks": margin_kopecks if not fact_tax_reasons else None,
         "cogsKopecks": cogs_kopecks,
-        "expensesKopecks": expenses_kopecks,
+        "expensesKopecks": expenses_kopecks if advertising_known else None,
+        "buyoutUnits": buyout_units,
+        "buyoutAmountKopecks": buyout_amount,
+        "buyoutSource": "finance.rrDate.retailAmount.netSalesUnits",
         "ordersUnits": orders_units_total,
         "cancelledOrdersUnits": cancelled_orders_units,
         "funnelOrderCount": funnel_orders_units,
         "salesUnits": sales_units - returns_units,
         "returnsUnits": returns_units,
-        "adSpendKopecks": ad_spend_kopecks,
+        "adSpendKopecks": (campaign_ads.get("adSpendKopecks") if campaign_ads is not None
+            else None if (finance_diagnostics or {}).get("financialAdvertisingComplete") is False else ad_spend_kopecks),
         "adImpressions": ad_impressions,
         "adClicks": ad_clicks,
         "adCartAdds": ad_cart_adds,
@@ -2605,9 +3235,13 @@ def _repricer_list_summary(
         "adRevenueKopecks": ad_revenue_kopecks,
         "adSkuCount": ad_sku_count,
         "unassignedAdSpendKopecks": unassigned_ad_spend_kopecks,
-        "adSpendSource": "finance_deduction_wb_promotion" if finance_ad_spend_kopecks is not None else "wb_ads_fullstats",
+        "adSpendSource": ("wb_ads_fullstats" if campaign_ads is not None else None
+            if (finance_diagnostics or {}).get("financialAdvertisingComplete") is False
+            else "finance_deduction_wb_promotion" if finance_ad_spend_kopecks is not None else "wb_ads_fullstats"),
         "otherExpensesKopecks": other_expenses_kopecks,
-        "taxKopecks": tax_kopecks,
+        "taxKopecks": tax_kopecks if not fact_tax_reasons else None,
+        "factTaxState": "missing" if fact_tax_reasons else "configured",
+        "factTaxReason": sorted(fact_tax_reasons)[0] if fact_tax_reasons else None,
         "workReturnKopecks": work_return_kopecks,
         "storageKopecks": storage_kopecks,
         "acceptanceKopecks": acceptance_kopecks,
@@ -2627,8 +3261,9 @@ def _repricer_list_summary(
         "deductionCompensationKopecks": deduction_compensation_kopecks,
         "additionalPaymentKopecks": additional_payment_kopecks,
         "missingOtherExpensesKopecks": missing_other_expenses_kopecks,
-        "avgMarginPct": round(avg_margin_pct, 1),
+        "avgMarginPct": round(avg_margin_pct, 1) if avg_margin_pct is not None else None,
         "totalBaskets": total_baskets,
+        "totalBasketsState": "partial" if any((row.get("analytics") or {}).get("basketsState") in {"partial", "no_data"} for row in rows) else "ok",
         "inSale": in_sale,
         "promoSharePct": promo_share_pct,
         "skuCount": len(rows),
@@ -2658,7 +3293,7 @@ def _repricer_list_summary_from_source_caches(
         range_end,
         slim=True,
         require_full_sync_coverage=require_full_sync_coverage,
-        prefer_freshest_covering=prefer_freshest_finance,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     period_cache = _period_source_cache(
@@ -2669,6 +3304,7 @@ def _repricer_list_summary_from_source_caches(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     ads_cache = _period_source_cache(
@@ -2679,6 +3315,7 @@ def _repricer_list_summary_from_source_caches(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     baskets_cache = _period_source_cache(
@@ -2689,6 +3326,7 @@ def _repricer_list_summary_from_source_caches(
         range_start,
         range_end,
         require_full_sync_coverage=require_full_sync_coverage,
+        prefer_freshest_covering=True,
         memo=period_cache_memo,
     )
     stocks_cache = get_source_cache(organization_id, "stocks", slim=True) or {}
@@ -2696,13 +3334,14 @@ def _repricer_list_summary_from_source_caches(
     thresholds_cache = get_source_cache(organization_id, "promotion_thresholds", slim=True) or {}
 
     finance_aggregates = finance_cache.get("aggregates") if isinstance(finance_cache.get("aggregates"), dict) else {}
+    finance_taxes = _repricer_finance_taxes(organization_id, finance_cache, range_start, range_end, memo=period_cache_memo)
     period_aggregates = period_cache.get("aggregates") if isinstance(period_cache.get("aggregates"), dict) else {}
     ads_aggregates = ads_cache.get("aggregates") if isinstance(ads_cache.get("aggregates"), dict) else {}
     baskets_aggregates = baskets_cache.get("aggregates") if isinstance(baskets_cache.get("aggregates"), dict) else {}
     stock_aggregates = stocks_cache.get("aggregates") if isinstance(stocks_cache.get("aggregates"), dict) else {}
     cached_promotions = promotions_cache.get("promotions") if isinstance(promotions_cache.get("promotions"), list) else []
     cached_promotions = _apply_promotion_threshold_cache(cached_promotions, thresholds_cache)
-    active_promotion_nm_ids = repricer_bff_module._active_promotion_nm_ids(cached_promotions) if cached_promotions else set()
+    membership = promotion_membership(cached_promotions)
 
     goods_by_nm_id = {
         str(_int_or_zero(good.get("nmID") or good.get("nmId"))): good
@@ -2746,8 +3385,9 @@ def _repricer_list_summary_from_source_caches(
         seller_revenue_kopecks = _int_or_zero(
             finance.get("sellerRevenueKopecks") or finance.get("revenueGrossKopecks") or finance.get("revenueKopecks")
         )
-        revenue_kopecks = seller_revenue_kopecks
-        profit_revenue_kopecks = _int_or_zero(finance.get("buyerRevenueKopecks")) or revenue_kopecks
+        from app.repricer_page_finance import report_revenue_kopecks
+        revenue_kopecks = _int_or_zero(report_revenue_kopecks(finance))
+        profit_revenue_kopecks = revenue_kopecks if finance.get("realizationVersion") else _int_or_zero(finance.get("buyerRevenueKopecks")) or revenue_kopecks
         sales_units = _int_or_zero(finance.get("salesUnits"))
         returns_units = _int_or_zero(finance.get("returnsUnits"))
         settings = dict((settings_overrides or {}).get(article_id) or (repricer_bff_module._sku_cost_settings(article_id, use_demo_data=False) if article_id else {}))
@@ -2769,7 +3409,8 @@ def _repricer_list_summary_from_source_caches(
             else ads.get("adSpendKopecks") or finance.get("adSpendKopecks")
         )
         other_expenses_kopecks = 0
-        tax_kopecks = round(seller_revenue_kopecks * float(settings.get("taxPct") or 0) / 100)
+        tax = finance_taxes.get(nm_key) or {"taxKopecks": None, "factTaxState": "missing", "factTaxReason": "tax_context_missing"}
+        tax_kopecks = tax.get("taxKopecks") if tax.get("factTaxState") == "configured" else None
         work_return_kopecks = _int_or_zero(settings.get("workReturnPerSaleKopecks")) * (sales_units - returns_units)
         additional_payment_kopecks = _int_or_zero(finance.get("additionalPaymentKopecks"))
         expenses_kopecks = _int_or_zero(finance.get("expensesKopecks"))
@@ -2794,19 +3435,28 @@ def _repricer_list_summary_from_source_caches(
             - cogs_total_kopecks
             - expenses_kopecks
             - tax_kopecks
-        )
+        ) if tax_kopecks is not None else None
 
-        funnel_order_count = _int_or_zero(baskets.get("orderCount"))
+        funnel_order_count = _int_or_zero(baskets.get("orderCount")) if baskets.get("orderCount") is not None else None
 
         analytics.update(
             {
-                "ordersUnits": funnel_order_count or _int_or_zero(period.get("ordersUnits")),
+                "ordersUnits": funnel_order_count if funnel_order_count is not None else _int_or_zero(period.get("ordersUnits")),
+                "ordersSource": "sales_funnel.orderCount" if funnel_order_count is not None else "supplier.orders" if nm_key in period_aggregates else None,
                 "cancelledOrdersUnits": _int_or_zero(period.get("cancelledOrdersUnits")),
                 "funnelOrderCount": funnel_order_count,
+                "reportOrdersUnits": funnel_order_count if funnel_order_count is not None else period.get("ordersUnits"),
+                "ordersAmountKopecks": baskets.get("orderSumKopecks"),
+                "grossSalesUnits": finance.get("salesUnits") if finance else None,
+                "grossSalesAmountKopecks": finance.get("realizationGrossSalesKopecks", finance.get("grossSalesKopecks")) if finance and not finance.get("sellerRevenueMissingRows") else None,
+                "buyoutUnits": finance.get("netSalesUnits", sales_units - returns_units) if finance else None,
+                "buyoutAmountKopecks": report_revenue_kopecks(finance) if finance else None,
                 "salesUnits": sales_units,
                 "returnsUnits": returns_units,
                 "revenueKopecks": revenue_kopecks,
                 "sellerRevenueKopecks": seller_revenue_kopecks,
+                "realizationRevenueKopecks": finance.get("realizationRevenueKopecks"),
+                "realizationVersion": finance.get("realizationVersion"),
                 "buyerRevenueKopecks": profit_revenue_kopecks,
                 "cogsTotalKopecks": cogs_total_kopecks,
                 "expensesKopecks": expenses_kopecks,
@@ -2828,6 +3478,7 @@ def _repricer_list_summary_from_source_caches(
                 "acquiringKopecks": acquiring_kopecks,
                 "adSpendKopecks": ad_spend_kopecks,
                 "adDataAvailable": bool(ads) or bool(finance.get("financeAdSpendAuthoritative")),
+                "adMetricsAvailable": bool(ads),
                 "adImpressions": _int_or_zero(ads.get("adImpressions")),
                 "adClicks": _int_or_zero(ads.get("adClicks")),
                 "adCartAdds": _int_or_zero(ads.get("adCartAdds")),
@@ -2835,20 +3486,36 @@ def _repricer_list_summary_from_source_caches(
                 "adRevenueKopecks": _int_or_zero(ads.get("adRevenueKopecks")),
                 "otherExpensesKopecks": other_expenses_kopecks,
                 "taxKopecks": tax_kopecks,
+                "factTaxState": tax.get("factTaxState"),
+                "factTaxReason": tax.get("factTaxReason"),
+                "factNetProfitKopecks": net_profit_kopecks,
+                "financeState": "ok" if nm_key in finance_aggregates else "no_data",
                 "workReturnKopecks": work_return_kopecks,
-                "baskets": _int_or_zero(baskets.get("cartCount")),
+                "baskets": _int_or_zero(baskets.get("cartCount")) if baskets.get("cartCount") is not None else None,
+                "totalImpressions": baskets.get("impressions"),
+                "totalClicks": baskets.get("openCount"),
+                "basketsState": baskets.get("coverageState") or ("ok" if baskets.get("cartCount") is not None else "no_data"),
                 "wbStockUnits": _int_or_zero(stock.get("wbStockUnits")),
-                "promotionStatus": "yes" if nm_id in active_promotion_nm_ids else "no",
+                **membership.analytics(nm_id),
             }
         )
         if revenue_kopecks > 0 and net_profit_kopecks is not None:
             analytics["marginPct"] = round(_int_or_zero(net_profit_kopecks) / revenue_kopecks * 100, 1)
+        analytics.update(repricer_bff_module.settlement_profit_metrics(finance, tax))
         rows.append({"meta": meta, "analytics": analytics})
 
+    campaign_ads = None
+    if _page_finance_active():
+        from app.wb_repricer_reporting import apply_campaign_advertising, campaign_advertising
+        campaign_ads = campaign_advertising(ads_cache, range_start, range_end)
+        apply_campaign_advertising(rows, finance_cache, campaign_ads)
+        from app.wb_repricer_reporting import apply_repricer_economics
+        apply_repricer_economics(rows, finance_cache, campaign_ads, finance_taxes)
     summary = _repricer_list_summary(
         rows,
         finance_diagnostics=finance_diagnostics,
         ads_totals=_ads_cache_totals(ads_cache) if ads_cache else None,
+        campaign_ads=campaign_ads,
     )
     summary["skuCount"] = len(goods_by_nm_id)
     summary["promoSharePct"] = (
@@ -2865,6 +3532,10 @@ def _repricer_list_summary_from_source_caches(
         if goods_by_nm_id
         else 0
     )
+    from app.wb_repricer_reporting import period_coverage
+    _apply_period_reporting(summary, organization_id, range_start, range_end, ledger=finance_cache,
+        coverage={"finance": period_coverage(finance_cache, range_start, range_end),
+                  "baskets": period_coverage(baskets_cache, range_start, range_end)}, memo=period_cache_memo)
     return summary
 
 
@@ -2894,8 +3565,11 @@ def _repricer_stats_sources(row: dict[str, Any]) -> dict[str, Any]:
     missing: list[str] = []
     fresh: list[str] = []
     states: dict[str, Any] = {}
+    states["ads"] = analytics.get("adsState", "no_data")
     for source_id, field, ready_values in _REPRICER_STATS_SOURCE_FIELDS:
         state = analytics.get(field)
+        if (analytics.get("periodCoverageStates") or {}).get(field) == "partial":
+            state = "partial"
         states[source_id] = state
         if state in ready_values:
             fresh.append(source_id)
@@ -2910,45 +3584,90 @@ def _repricer_stats_sources(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_REPRICER_STATS_SKIP_LABELS = {
+    "no_strategy": "Не назначена стратегия",
+    "no_nm_id": "Нет артикула WB",
+    "manual_mode": "Ручной режим",
+    "automation_disabled": "Отправка цен отключена",
+    "warmup": "Прогрев товара",
+}
+
+
 def _repricer_stats_price_protection(row: dict[str, Any], sources: dict[str, Any]) -> dict[str, Any]:
     meta = row.get("meta") or {}
     settings = row.get("settings") or {}
     analytics = row.get("analytics") or {}
     blockers: list[str] = []
     messages: list[str] = []
+    effective_pmin = None
+    effective_pmin_source = None
+    cost_inputs = [_float_or_none(settings.get(key)) for key in ("cogsKopecks", "logisticsKopecks", "wbCommissionPct")]
+    try:
+        if repricer_bff_module._settings_pmin_override_kopecks(settings) is not None or all(value is not None and value >= 0 for value in cost_inputs):
+            effective_pmin, effective_pmin_source = repricer_bff_module._effective_pmin(row)
+    except (TypeError, ValueError, OverflowError, KeyError):
+        pass
+    floor = {"effectivePMinKopecks": effective_pmin, "effectivePMinSource": effective_pmin_source}
 
     if _int_or_zero(meta.get("currentPriceKopecks")) <= 0:
         blockers.append("current_price")
         messages.append("Нет текущей цены WB")
-    if _int_or_zero(settings.get("pMinKopecks") or settings.get("pminKopecks")) <= 0:
+    if effective_pmin is None or effective_pmin <= 0:
         blockers.append("p_min")
-        messages.append("Не задана минимальная цена")
-    if analytics.get("sppState") not in {"ok", "fallback"}:
+        messages.append("Нет минимальной цены или настроек для её расчёта")
+    if analytics.get("sppState") not in {"ok", "fallback"} or _float_or_none(analytics.get("sppPct")) is None or _int_or_zero(analytics.get("buyerPriceNoWalletKopecks") or analytics.get("avgPriceWithSppKopecks")) <= 0:
         blockers.append("spp")
         messages.append("Нет SPP/цены покупателя")
-    if analytics.get("financeState") not in {"ok", "fallback"}:
-        blockers.append("finance")
-        messages.append("Нет финансов за период")
-    if analytics.get("commissionState") not in {"ok", "fallback"}:
+    if analytics.get("commissionState") != "ok":
         blockers.append("commission")
-        messages.append("Нет комиссии WB")
-    if analytics.get("stockState") not in {"ok", "fallback"}:
+        messages.append("Нет актуального тарифа комиссии WB")
+    buyout_pct = _float_or_none(analytics.get("buyoutPct"))
+    if buyout_pct is None or not 0 <= buyout_pct <= 100:
+        blockers.append("buyout")
+        messages.append("Нет подтверждённого процента выкупа")
+    if analytics.get("stockState") not in {"ok", "fallback"} or _int_or_zero(analytics.get("wbStockUnits")) <= 0:
         blockers.append("stocks")
-        messages.append("Нет остатков WB")
+        messages.append("Нет доступных остатков WB")
+
+    # These are the executor's early skip conditions, before source/apply guards.
+    skip_reason = None
+    if not bool(settings.get("automationEnabled", True)):
+        skip_reason = "automation_disabled"
+    elif meta.get("status") == "warmup":
+        skip_reason = "warmup"
+    elif meta.get("status") == "manual":
+        skip_reason = "manual_mode"
+    elif meta.get("nmId") is None:
+        skip_reason = "no_nm_id"
+    else:
+        frontend_id, _ = _resolve_strategy_id(row)
+        if frontend_id is None or (frontend_id != "illiquid" and not _has_explicit_strategy(row)):
+            skip_reason = "no_strategy"
+    if skip_reason is not None:
+        return {
+            **floor,
+            "status": "not_configured" if skip_reason in {"no_strategy", "no_nm_id"} else "paused",
+            "skipReason": skip_reason,
+            "blockerIds": blockers,
+            "message": "; ".join([_REPRICER_STATS_SKIP_LABELS[skip_reason], *messages]),
+        }
 
     if blockers:
         return {
+            **floor,
             "status": "blocked",
             "blockerIds": blockers,
             "message": "; ".join(messages),
         }
     if sources.get("status") != "ready":
         return {
+            **floor,
             "status": "needs_review",
             "blockerIds": [],
             "message": "Есть неполные вторичные источники",
         }
     return {
+        **floor,
         "status": "can_recalculate",
         "blockerIds": [],
         "message": "Можно пересчитать цену",
@@ -2960,37 +3679,49 @@ def _repricer_stats_metrics(row: dict[str, Any]) -> dict[str, Any]:
     analytics = row.get("analytics") or {}
     ad_data_available = analytics.get("adDataAvailable")
     has_ad_data = True if ad_data_available is None else bool(ad_data_available)
-    impressions = _int_or_zero(analytics.get("adImpressions") or analytics.get("impressions") or analytics.get("views"))
-    clicks = _int_or_zero(analytics.get("adClicks") or analytics.get("clicks"))
+    has_ad_metrics = bool(analytics.get("adMetricsAvailable", has_ad_data))
+    impressions = observed_number(analytics.get("adImpressions"))
+    clicks = observed_number(analytics.get("adClicks"))
     baskets_raw = analytics.get("baskets")
-    baskets = _int_or_zero(baskets_raw if baskets_raw is not None else meta.get("basketsLast7d"))
-    orders = _int_or_zero(analytics.get("ordersUnits") or analytics.get("funnelOrderCount"))
-    revenue_kopecks = _int_or_zero(analytics.get("revenueKopecks") or analytics.get("sellerRevenueKopecks"))
-    ad_spend_kopecks = _int_or_zero(analytics.get("adSpendKopecks"))
-    display_impressions: int | None = impressions if has_ad_data else None
-    display_clicks: int | None = clicks if has_ad_data else None
+    baskets = _int_or_zero(baskets_raw) if baskets_raw is not None else None
+    orders_source = analytics.get("ordersSource", "explicit")
+    orders = _int_or_zero(analytics.get("ordersUnits") or analytics.get("funnelOrderCount")) if orders_source not in {None, "finance_sales_fallback", "fallback"} else None
+    revenue_kopecks = _int_or_zero(analytics.get("revenueKopecks", analytics.get("sellerRevenueKopecks"))) if analytics.get("financeState", "ok") in {"ok", "fallback"} else None
+    ad_spend_kopecks = observed_number(analytics.get("adSpendKopecks"))
+    ad_revenue_kopecks = observed_number(analytics.get("adRevenueKopecks")) if has_ad_metrics else None
+    display_impressions: int | None = impressions if has_ad_metrics else None
+    display_clicks: int | None = clicks if has_ad_metrics else None
     display_ad_spend_kopecks: int | None = ad_spend_kopecks if has_ad_data else None
     return {
+        "totalImpressions": analytics.get("totalImpressions"),
+        "totalClicks": analytics.get("totalClicks") if analytics.get("basketsState", "ok") in {"ok", "fallback", "partial"} else None,
         "impressions": display_impressions,
         "clicks": display_clicks,
-        "ctrPct": _pct_or_none(clicks, impressions) if has_ad_data else None,
-        "adCartAdds": _int_or_zero(analytics.get("adCartAdds") or analytics.get("cartAdds") or analytics.get("atbs")) if has_ad_data else None,
-        "adOrders": _int_or_zero(analytics.get("adOrders") or analytics.get("adOrderCount")) if has_ad_data else None,
+        "ctrPct": ratio(clicks, impressions) if has_ad_metrics else None,
+        "adCartAdds": observed_number(analytics.get("adCartAdds")) if has_ad_metrics else None,
+        "adOrders": observed_number(analytics.get("adOrders")) if has_ad_metrics else None,
         "baskets": baskets,
         "orders": orders,
         "cartToOrderCrPct": _pct_or_none(orders, baskets),
         "revenueKopecks": revenue_kopecks,
         "netProfitKopecks": analytics.get("netProfitKopecks"),
+        "factNetProfitKopecks": analytics.get("factNetProfitKopecks"),
+        "taxKopecks": analytics.get("taxKopecks"),
+        "factTaxState": analytics.get("factTaxState"),
+        "factTaxReason": analytics.get("factTaxReason"),
         "marginPct": _float_or_none(analytics.get("marginPct")),
         "adSpendKopecks": display_ad_spend_kopecks,
-        "adRevenueKopecks": _int_or_zero(analytics.get("adRevenueKopecks")) if has_ad_data else None,
-        "drrPct": _pct_or_none(ad_spend_kopecks, revenue_kopecks) if has_ad_data else None,
-        "stockUnits": analytics.get("wbStockUnits"),
+        "adRevenueKopecks": ad_revenue_kopecks,
+        "drrPct": ratio(display_ad_spend_kopecks, ad_revenue_kopecks, 2),
+        "stockUnits": analytics.get("wbStockUnits") if analytics.get("stockState", "ok") in {"ok", "fallback"} else None,
         "currentPriceKopecks": meta.get("currentPriceKopecks"),
         "avgPriceWithSppKopecks": analytics.get("avgPriceWithSppKopecks"),
+        "averagePriceKopecks": analytics.get("avgPriceWithSppKopecks"),
+        "averagePriceOrderCount": analytics.get("funnelOrderCount"),
         "medianPriceKopecks": analytics.get("medianPriceKopecks") or analytics.get("avgPriceWithSppKopecks") or meta.get("currentPriceKopecks"),
         "sppPct": _float_or_none(analytics.get("sppPct")),
-        "commissionPct": _float_or_none(analytics.get("commissionDisplayPct") or analytics.get("wbCommissionPct")),
+        "buyoutPct": _float_or_none(analytics.get("buyoutPct")),
+        "commissionPct": _float_or_none(analytics.get("commissionDisplayPct")),
     }
 
 
@@ -3013,7 +3744,7 @@ def _repricer_stats_flags(row: dict[str, Any], metrics: dict[str, Any], sources:
     if margin_pct is not None and float(margin_pct) < 10:
         flags.append("margin_risk")
     basket_norm = _int_or_zero(meta.get("basketNorm"))
-    if basket_norm > 0 and _int_or_zero(metrics.get("baskets")) < basket_norm:
+    if basket_norm > 0 and metrics.get("baskets") is not None and _int_or_zero(metrics["baskets"]) < basket_norm:
         flags.append("below_basket_norm")
     return flags
 
@@ -3025,6 +3756,15 @@ def _repricer_stats_decision(
     price_protection: dict[str, Any],
     flags: list[str],
 ) -> dict[str, Any]:
+    skip_reason = price_protection.get("skipReason")
+    if skip_reason in _REPRICER_STATS_SKIP_LABELS:
+        not_configured = price_protection.get("status") == "not_configured"
+        return {
+            "id": "not_configured" if not_configured else "hold",
+            "label": _REPRICER_STATS_SKIP_LABELS[skip_reason],
+            "tone": "warn" if not_configured else "neutral",
+            "reasons": [skip_reason],
+        }
     if price_protection.get("status") == "blocked":
         return {
             "id": "price_blocked",
@@ -3061,6 +3801,7 @@ def _repricer_stats_item(row: dict[str, Any]) -> dict[str, Any]:
         "articleId": meta.get("articleId"),
         "nmId": meta.get("nmId"),
         "name": meta.get("name"),
+        "subject": meta.get("subject"),
         "brand": meta.get("brand"),
         "imageUrl": meta.get("imageUrl") or meta.get("photoUrl") or repricer_bff_module._wb_public_photo_url(_positive_int_or_none(meta.get("nmId"))),
         "photoUrl": meta.get("photoUrl") or meta.get("imageUrl") or repricer_bff_module._wb_public_photo_url(_positive_int_or_none(meta.get("nmId"))),
@@ -3071,6 +3812,10 @@ def _repricer_stats_item(row: dict[str, Any]) -> dict[str, Any]:
         "strategyName": (row.get("strategy") or {}).get("name"),
         "promotionStatus": analytics.get("promotionStatus"),
         "promotionStatusText": analytics.get("promotionStatusText"),
+        **{key: analytics.get(key) for key in (
+            "promotionName", "promotionId", "promotionStatusScope", "promotionStatusSource",
+            "promotionStatusReason", "promotionStatusObservedAt", "promotionStatusExpiresAt",
+        )},
         "decision": decision,
         "flags": flags,
         "metrics": metrics,
@@ -3082,10 +3827,48 @@ def _repricer_stats_item(row: dict[str, Any]) -> dict[str, Any]:
 def _repricer_stats_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
     impressions = sum(_int_or_zero((item.get("metrics") or {}).get("impressions")) for item in items)
     clicks = sum(_int_or_zero((item.get("metrics") or {}).get("clicks")) for item in items)
-    baskets = sum(_int_or_zero((item.get("metrics") or {}).get("baskets")) for item in items)
+    baskets = (
+        sum(_int_or_zero((item.get("metrics") or {}).get("baskets")) for item in items)
+        if all((item.get("metrics") or {}).get("baskets") is not None for item in items)
+        else None
+    )
     orders = sum(_int_or_zero((item.get("metrics") or {}).get("orders")) for item in items)
     ad_spend_kopecks = sum(_int_or_zero((item.get("metrics") or {}).get("adSpendKopecks")) for item in items)
     revenue_kopecks = sum(_int_or_zero((item.get("metrics") or {}).get("revenueKopecks")) for item in items)
+    metric_fields = (
+        "totalImpressions", "impressions", "totalClicks", "clicks", "adCartAdds", "baskets",
+        "ctrPct", "cartToOrderCrPct", "orders", "adSpendKopecks", "drrPct", "stockUnits", "averagePriceKopecks",
+    )
+    ratio_fields = {
+        "ctrPct": ("clicks", "impressions"),
+        "cartToOrderCrPct": ("orders", "baskets"),
+        "drrPct": ("adSpendKopecks", "adRevenueKopecks"),
+    }
+    funnel_fields = {"totalImpressions", "totalClicks", "baskets", "cartToOrderCrPct", "averagePriceKopecks"}
+    ad_fields = {"impressions", "clicks", "adCartAdds", "adSpendKopecks", "ctrPct", "drrPct"}
+    metric_totals = {}
+    for field in metric_fields:
+        if field in ratio_fields:
+            numerator, denominator = ratio_fields[field]
+            covered = [item for item in items if all((item.get("metrics") or {}).get(key) is not None for key in (numerator, denominator))]
+            value = ratio(
+                sum((item["metrics"][numerator] for item in covered), 0),
+                sum((item["metrics"][denominator] for item in covered), 0),
+                2 if field == "drrPct" else 1,
+            )
+        elif field == "averagePriceKopecks":
+            covered = [item for item in items if (item.get("metrics") or {}).get(field) is not None and _int_or_zero((item.get("metrics") or {}).get("averagePriceOrderCount")) > 0]
+            order_count = sum(_int_or_zero(item["metrics"]["averagePriceOrderCount"]) for item in covered)
+            value = round(sum(item["metrics"][field] * item["metrics"]["averagePriceOrderCount"] for item in covered) / order_count) if order_count else None
+        else:
+            covered = [item for item in items if (item.get("metrics") or {}).get(field) is not None]
+            value = sum(item["metrics"][field] for item in covered) if covered else None
+        metric_totals[field] = {
+            "value": value,
+            "coveredSku": len(covered),
+            "partialSku": sum(1 for item in covered if (item.get("sources") or {}).get("states", {}).get(
+                "baskets" if field in funnel_fields else "ads" if field in ad_fields else "periodStats") == "partial"),
+        }
     return {
         "skuCount": len(items),
         "canRecalculate": sum(1 for item in items if (item.get("decision") or {}).get("id") == "can_recalculate"),
@@ -3101,7 +3884,8 @@ def _repricer_stats_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
         "cartToOrderCrPct": _pct_or_none(orders, baskets),
         "adSpendKopecks": ad_spend_kopecks,
         "revenueKopecks": revenue_kopecks,
-        "drrPct": _pct_or_none(ad_spend_kopecks, revenue_kopecks),
+        "drrPct": metric_totals["drrPct"]["value"],
+        "metricTotals": metric_totals,
     }
 
 
@@ -3311,6 +4095,7 @@ def _pending_price_approval_payload(item: dict[str, Any]) -> dict[str, Any]:
         "applyState": item.get("applyState"),
         "sourceStatus": item.get("sourceStatus"),
         "wbMutationSent": item.get("wbMutationSent"),
+        "priceConfirmed": item.get("priceConfirmed", False),
         "wbUploadId": item.get("wbUploadId"),
         "wbStatus": item.get("wbStatus"),
         "statusLabel": item.get("statusLabel"),
@@ -3561,38 +4346,64 @@ def _ensure_repricer_stats_period_caches(
     stats_finance_key = f"repricer_stats_finance_{period_suffix}"
     stats_ads_key = f"repricer_stats_ads_{period_suffix}"
     stats_baskets_key = f"repricer_stats_baskets_{period_suffix}"
+    source_revisions = {
+        prefix: get_source_cache_range_revision(organization_id, f"{prefix}_",
+                                               date_from=range_start.date(), date_to=range_end.date())
+        for prefix in ("period_stats", "finance", "ads", "baskets")
+    }
+    seller_revision = get_source_cache_fetched_at(organization_id, f"funnel_seller_{period_suffix}")
+    raw_revision = get_source_cache_range_revision(organization_id, "repricer_finance_",
+        date_from=range_start.date(), date_to=range_end.date())
+    if raw_revision:
+        source_revisions["finance"] = f"{source_revisions['finance']}|raw:{raw_revision}"
+    if seller_revision:
+        source_revisions["baskets"] = f"seller:{seller_revision}"
 
-    period_cache = get_source_cache(organization_id, stats_period_key, slim=True) or {}
-    if period_cache and not _cache_matches_range(period_cache, range_start, range_end):
-        period_cache = {}
-    if not period_cache:
-        period_stats_payload = _period_source_cache(organization_id, "period_stats", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False)
+    def needs_refresh(prefix, cache):
+        revision = source_revisions[prefix]
+        return not cache or cache.get("statsProjectionVersion") != 3 or bool(revision and revision != cache.get("materializedSourceRevision", cache.get("fetchedAt")))
+
+    def valid_observation(payload):
+        aggregates = payload.get("aggregates")
+        return _parse_utc_datetime(payload.get("fetchedAt")) is not None and isinstance(aggregates, dict) and all(isinstance(row, dict) for row in aggregates.values())
+
+    def read_materialized(key):
+        cache = get_source_cache(organization_id, key, slim=True) or {}
+        if cache.get("source") == "repricer_stats_cache_materialized":
+            # The store's fetchedAt is the materialization time, not the source time.
+            if _parse_utc_datetime(cache.get("sourceFetchedAt")) is None:
+                return {}
+            cache["fetchedAt"] = cache["sourceFetchedAt"]
+        return cache if _cache_matches_range(cache, range_start, range_end) else {}
+
+    period_cache = read_materialized(stats_period_key)
+    if needs_refresh("period_stats", period_cache):
+        period_stats_payload = _period_source_cache(organization_id, "period_stats", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False, prefer_freshest_covering=True)
         aggregates = period_stats_payload.get("aggregates") if isinstance(period_stats_payload.get("aggregates"), dict) else {}
-        if aggregates:
-            save_source_cache(
-                organization_id,
-                stats_period_key,
-                {
-                    **period_stats_payload,
-                    "aggregates": aggregates,
-                    "count": len(aggregates),
-                    "periodDays": resolved_period_days,
-                    "dateFrom": range_start.date().isoformat(),
-                    "dateTo": range_end.date().isoformat(),
-                    "source": "repricer_stats_cache_materialized",
-                },
-            )
+        if valid_observation(period_stats_payload):
+            period_cache = {
+                **period_stats_payload,
+                "aggregates": aggregates,
+                "count": len(aggregates),
+                "periodDays": resolved_period_days,
+                "dateFrom": range_start.date().isoformat(),
+                "dateTo": range_end.date().isoformat(),
+                "source": "repricer_stats_cache_materialized",
+                "sourceFetchedAt": period_stats_payload["fetchedAt"],
+                "materializedSourceRevision": source_revisions["period_stats"],
+            }
+            period_cache = {**compact_cache(period_cache), "statsProjectionVersion": 3}
+            stored = save_source_cache(organization_id, stats_period_key, period_cache)
+            period_cache.setdefault("fetchedAt", stored.get("fetchedAt"))
             fetched_sources.append("period-stats")
-        else:
+        elif not period_cache:
             missing_sources.append("period-stats")
 
     finance_cache = _compatible_period_source_cache(
         "finance",
-        get_source_cache(organization_id, stats_finance_key, slim=True) or {},
+        read_materialized(stats_finance_key),
     )
-    if finance_cache and not _cache_matches_range(finance_cache, range_start, range_end):
-        finance_cache = {}
-    if not finance_cache:
+    if needs_refresh("finance", finance_cache):
         finance_payload = _compatible_period_source_cache(
             "finance",
             _period_source_cache(
@@ -3604,97 +4415,96 @@ def _ensure_repricer_stats_period_caches(
                 range_end,
                 slim=False,
                 require_full_sync_coverage=False,
+                prefer_freshest_covering=True,
             ),
         )
         finance_aggregates = finance_payload.get("aggregates") if isinstance(finance_payload.get("aggregates"), dict) else {}
-        if finance_aggregates:
+        if valid_observation(finance_payload):
             cached_goods_nm_ids = {str(nm_id) for nm_id in _nm_ids_from_goods(list_cached_goods(organization_id))}
-            save_source_cache(
-                organization_id,
-                stats_finance_key,
-                {
-                    **finance_payload,
-                    "periodDays": resolved_period_days,
-                    "dateFrom": range_start.date().isoformat(),
-                    "dateTo": range_end.date().isoformat(),
-                    "cachedGoodsNmIds": len(cached_goods_nm_ids),
-                    "matchedCachedGoodsNmIds": len(set(finance_aggregates.keys()) & cached_goods_nm_ids),
-                    "source": "repricer_stats_cache_materialized",
-                },
-            )
+            finance_cache = {
+                **finance_payload,
+                "periodDays": resolved_period_days,
+                "dateFrom": range_start.date().isoformat(),
+                "dateTo": range_end.date().isoformat(),
+                "cachedGoodsNmIds": len(cached_goods_nm_ids),
+                "matchedCachedGoodsNmIds": len(set(finance_aggregates.keys()) & cached_goods_nm_ids),
+                "source": "repricer_stats_cache_materialized",
+                "sourceFetchedAt": finance_payload["fetchedAt"],
+                "materializedSourceRevision": source_revisions["finance"],
+            }
+            finance_cache = {**compact_cache(finance_cache), "statsProjectionVersion": 3}
+            stored = save_source_cache(organization_id, stats_finance_key, finance_cache)
+            finance_cache.setdefault("fetchedAt", stored.get("fetchedAt"))
             fetched_sources.append("finance")
-        else:
+        elif not finance_cache:
             missing_sources.append("finance")
 
-    ads_cache = get_source_cache(organization_id, stats_ads_key, slim=True) or {}
-    if ads_cache and not _cache_matches_range(ads_cache, range_start, range_end):
-        ads_cache = {}
-    if not ads_cache:
-        ads_payload = _period_source_cache(organization_id, "ads", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False)
+    ads_cache = read_materialized(stats_ads_key)
+    if needs_refresh("ads", ads_cache):
+        ads_payload = _period_source_cache(organization_id, "ads", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False, prefer_freshest_covering=True)
         ads_aggregates = ads_payload.get("aggregates") if isinstance(ads_payload.get("aggregates"), dict) else {}
-        if ads_aggregates:
-            save_source_cache(
-                organization_id,
-                stats_ads_key,
-                {
-                    **ads_payload,
-                    "periodDays": resolved_period_days,
-                    "dateFrom": range_start.date().isoformat(),
-                    "dateTo": range_end.date().isoformat(),
-                    "source": "repricer_stats_cache_materialized",
-                },
-            )
+        if valid_observation(ads_payload):
+            ads_cache = {
+                **ads_payload,
+                "periodDays": resolved_period_days,
+                "dateFrom": range_start.date().isoformat(),
+                "dateTo": range_end.date().isoformat(),
+                "source": "repricer_stats_cache_materialized",
+                "sourceFetchedAt": ads_payload["fetchedAt"],
+                "materializedSourceRevision": source_revisions["ads"],
+            }
+            ads_cache = {**compact_cache(ads_cache), "statsProjectionVersion": 3}
+            stored = save_source_cache(organization_id, stats_ads_key, ads_cache)
+            ads_cache.setdefault("fetchedAt", stored.get("fetchedAt"))
             fetched_sources.append("ads")
-        else:
+        elif not ads_cache:
             missing_sources.append("ads")
 
-    baskets_cache = get_source_cache(organization_id, stats_baskets_key, slim=True) or {}
-    if baskets_cache and not _cache_matches_range(baskets_cache, range_start, range_end):
-        baskets_cache = {}
-    if not baskets_cache:
-        baskets_payload = _period_source_cache(organization_id, "baskets", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False)
-        baskets_aggregates = baskets_payload.get("aggregates") if isinstance(baskets_payload.get("aggregates"), dict) else {}
-        if baskets_aggregates:
-            save_source_cache(
-                organization_id,
-                stats_baskets_key,
-                {
-                    **baskets_payload,
-                    "periodDays": resolved_period_days,
-                    "dateFrom": range_start.date().isoformat(),
-                    "dateTo": range_end.date().isoformat(),
-                    "source": "repricer_stats_cache_materialized",
-                },
-            )
-            fetched_sources.append("baskets")
-        else:
-            missing_sources.append("baskets")
+    baskets_cache = read_materialized(stats_baskets_key)
+    baskets_payload = (_period_source_cache(organization_id, "baskets", period_suffix, resolved_period_days, range_start, range_end, slim=False, require_full_sync_coverage=False, prefer_freshest_covering=True)
+                       if needs_refresh("baskets", baskets_cache) else {})
+    cached_observed_at = _parse_utc_datetime(baskets_cache.get("fetchedAt"))
+    source_observed_at = _parse_utc_datetime(baskets_payload.get("fetchedAt"))
+    source_aggregates = baskets_payload.get("aggregates")
+    if (
+        isinstance(source_aggregates, dict)
+        and all(isinstance(row, dict) for row in source_aggregates.values())
+        and source_observed_at is not None
+        and (
+            not baskets_cache
+            or cached_observed_at is None
+            or source_observed_at > cached_observed_at
+            or (source_observed_at == cached_observed_at and (
+                baskets_cache.get("statsProjectionVersion") != 3
+                or baskets_cache.get("materializedSourceRevision") != source_revisions["baskets"]))
+        )
+    ):
+        baskets_cache = {
+            **baskets_payload,
+            "periodDays": resolved_period_days,
+            "dateFrom": range_start.date().isoformat(),
+            "dateTo": range_end.date().isoformat(),
+            "source": "repricer_stats_cache_materialized",
+            "sourceFetchedAt": baskets_payload["fetchedAt"],
+            "materializedSourceRevision": source_revisions["baskets"],
+            "statsProjectionVersion": 3,
+        }
+        baskets_cache = compact_cache(baskets_cache)
+        save_source_cache(organization_id, stats_baskets_key, baskets_cache)
+        fetched_sources.append("baskets")
+    baskets_aggregates = baskets_cache.get("aggregates") if isinstance(baskets_cache.get("aggregates"), dict) else {}
+    if not baskets_aggregates:
+        missing_sources.append("baskets")
 
     return {
         "onDemandFetchedSources": fetched_sources,
         "onDemandFetched": bool(fetched_sources),
         "missingSources": missing_sources,
+        "caches": {
+            source: {**cache, "aggregates": dict(cache["aggregates"]) if isinstance(cache.get("aggregates"), dict) else {}} if cache else {}
+            for source, cache in (("period_stats", period_cache), ("finance", finance_cache), ("ads", ads_cache), ("baskets", baskets_cache))
+        },
     }
-
-
-def _repricer_stats_cache_aggregates(
-    organization_id: int,
-    period_suffix: str,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    keys = {
-        "period_stats": f"repricer_stats_period_stats_{period_suffix}",
-        "finance": f"repricer_stats_finance_{period_suffix}",
-        "ads": f"repricer_stats_ads_{period_suffix}",
-        "baskets": f"repricer_stats_baskets_{period_suffix}",
-    }
-    result: dict[str, dict[str, dict[str, Any]]] = {}
-    for source, key in keys.items():
-        cache = get_source_cache(organization_id, key, slim=True) or {}
-        if source == "finance":
-            cache = _compatible_period_source_cache(source, cache)
-        aggregates = cache.get("aggregates") if isinstance(cache.get("aggregates"), dict) else {}
-        result[source] = aggregates
-    return result
 
 
 def _simulator_patch_payload(raw: dict[str, Any] | None) -> RepricerSimulatorPatchRequest:
@@ -3830,12 +4640,87 @@ def get_repricer_stats(
 ) -> dict[str, Any]:
     organization_id = _hydrate_org_repricer_state(request)
     _range_start, _range_end, resolved_period_days, _period_suffix = _repricer_period_context(period_days, date_from, date_to)
-    stats_cache_context = {
-        "requestedRange": _range_payload(_range_start, _range_end),
-        "statsSourceRange": _range_payload(_range_start, _range_end),
-        "statsSourceStatus": "ready",
-        "statsRangeAdjusted": False,
-    }
+    from app.wb_catalog_loading import require_goods_cache
+    require_goods_cache(organization_id, cached_goods_meta(organization_id))
+    filters_active = bool(
+        str(q or "").strip()
+        or (status and status != "all")
+        or (brand and brand != "all")
+        or (manager and manager != "all")
+    )
+    state_revision = _repricer_view_state_revision()
+    tax_revision = legacy_finance_tax_revision(organization_id)
+    snapshot_eligible = top_mode and not filters_active
+    snapshot_options = dict(period_suffix=_period_suffix, include_promotions=False, include_content=False,
+                            state_revision=state_revision, tax_revision=tax_revision)
+    if snapshot_eligible:
+        hit = _load_repricer_sku_snapshot_page(organization_id, scenario, **snapshot_options,
+                                             view="stats", page=page, page_size=page_size)
+        if hit is not None:
+            snapshot, items = hit
+            response = dict(snapshot["response"])
+            response.update(items=items, itemsReturned=len(items), page=page, pageSize=page_size)
+            response["cache"] = {**response["cache"], "statsItemsLimit": page_size, "statsPage": page,
+                                 "statsOnDemandFetched": False, "statsOnDemandFetchedSources": []}
+            return response
+    source_revision = _snapshot_source_revision(organization_id, _range_start, _range_end)
+    goods_meta = cached_goods_meta(organization_id)
+    goods_price_revision = get_goods_price_revision(organization_id)
+    browser_prices_read_at = datetime.now(timezone.utc).isoformat()
+    browser_prices_revision = get_source_cache_fetched_at(organization_id, BROWSER_PRICES_KEY)
+
+    def respond(all_rows, cache, *, missing_sources=False, fetched_sources=(), ads_cache=None):
+        if ads_cache is None:
+            ads_cache = _period_source_cache(organization_id, "ads", _period_suffix, resolved_period_days,
+                _range_start, _range_end, require_full_sync_coverage=False, prefer_freshest_covering=True)
+        filtered = [row for row in all_rows if _row_matches_sku_filters(
+            row, q=q, status=status, brand=brand, manager=manager)]
+        if top_mode:
+            filtered.sort(key=_repricer_row_sort_key)
+        items = [_repricer_stats_item(project_row(row, ads_cache)) for row in filtered]
+        summary = _repricer_stats_summary(items)
+        if not filters_active and _cache_matches_range(ads_cache, _range_start, _range_end):
+            apply_account_totals(summary, ads_cache)
+        total = len(filtered) if filters_active else max(len(filtered), int(cache.get("totalCached") or 0))
+        source_status = "missing" if missing_sources or summary["sourceBlocked"] else "partial" if summary["sourcePartial"] else "ready"
+        cache = {**cache, "statsItemsLimit": page_size, "statsPage": page, "statsTotalFiltered": total,
+                 "requestedRange": _range_payload(_range_start, _range_end),
+                 "statsSourceRange": _range_payload(_range_start, _range_end), "statsSourceStatus": source_status,
+                 "statsRangeAdjusted": False, "statsOnDemandFetched": bool(fetched_sources),
+                 "statsOnDemandFetchedSources": list(fetched_sources)}
+        start = (page - 1) * page_size
+        page_items = items[start:start + page_size]
+        response = {"items": page_items, "total": total, "totalCached": int(cache.get("totalCached") or len(all_rows)),
+                    "itemsReturned": len(page_items), "page": page, "pageSize": page_size,
+                    "periodDays": resolved_period_days, "dateFrom": _range_start.date().isoformat(),
+                    "dateTo": _range_end.date().isoformat(), "summary": summary, "cache": cache}
+        if snapshot_eligible:
+            key = _repricer_sku_snapshot_key(scenario, period_suffix=_period_suffix,
+                                            include_promotions=False, include_content=False, view="stats")
+            _save_repricer_list_snapshot(organization_id, key, items, {
+                "browserPricesExpireAt": rows_expire_at(filtered),
+                "browserPricesRevision": browser_prices_revision,
+                "browserPricesReadAt": browser_prices_read_at,
+                "sourceRevision": source_revision, "goodsRevision": goods_meta.get("latestFetchedAt"),
+                "goodsPriceRevision": goods_price_revision,
+                "stateRevision": state_revision,
+                "taxRevision": tax_revision,
+                "response": {key: value for key, value in response.items() if key != "items"},
+            })
+        return response
+
+    # Products already materializes these source-backed rows. Reuse them before
+    # opening the large source payloads; filtered summaries still use all matches.
+    if top_mode:
+        products = _load_repricer_sku_snapshot_page(organization_id, scenario, **snapshot_options,
+                                                  page=1, page_size=max(1, int(goods_meta.get("totalCached") or 0)))
+        if products is not None:
+            snapshot, rows = products
+            browser_prices_read_at = snapshot.get("browserPricesReadAt")
+            browser_prices_revision = snapshot.get("browserPricesRevision")
+            cache = dict(snapshot.get("cache") or {})
+            missing = any(not cache.get(field) for field in ("periodStatsFetchedAt", "financeFetchedAt", "adsFetchedAt", "basketsFetchedAt"))
+            return respond(rows, cache, missing_sources=missing)
     stats_fetch_meta = _ensure_repricer_stats_period_caches(
         organization_id,
         scenario,
@@ -3845,13 +4730,7 @@ def get_repricer_stats(
         range_start=_range_start,
         range_end=_range_end,
     )
-    filters_active = bool(
-        str(q or "").strip()
-        or (status and status != "all")
-        or (brand and brand != "all")
-        or (manager and manager != "all")
-    )
-    stats_aggregates = _repricer_stats_cache_aggregates(organization_id, _period_suffix)
+    stats_caches = stats_fetch_meta["caches"]
     goods = list_cached_goods(organization_id)
     content_cache = get_source_cache(organization_id, "content_cards", slim=True) or {}
     promotions_cache = get_source_cache(organization_id, "promotions", slim=True) or {}
@@ -3872,23 +4751,17 @@ def get_repricer_stats(
         cached_promotions=cached_promotions,
         cached_stock_aggregates=stocks_cache.get("aggregates") if isinstance(stocks_cache.get("aggregates"), dict) else {},
         stocks_cache_loaded=bool(stocks_cache.get("fetchedAt")),
-        cached_period_stats=stats_aggregates["period_stats"],
-        cached_finance_aggregates=stats_aggregates["finance"],
-        cached_ads_aggregates=stats_aggregates["ads"],
-        cached_baskets_aggregates=stats_aggregates["baskets"],
-        baskets_cache_loaded=True,
+        cached_period_stats=stats_caches["period_stats"].get("aggregates", {}),
+        cached_finance_aggregates=stats_caches["finance"].get("aggregates", {}),
+        cached_finance_taxes=_repricer_finance_taxes(organization_id, stats_caches["finance"], _range_start, _range_end),
+        cached_ads_aggregates=stats_caches["ads"].get("aggregates", {}),
+        cached_baskets_aggregates=stats_caches["baskets"].get("aggregates", {}),
+        baskets_cache_loaded=bool(stats_caches["baskets"].get("fetchedAt")),
         period_days=resolved_period_days,
         sort_by_demand=top_mode,
         allow_commission_tariff_fetch=False,
+        organization_id=organization_id,
     )
-    filtered_rows = [
-        row
-        for row in all_rows
-        if _row_matches_sku_filters(row, q=q, status=status, brand=brand, manager=manager)
-    ]
-    if top_mode:
-        filtered_rows.sort(key=_repricer_row_sort_key)
-    total_filtered = len(filtered_rows)
     cache = _repricer_list_cache_meta(
         organization_id,
         resolved_period_days,
@@ -3896,15 +4769,13 @@ def get_repricer_stats(
         date_from=_range_start.date(),
         date_to=_range_end.date(),
         require_full_sync_coverage=False,
+        period_caches=stats_caches,
     )
-    period_meta = get_source_cache(organization_id, f"repricer_stats_period_stats_{_period_suffix}", slim=True) or {}
-    finance_meta = _compatible_period_source_cache(
-        "finance",
-        get_source_cache(organization_id, f"repricer_stats_finance_{_period_suffix}", slim=True) or {},
-    )
-    ads_meta = get_source_cache(organization_id, f"repricer_stats_ads_{_period_suffix}", slim=True) or {}
+    period_meta = stats_caches["period_stats"]
+    finance_meta = stats_caches["finance"]
+    ads_meta = stats_caches["ads"]
     ads_totals = _ads_cache_totals(ads_meta)
-    baskets_meta = get_source_cache(organization_id, f"repricer_stats_baskets_{_period_suffix}", slim=True) or {}
+    baskets_meta = stats_caches["baskets"]
     cache["periodStatsFetchedAt"] = period_meta.get("fetchedAt")
     cache["financeFetchedAt"] = finance_meta.get("fetchedAt")
     cache["financeCachedGoodsNmIds"] = finance_meta.get("cachedGoodsNmIds")
@@ -3924,37 +4795,12 @@ def get_repricer_stats(
     cache["basketsFetchedAt"] = baskets_meta.get("fetchedAt")
     cache["basketsRequestedNmIds"] = baskets_meta.get("requestedNmIds")
     cache["basketsMatchedNmIds"] = baskets_meta.get("matchedNmIds")
-    if not filters_active:
-        total_filtered = max(total_filtered, int(cache.get("totalCached") or total_filtered))
-    start = (page - 1) * page_size
-    rows_page = filtered_rows[start : start + page_size]
-    summary_items = [_repricer_stats_item(row) for row in filtered_rows]
-    items = [_repricer_stats_item(row) for row in rows_page]
-    cache["statsItemsLimit"] = page_size
-    cache["statsPage"] = page
-    cache["statsTotalFiltered"] = total_filtered
-    cache["requestedRange"] = stats_cache_context["requestedRange"]
-    cache["statsSourceRange"] = stats_cache_context["statsSourceRange"]
-    cache["statsSourceStatus"] = stats_cache_context["statsSourceStatus"]
-    cache["statsRangeAdjusted"] = stats_cache_context["statsRangeAdjusted"]
-    cache["statsOnDemandFetched"] = stats_fetch_meta["onDemandFetched"]
-    cache["statsOnDemandFetchedSources"] = stats_fetch_meta["onDemandFetchedSources"]
-    return {
-        "items": items,
-        "total": total_filtered,
-        "totalCached": int(cache.get("totalCached") or len(all_rows)),
-        "itemsReturned": len(items),
-        "page": page,
-        "pageSize": page_size,
-        "periodDays": resolved_period_days,
-        "dateFrom": _range_start.date().isoformat(),
-        "dateTo": _range_end.date().isoformat(),
-        "summary": _repricer_stats_summary(summary_items),
-        "cache": cache,
-    }
+    return respond(all_rows, cache, missing_sources=bool(stats_fetch_meta["missingSources"]),
+                   fetched_sources=stats_fetch_meta["onDemandFetchedSources"], ads_cache=ads_meta)
 
 
 @router.get("/api/v1/wb-repricer/sku")
+@repricer_finance_scope
 def get_sku_list(
     request: Request,
     scenario: str = Query(default="complete"),
@@ -3970,9 +4816,23 @@ def get_sku_list(
     brand: str = Query(default="all"),
     manager: str = Query(default="all"),
     top_mode: bool = Query(default=True, alias="topMode"),
+    filters: str | None = Query(default=None, max_length=4000),
 ) -> dict[str, Any]:
+    try:
+        selection = RepricerFilters.model_validate_json(filters) if isinstance(filters, str) else RepricerFilters()
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail="Invalid Repricer filters") from error
     trace = _repricer_load_trace_start("wb-repricer-sku")
     organization_id = _hydrate_org_repricer_state(request)
+    matches_advanced = compile_filter(selection, saved_attribute_cards(organization_id) if selection.restricted_attrs else None)
+    if manager == "mine":
+        manager = str(actor_from_request(request).user_id)
+    from app.wb_catalog_loading import require_goods_cache
+    require_goods_cache(organization_id, cached_goods_meta(organization_id))
+    wb_token = _cached_read_wb_token(request) if isinstance(request, Request) else None
+    if isinstance(request, Request):
+        from app.repricer_page_finance import page_connection, connection_key
+        page_connection.set(connection_key(wb_token) if wb_token else None)
     _repricer_load_trace_step(trace, "hydrate_org", organizationId=organization_id)
     _range_start, _range_end, resolved_period_days, _period_suffix = _repricer_period_context(period_days, date_from, date_to)
     period_cache_memo: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -3989,6 +4849,7 @@ def get_sku_list(
         or (status and status != "all")
         or (brand and brand != "all")
         or (manager and manager != "all")
+        or selection.active
     )
     snapshot_page = (
         _load_repricer_sku_snapshot_page(
@@ -4055,7 +4916,7 @@ def get_sku_list(
             pagesCached=goods_meta.get("pagesCached"),
             latestFetchedAt=goods_meta.get("latestFetchedAt"),
         )
-        if int(goods_meta.get("totalCached") or 0) <= 0:
+        if not (int(goods_meta.get("pagesCached") or 0) or int(goods_meta.get("totalCached") or 0)):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -4073,6 +4934,7 @@ def get_sku_list(
         all_items = _list_repricer_skus_for_request(
             request,
             scenario,
+            wb_token=wb_token,
             include_promotions=include_promotions,
             include_content=include_content,
             period_days=resolved_period_days,
@@ -4093,7 +4955,7 @@ def get_sku_list(
         filtered = [
             row
             for row in all_items
-            if _row_matches_sku_filters(row, q=q, status=status, brand=brand, manager=manager)
+            if _row_matches_sku_filters(row, q=q, status=status, brand=brand, manager=manager) and matches_advanced(row)
         ]
         if top_mode:
             filtered.sort(key=_repricer_row_sort_key)
@@ -4125,10 +4987,12 @@ def get_sku_list(
     )
     cache["listItemsLimit"] = page_size
     cache["listPage"] = page
+    cache["serverFiltersApplied"] = True
     total_filtered = int(snapshot.get("total") or 0) if snapshot_page is not None else len(filtered)
     if not filters_active:
         total_filtered = max(total_filtered, int(cache.get("totalCached") or total_filtered))
     cache["listTotalFiltered"] = total_filtered
+    cache["summaryScope"] = "filtered_skus" if filters_active else "catalog"
     if snapshot is not None and top_mode and not filters_active and isinstance(snapshot.get("summary"), dict):
         summary = snapshot["summary"]
     else:
@@ -4156,8 +5020,14 @@ def get_sku_list(
                 period_cache_memo=period_cache_memo,
             )
             if not filters_active
-            else _repricer_list_summary(all_items, finance_diagnostics=finance_diagnostics)
+            # Do not add cabinet-wide residual costs to a filtered selection.
+            else _repricer_list_summary(filtered, campaign_ads=(
+                filtered_campaign_advertising(filtered) if _page_finance_active() else None))
         )
+        if filters_active and _page_finance_active():
+            _apply_period_reporting(summary, organization_id, _range_start, _range_end,
+                ledger=finance_cache, coverage=cache["periodCoverage"],
+                nm_ids={str(row["meta"]["nmId"]) for row in filtered}, memo=period_cache_memo)
     _repricer_load_trace_step(
         trace,
         "summary",
@@ -4166,6 +5036,15 @@ def get_sku_list(
         skuCount=summary.get("skuCount") if isinstance(summary, dict) else None,
     )
     trace_payload = _repricer_load_trace_payload(trace)
+    if snapshot is not None:
+        for row in items:
+            meta = row["meta"]
+            strategy = repricer_bff_module._frontend_strategy_payload(
+                meta["articleId"], current_status=str(meta.get("status") or "manual"),
+                baskets_last_7d=int(meta.get("basketsLast7d") or 0), basket_norm=int(meta.get("basketNorm") or 0),
+            )
+            row["strategy"] = strategy
+            meta.update(activeStrategyId=strategy["id"], activeStrategyName=strategy["name"], activeTypedStrategyId=strategy["typedStrategyId"])
     return {
         "items": items,
         "total": total_filtered,
@@ -4176,6 +5055,9 @@ def get_sku_list(
         "summary": summary,
         "cache": cache,
         "trace": trace_payload,
+        "dateFrom": _range_start.date().isoformat(),
+        "dateTo": _range_end.date().isoformat(),
+        "periodDays": resolved_period_days,
     }
 
 
@@ -4220,6 +5102,61 @@ def _apply_nomenclature_stock_patch(
     return changed
 
 
+class RepricerTableExportRequest(BaseModel):
+    dateFrom: date
+    dateTo: date
+    nmIds: list[int] = Field(max_length=100_000)
+    filterDescription: str = Field(default="", max_length=16_384)
+    sourceSignature: list[str | None] = Field(min_length=7, max_length=7)
+
+
+@router.post("/api/v1/wb-repricer/table.xlsx")
+@repricer_finance_scope
+def export_repricer_table(request: Request, payload: RepricerTableExportRequest) -> Response:
+    from app.repricer_table_export import render_repricer_table
+    actor = actor_from_request(request)
+    organization_id = _hydrate_org_repricer_state(request)
+    if payload.dateFrom > payload.dateTo or payload.dateTo >= datetime.now(ZoneInfo("Europe/Moscow")).date():
+        raise HTTPException(status_code=422, detail="Укажите корректный период завершённых дней WB")
+    _start, _end, days, _suffix = _repricer_period_context(30, payload.dateFrom, payload.dateTo)
+    if len(set(payload.nmIds)) != len(payload.nmIds) or any(nm <= 0 for nm in payload.nmIds):
+        raise HTTPException(status_code=422, detail="Некорректные идентификаторы товаров")
+    wb_token = _cached_read_wb_token(request)
+    from app.repricer_page_finance import page_connection, connection_key
+    page_connection.set(connection_key(wb_token) if wb_token else None)
+    cache = _repricer_list_cache_meta(organization_id, days, date_from=payload.dateFrom,
+        date_to=payload.dateTo, include_content=True, require_full_sync_coverage=False)
+    source_keys = ("periodStatsFetchedAt", "financeFetchedAt", "basketsFetchedAt", "latestFetchedAt", "adsFetchedAt", "stocksFetchedAt", "contentFetchedAt")
+    signature = [cache.get(key) for key in source_keys]
+    if signature != payload.sourceSignature:
+        raise HTTPException(status_code=409, detail="Данные обновились во время экспорта. Повторите выгрузку.")
+    # Re-read the authenticated organization's complete source table. The client
+    # provides ordering/selection only, never financial cell values or a page cap.
+    rows = _list_repricer_skus_for_request(request, "complete", actor=actor, wb_token=wb_token,
+        include_promotions=True, include_content=True, period_days=days,
+        date_from=payload.dateFrom, date_to=payload.dateTo, max_items=None,
+        require_full_sync_coverage=False)
+    current_cache = _repricer_list_cache_meta(organization_id, days, date_from=payload.dateFrom,
+        date_to=payload.dateTo, include_content=True, require_full_sync_coverage=False)
+    if [current_cache.get(key) for key in source_keys] != signature:
+        raise HTTPException(status_code=409, detail="Данные обновились во время экспорта. Повторите выгрузку.")
+    by_nm = {int(row["meta"]["nmId"]): row for row in rows if row.get("meta", {}).get("nmId")}
+    if any(nm not in by_nm for nm in payload.nmIds):
+        raise HTTPException(status_code=409, detail="Каталог изменился. Повторите выгрузку.")
+    selected = [by_nm[nm] for nm in payload.nmIds]
+    for row in selected:
+        # List snapshots omit comment bodies; exports must retain full text.
+        article = str(row.get("meta", {}).get("articleId") or "")
+        row["commentSummary"] = repricer_bff_module._comment_summary(
+            repricer_bff_module._sku_comments_for_article(article, False))
+    content = render_repricer_table(selected, date_from=payload.dateFrom, date_to=payload.dateTo,
+        filters=payload.filterDescription, cache={key: value for key, value in cache.items()
+            if key.endswith(("FetchedAt", "CoverageState", "FreshnessState", "ConversionState")) or key == "periodCoverage"})
+    filename = f"wb-repricer-{payload.dateFrom}-{payload.dateTo}.xlsx"
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @router.get("/api/v1/wb-repricer/sku/export-xlsx")
 def export_sku_nomenclature_xlsx(
     request: Request,
@@ -4234,7 +5171,7 @@ def export_sku_nomenclature_xlsx(
         request,
         scenario,
         actor=actor,
-        wb_token=_request_wb_token(request),
+        wb_token=_cached_read_wb_token(request),
         include_promotions=True,
         include_content=True,
         period_days=period_days,
@@ -4680,7 +5617,7 @@ def _retry_failed_wb_sync_step(
         status = get_source_cache(organization_id, "wb_sync_status", slim=False) or {}
         steps = [item for item in (status.get("steps") if isinstance(status.get("steps"), list) else []) if isinstance(item, dict)]
         has_running = any(item.get("status") == "running" for item in steps)
-        has_error = any(item.get("status") == "error" for item in steps)
+        has_error = any(item.get("status") in {"error", "partial"} for item in steps)
         status.update(
             {
                 "running": has_running,
@@ -4887,19 +5824,33 @@ def refresh_sku_list_page(
 ) -> dict[str, Any]:
     actor, wb_token = _request_actor_and_wb_token(request)
     _ensure_wb_sync_not_running(actor.organization_id)
-    repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, force=True)
+    repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, force=True, organization_id=actor.organization_id)
     previous_goods = list_cached_goods(actor.organization_id)
+    use_browser_prices = browser_prices_selected(actor.organization_id)
     total_saved = 0
     external_spp_matched_count = 0
+    external_spp_rate_limit: ExternalSppRateLimited | None = None
     wb_sync_price_change_count = 0
     next_offset = offset
     cache: dict[str, Any] = {}
+    pages: list[dict[str, Any]] = []
+    seen_nm_ids: set[int] = set()
     while True:
-        page = fetch_catalog_goods_page(scenario, wb_token=wb_token, limit=limit, offset=next_offset)
-        goods = page.get("goods") or []
+        page = fetch_catalog_goods_page(
+            scenario, wb_token=wb_token, limit=limit, offset=next_offset,
+            enrich_spp=not use_browser_prices,
+        )
+        goods = page.get("goods")
+        repricer_bff_module.validate_catalog_goods_page(goods, limit=limit, seen=seen_nm_ids)
         try:
-            external_spp_prices = fetch_external_spp_prices(_unique_nm_ids_from_goods(goods))
+            external_spp_prices = (
+                fetch_external_spp_prices(_unique_nm_ids_from_goods(goods))
+                if external_spp_rate_limit is None and not use_browser_prices else {}
+            )
             external_spp_matched_count += _apply_external_spp_prices_to_goods(goods, external_spp_prices)
+        except ExternalSppRateLimited as exc:
+            external_spp_rate_limit = exc
+            external_spp_matched_count += _apply_external_spp_prices_to_goods(goods, exc.prices)
         except Exception as exc:
             logger.warning("External SPP price fetch failed during manual goods refresh org=%s offset=%s: %s", actor.organization_id, next_offset, exc)
         wb_sync_price_change_count += record_wb_sync_price_change_events(
@@ -4910,17 +5861,19 @@ def refresh_sku_list_page(
         )
         page_saved = len(goods)
         total_saved += page_saved
-        cache = save_goods_page(
-            organization_id=actor.organization_id,
-            page_offset=next_offset,
-            page_limit=limit,
-            goods=goods,
-            wb_request_id=page.get("wbRequestId"),
-            replace_all=next_offset == 0,
-        )
+        pages.append({**page, "goods": goods, "offset": next_offset, "limit": limit})
         if not all or page_saved < limit or page_saved == 0:
             break
         next_offset += limit
+    if all and offset == 0:
+        cache = replace_goods_pages(organization_id=actor.organization_id, pages=pages)
+    else:
+        # A single page/continuation must never clear the other cached pages.
+        for page in pages:
+            cache = save_goods_page(
+                organization_id=actor.organization_id, page_offset=page["offset"],
+                page_limit=limit, goods=page["goods"], wb_request_id=page.get("wbRequestId"),
+            )
     return {
         "items": [],
         "total": int(cache.get("totalCached") or 0),
@@ -4931,6 +5884,8 @@ def refresh_sku_list_page(
         "cache": cache,
         "externalSppMatchedCount": external_spp_matched_count,
         "wbSyncPriceChangeCount": wb_sync_price_change_count,
+        **({"partial": True, "externalSppStatus": "rate_limited", "externalSppHttpStatus": 429}
+           if external_spp_rate_limit is not None else {}),
     }
 
 
@@ -4950,8 +5905,13 @@ def refresh_sku_content(
 def refresh_sku_promotions(
     request: Request,
     scenario: str = Query(default="complete"),
+    only_if_stale: bool = Query(default=False, alias="onlyIfStale"),
 ) -> dict[str, Any]:
     actor, wb_token = _request_actor_and_wb_token(request)
+    if only_if_stale is True:
+        cached = get_source_cache(actor.organization_id, "promotions", slim=True) or {}
+        if not promotion_refresh_metadata(cached)["promotionsRefreshRequired"]:
+            return {"source": "promotions", "count": len(cached["promotions"]), "cache": cached, "cached": True}
     _ensure_wb_sync_not_running(actor.organization_id)
     upstream_error: HTTPException | None = None
     try:
@@ -4974,7 +5934,7 @@ def refresh_sku_promotions(
     thresholds_cache = _promotion_thresholds_cache(actor.organization_id)
     promotions = _apply_promotion_threshold_cache(promotions, thresholds_cache)
     promotions = _promotions_for_cache(promotions)
-    payload = save_source_cache(actor.organization_id, "promotions", {"promotions": promotions, "count": len(promotions)})
+    payload = save_source_cache(actor.organization_id, "promotions", {"promotions": promotions, "count": len(promotions)}, strict=True)
     response: dict[str, Any] = {"source": "promotions", "count": len(promotions), "cache": payload}
     if upstream_error is not None:
         response["partial"] = True
@@ -5782,6 +6742,56 @@ def get_sku_settings(request: Request, articleId: str, scenario: str = Query(def
     return get_repricer_sku_settings(articleId, scenario, wb_token=_request_wb_token(request))
 
 
+def _configuration_checkpoint_scope(request: Request, article_id: str, nm_id: int | None = None):
+    actor = actor_from_request(request)
+    if not has_permission(actor, "settings:write"):
+        raise HTTPException(403, "NO_ACCESS:settings:write")
+    article_id = article_id.strip()
+    by_nm, by_article = _goods_lookup(actor.organization_id)
+    resolved_nm = by_article.get(article_id.lower())
+    if resolved_nm is None:
+        raise HTTPException(404, "SKU_NOT_FOUND")
+    if nm_id is not None and resolved_nm != nm_id:
+        raise HTTPException(409, "SKU_IDENTITY_CHANGED")
+    from app.repricer_sync import wb_token_fingerprint
+    return actor, by_nm[resolved_nm], resolved_nm, wb_token_fingerprint(_request_wb_token(request))
+
+
+@router.get("/api/v1/wb-repricer/sources/status")
+def get_wb_sources_status(request: Request, marketplaceAccountId: int | None = Query(default=None, gt=0)):
+    from app.wb_sources_status import read_sources_status
+    actor = actor_from_request(request)
+    if not has_permission(actor, "settings:read"):
+        raise HTTPException(status_code=403, detail={"code": "NO_ACCESS", "message": "Нет доступа к источникам."})
+    return read_sources_status(actor, marketplaceAccountId)
+
+
+@router.get("/api/v1/wb-repricer/sku/{articleId}/configuration-state")
+def get_sku_configuration_state(request: Request, articleId: str) -> dict[str, Any]:
+    from app.repricer_configuration_checkpoint import configuration_state
+    actor, article, nm, _ = _configuration_checkpoint_scope(request, articleId)
+    return {"nmId": nm, "articleId": article, **configuration_state(actor.organization_id, article)}
+
+
+@router.post("/api/v1/wb-repricer/sku/{articleId}/configuration-checkpoints")
+def post_sku_configuration_checkpoint(request: Request, articleId: str, payload: SkuConfigurationCheckpointRequest) -> dict[str, Any]:
+    from app.repricer_configuration_checkpoint import create_checkpoint
+    actor, article, nm, binding = _configuration_checkpoint_scope(request, articleId, payload.nmId)
+    return create_checkpoint(org=actor.organization_id, nm=nm, article=article, binding=binding,
+        actor=actor.user_id, expected_revision=payload.expectedRevision)
+
+
+@router.post("/api/v1/wb-repricer/sku/{articleId}/configuration-checkpoints/{checkpointId}/restore")
+def post_restore_sku_configuration_checkpoint(request: Request, articleId: str, checkpointId: str,
+                                             payload: SkuConfigurationCheckpointRequest) -> dict[str, Any]:
+    from app.repricer_configuration_checkpoint import restore_checkpoint
+    actor, article, nm, binding = _configuration_checkpoint_scope(request, articleId, payload.nmId)
+    result = restore_checkpoint(org=actor.organization_id, nm=nm, article=article, binding=binding,
+        actor=actor.user_id, checkpoint_id=checkpointId, expected_revision=payload.expectedRevision)
+    hydrate_repricer_bff_state(actor.organization_id, repricer_bff_module)
+    return result
+
+
 @router.put("/api/v1/wb-repricer/sku/{articleId}/settings")
 def put_sku_settings(
     request: Request,
@@ -5958,8 +6968,25 @@ def patch_sku_automation(
     articleId: str,
     payload: AutomationPatchRequest,
     scenario: str = Query(default="complete"),
-) -> dict[str, bool]:
-    return patch_repricer_automation(articleId, payload.automationEnabled, scenario, wb_token=_request_wb_token(request))
+) -> dict[str, Any]:
+    # Resolve session activity and catalog identity before the SQLite write lock.
+    actor, _ = _request_actor_and_wb_token(request)
+    if not has_permission(actor, "settings:write"):
+        raise HTTPException(403, "NO_ACCESS:settings:write")
+    organization_id = actor.organization_id
+    hydrate_repricer_bff_state(organization_id, repricer_bff_module)
+    article = articleId.strip()
+    rows = _list_repricer_skus_for_request(request, scenario, max_items=None)
+    current = next((row for row in rows if str(row["meta"]["articleId"]).strip() == article), None)
+    if current is None:
+        raise HTTPException(404, "SKU_NOT_FOUND")
+    from app.repricer_dispatch_store import mutate_assignments
+    result = mutate_assignments(organization_id, [article], lambda state: patch_repricer_automation(
+        article, payload.automationEnabled, scenario, state=state, current_row=current,
+        actor_id=actor.user_id, actor_role=actor.role),
+        expected_revisions={article: payload.expectedRevision} if payload.expectedRevision is not None else None)
+    hydrate_repricer_bff_state(organization_id, repricer_bff_module)
+    return result
 
 
 @router.get("/api/v1/wb-repricer/dashboard")
@@ -5974,6 +7001,7 @@ def get_templates(request: Request, scenario: str = Query(default="complete")) -
 
 @router.get("/api/v1/wb-repricer/strategies/catalog")
 def get_frontend_strategy_catalog(request: Request, scenario: str = Query(default="complete")) -> dict[str, Any]:
+    _hydrate_org_repricer_state(request)
     sku_rows = _list_repricer_skus_for_request(request, scenario)
     items = list_frontend_strategy_catalog(scenario, wb_token=_request_wb_token(request), sku_rows=sku_rows)
     return {"items": items, "total": len(items)}
@@ -5981,7 +7009,9 @@ def get_frontend_strategy_catalog(request: Request, scenario: str = Query(defaul
 
 @router.get("/api/v1/wb-repricer/strategy-assignments")
 def get_frontend_strategy_assignments(request: Request, scenario: str = Query(default="complete")) -> dict[str, Any]:
-    items = list_frontend_strategy_assignments(scenario, wb_token=_request_wb_token(request))
+    _hydrate_org_repricer_state(request)
+    sku_rows = _list_repricer_skus_for_request(request, scenario, max_items=None)
+    items = list_frontend_strategy_assignments(scenario, wb_token=_request_wb_token(request), sku_rows=sku_rows)
     return {"items": items, "total": len(items)}
 
 
@@ -6010,43 +7040,62 @@ def post_frontend_strategy_assignments_bulk(
     if not strategy_id_or_name:
         raise HTTPException(status_code=422, detail="STRATEGY_REQUIRED")
     organization_id = _hydrate_org_repricer_state(request)
+    wb_token = _request_wb_token(request)
     sku_rows = _list_repricer_skus_for_request(request, scenario, max_items=None)
     normalized_strategy = str(strategy_id_or_name or "").strip().lower()
     unassign_requested = normalized_strategy in {"none", "no_strategy", "null", "нет", "не задана", "без стратегии"}
-    if unassign_requested:
-        result = unassign_frontend_strategy_assignment(
-            payload.articleIds,
-            scenario=scenario,
-            wb_token=_request_wb_token(request),
-            sku_rows=sku_rows,
-        )
-    else:
-        result = apply_frontend_strategy_assignment(
+    from app.repricer_dispatch_store import mutate_assignments
+    def mutate(state):
+        if unassign_requested:
+            return unassign_frontend_strategy_assignment(
+                payload.articleIds,
+                scenario=scenario,
+                wb_token=wb_token,
+                sku_rows=sku_rows,
+                state=state,
+            )
+        return apply_frontend_strategy_assignment(
             payload.articleIds,
             strategy_id_or_name=strategy_id_or_name,
             scenario=scenario,
-            wb_token=_request_wb_token(request),
+            wb_token=wb_token,
             sku_rows=sku_rows,
             config=payload.config,
+            state=state,
         )
-    if payload.executeAfterAssign and not unassign_requested:
-        actor = actor_from_request(request)
-        wb_token = _request_wb_token(request)
-        client = _build_repricing_client(scenario, wb_token)
-        execution_rows = _list_repricer_skus_for_request(request, scenario, max_items=None)
-        execution = execute_repricer_strategies(
-            payload.articleIds,
-            client=client,
-            actor_id=str(getattr(actor, "actor_id", None) or getattr(actor, "user_id", None) or "manager-api"),
-            actor_role=str(getattr(actor, "role", None) or "manager"),
-            wb_token=wb_token,
-            options=StrategyExecuteOptions(scenario=scenario),
-            sku_rows=execution_rows,
-            organization_id=organization_id,
-            trigger="bulk_assign",
-        )
-        result["execution"] = execution.model_dump(mode="json")
-    _flush_org_repricer_state(organization_id)
+    result = mutate_assignments(organization_id, payload.articleIds, mutate, expected_revisions=payload.expectedRevisions)
+    # Persistence has committed. A follow-up failure must not discard its CAS
+    # acknowledgement or invite a retry of an execution that may have dispatched.
+    follow_up_phase = "refresh"
+    try:
+        hydrate_repricer_bff_state(organization_id, repricer_bff_module)
+        if payload.executeAfterAssign and not unassign_requested:
+            follow_up_phase = "execution"
+            actor = actor_from_request(request)
+            wb_token = _request_wb_token(request)
+            client = _build_repricing_client(scenario, wb_token)
+            execution_rows = _list_repricer_skus_for_request(request, scenario, max_items=None)
+            execution = execute_repricer_strategies(
+                payload.articleIds,
+                client=client,
+                actor_id=str(getattr(actor, "actor_id", None) or getattr(actor, "user_id", None) or "manager-api"),
+                actor_role=str(getattr(actor, "role", None) or "manager"),
+                wb_token=wb_token,
+                options=StrategyExecuteOptions(scenario=scenario),
+                sku_rows=execution_rows,
+                organization_id=organization_id,
+                trigger="bulk_assign",
+            )
+            result["execution"] = execution.model_dump(mode="json")
+    except Exception as exc:
+        # Do not serialize exception text: provider errors may contain secrets.
+        logging.getLogger(__name__).error(
+            "WB strategy assignment committed; follow-up failed (%s)", type(exc).__name__)
+        result["executionError"] = {
+            "code": "STRATEGY_EXECUTION_FAILED" if follow_up_phase == "execution" else "STRATEGY_STATE_REFRESH_FAILED",
+            "message": ("Назначение стратегии сохранено, но выполнение завершилось ошибкой. Результат изменения цены не подтверждён; проверьте статус перед повторным запуском."
+                if follow_up_phase == "execution" else "Назначение стратегии сохранено, но чтение обновлённого состояния завершилось ошибкой. Повторите чтение состояния."),
+        }
     return result
 
 
@@ -6082,6 +7131,9 @@ async def post_preview_repricer_strategies(request: Request) -> dict[str, Any]:
         scenario=payload.scenario,
         sku_rows=sku_rows,
         force=payload.force,
+        organization_id=organization_id if payload.inputs is None else None,
+        strategy_id_or_name=payload.strategyId if payload.strategyId is not None else payload.strategyName,
+        config=payload.config,
     )
     return report.model_dump(mode="json")
 
@@ -6313,6 +7365,22 @@ def _night_median_worker_debug(organization_id: int, sku_rows: list[dict[str, An
     }
 
 
+def _night_median_sku_rows(organization_id: int) -> list[dict[str, Any]]:
+    rows = []
+    for good in list_cached_goods(organization_id):
+        article_id = str(good.get("vendorCode") or "")
+        if article_id not in repricer_bff_module.FRONTEND_STRATEGY_ASSIGNMENTS:
+            continue
+        rows.append({
+            "meta": {"articleId": article_id},
+            "settings": repricer_bff_module._sku_cost_settings(article_id, use_demo_data=False),
+            "strategy": repricer_bff_module._frontend_strategy_payload(
+                article_id, current_status="", baskets_last_7d=0, basket_norm=0,
+            ),
+        })
+    return rows
+
+
 @router.get("/api/v1/wb-repricer/worker/status")
 def get_repricer_worker_status(
     request: Request,
@@ -6322,7 +7390,6 @@ def get_repricer_worker_status(
     organization_id = actor.organization_id
     hydrate_repricer_bff_state(organization_id, repricer_bff_module)
     _apply_costs_excel_cache_to_sku_settings(organization_id)
-    wb_token = get_user_wb_token_secret(actor.user_id)
     settings = get_settings()
     interval_minutes = _algorithm_interval_minutes(
         "syncIntervalMinutes",
@@ -6335,19 +7402,10 @@ def get_repricer_worker_status(
     scheduler_poll_interval_minutes = REPRICER_SCHEDULER_POLL_MINUTES
     now = datetime.now(timezone.utc)
     runs = list_execution_runs(organization_id=organization_id, trigger="scheduler", limit=limit)
-    pending_approvals = list_pending_price_approvals(organization_id=organization_id, limit=20)
+    pending_approvals = list_pending_price_approvals(organization_id=organization_id, limit=20, include_inflight=True)
     sync_status = get_wb_sync_status(organization_id)
     try:
-        night_debug_rows = _list_repricer_skus_for_request(
-            request,
-            "complete",
-            actor=actor,
-            wb_token=wb_token,
-            include_promotions=False,
-            include_content=False,
-            max_items=None,
-            sort_by_demand=False,
-        )
+        night_debug_rows = _night_median_sku_rows(organization_id)
     except Exception:
         logger.exception("Failed to build night median worker debug rows")
         night_debug_rows = []
@@ -6467,6 +7525,12 @@ def decide_pending_price_approvals_bulk(
         pending.append((approval_id, approval))
 
     if payload.decision == "reject":
+        from app.repricer_dispatch_store import claim_pending
+        claimed = claim_pending(organization_id, [item[0] for item in pending], decision="rejected")
+        for approval_id, _ in pending:
+            if approval_id not in claimed:
+                result_meta[approval_id] = {"ok": False, "error": "PENDING_PRICE_APPROVAL_ALREADY_CLOSED"}
+        pending = [item for item in pending if item[0] in claimed]
         now = datetime.now(timezone.utc).isoformat()
         updated = update_pending_price_approvals(
             organization_id=organization_id,
@@ -6512,6 +7576,7 @@ def decide_pending_price_approvals_bulk(
         validated_by_scenario.setdefault(draft_request.scenario, []).append((approval_id, approval, draft_request))
 
     wb_token = _request_wb_token(request) if validated_by_scenario else None
+    from app.repricer_dispatch_store import claim_pending
     batches: dict[str, list[dict[str, Any]]] = {}
     for scenario, candidates in validated_by_scenario.items():
         try:
@@ -6536,6 +7601,8 @@ def decide_pending_price_approvals_bulk(
                     client=client,
                     payload=draft_request,
                     sku_row=sku_row,
+                    organization_id=organization_id,
+                    pending_approval_id=approval_id,
                 )
             except Exception as exc:
                 error = str(exc.detail) if isinstance(exc, HTTPException) else (str(exc) or exc.__class__.__name__)
@@ -6558,7 +7625,10 @@ def decide_pending_price_approvals_bulk(
                 }
                 continue
 
-            approval_ref = f"worker-price-{approval_id}"
+            if approval_id not in claim_pending(organization_id, [approval_id], drafts={approval_id: draft.draftId}):
+                result_meta[approval_id] = {"ok": False, "error": "PENDING_PRICE_APPROVAL_ALREADY_CLOSED"}
+                continue
+            approval_ref = f"worker-price-{approval_id}-{draft.draftId}"
             approved = approve_draft(
                 draft_id=draft.draftId,
                 actor_id=actor.actor_id,
@@ -6584,6 +7654,8 @@ def decide_pending_price_approvals_bulk(
                 }
             )
 
+    for patch in initial_patches.values():
+        patch["_expectedStatus"] = "applying" if patch.get("status") == "applying" else "pending"
     updated_items = update_pending_price_approvals(
         organization_id=organization_id,
         patches=initial_patches,
@@ -6598,7 +7670,7 @@ def decide_pending_price_approvals_bulk(
                 client=batch[0]["client"],
                 real_apply_enabled=settings.real_price_apply_enabled,
                 local_apply_enabled=settings.repricer_local_price_apply_enabled,
-                request=ApplyDraftRequest(scenario=scenario, skipStatusPoll=True),
+                request=ApplyDraftRequest(scenario=scenario),
             )
         except Exception as exc:
             logger.exception("Bulk price approval apply failed")
@@ -6635,11 +7707,7 @@ def decide_pending_price_approvals_bulk(
                     *[str(row.get("errorText") or "") for row in row_errors if row.get("errorText")],
                 ]
             ) or None
-            should_commit_local_price = job.state in {"accepted", "local_applied"} or (
-                bool(getattr(apply_result, "wbMutationSent", False))
-                and job.state not in {"blocked", "failed", "needs_attention"}
-                and not row_errors
-            )
+            should_commit_local_price = job.state == "local_applied" or (job.state == "accepted" and apply_result.priceConfirmed)
             if should_commit_local_price:
                 local_commits.append(
                     {
@@ -6670,7 +7738,7 @@ def decide_pending_price_approvals_bulk(
                 "rowErrors": row_errors,
                 "error": error,
             }
-            ok = job.state in {"accepted", "local_applied", "sent"}
+            ok = should_commit_local_price
             result_meta[approval_id] = {
                 "ok": ok,
                 "error": None if ok else error or f"PRICE_APPLY_{job.state.upper()}",
@@ -6679,18 +7747,7 @@ def decide_pending_price_approvals_bulk(
             }
 
     if local_commits:
-        _update_cached_goods_seller_prices(
-            organization_id,
-            changes=[
-                {
-                    "articleId": item["draftRequest"].articleId,
-                    "nmId": item["draftRequest"].nmId,
-                    "sellerPriceKopecks": int(item["draftRequest"].candidateSellerPriceKopecks),
-                }
-                for item in local_commits
-            ],
-            wb_request_id=f"repricer-approval-bulk:{uuid4().hex}",
-        )
+        # Simulation updates the explicit local override below, never WB facts.
         for item in local_commits:
             approval = item["approval"]
             draft_request = item["draftRequest"]
@@ -6699,7 +7756,7 @@ def decide_pending_price_approvals_bulk(
             if str(approval.get("frontendStrategyId") or "") == "illiquid":
                 _commit_illiquid_runtime_step(
                     draft_request.articleId,
-                    int(draft_request.candidateSellerPriceKopecks),
+                    int(draft.normalized.candidateSellerPriceKopecks),
                     str(approval.get("explanation") or draft_request.reason or ""),
                 )
             meta = sku_row.get("meta") or {}
@@ -6712,7 +7769,7 @@ def decide_pending_price_approvals_bulk(
                     or draft.normalized.currentSellerPriceKopecks
                     or 0
                 ),
-                new_price_kopecks=int(draft_request.candidateSellerPriceKopecks),
+                new_price_kopecks=int(draft.normalized.candidateSellerPriceKopecks),
                 trigger="algorithm",
                 strategy_name=str(
                     strategy.get("name")
@@ -6769,6 +7826,9 @@ def reject_pending_price_approval(
         raise HTTPException(status_code=409, detail="PENDING_PRICE_APPROVAL_ALREADY_APPLYING")
     if approval_status != "pending":
         raise HTTPException(status_code=409, detail="PENDING_PRICE_APPROVAL_ALREADY_CLOSED")
+    from app.repricer_dispatch_store import claim_pending
+    if approvalId not in claim_pending(organization_id, [approvalId], decision="rejected"):
+        raise HTTPException(status_code=409, detail="PENDING_PRICE_APPROVAL_ALREADY_CLOSED")
     updated = update_pending_price_approval(
         organization_id=organization_id,
         approval_id=approvalId,
@@ -6805,7 +7865,7 @@ def approve_pending_price_approval(
         update_pending_price_approval(
             organization_id=organization_id,
             approval_id=approvalId,
-            patch={"status": "failed", "error": "PENDING_PRICE_APPROVAL_PAYLOAD_INVALID"},
+            patch={"status": "failed", "error": "PENDING_PRICE_APPROVAL_PAYLOAD_INVALID", "_expectedStatus": "pending"},
         )
         raise HTTPException(status_code=409, detail="PENDING_PRICE_APPROVAL_PAYLOAD_INVALID") from exc
 
@@ -6826,6 +7886,8 @@ def approve_pending_price_approval(
         client=client,
         payload=draft_request,
         sku_row=sku_row,
+        organization_id=organization_id,
+        pending_approval_id=approvalId,
     )
     if draft.state == "blocked":
         updated = update_pending_price_approval(
@@ -6833,6 +7895,7 @@ def approve_pending_price_approval(
             approval_id=approvalId,
             patch={
                 "status": "blocked",
+                "_expectedStatus": "pending",
                 "draftId": draft.draftId,
                 "blockedReasons": list(draft.guardReport.blockers),
             },
@@ -6843,7 +7906,10 @@ def approve_pending_price_approval(
             "job": None,
         }
 
-    approval_ref = (payload.approvalRef if payload else None) or f"worker-price-{approvalId}"
+    from app.repricer_dispatch_store import claim_pending
+    if approvalId not in claim_pending(organization_id, [approvalId], drafts={approvalId: draft.draftId}):
+        raise HTTPException(status_code=409, detail="PENDING_PRICE_APPROVAL_ALREADY_CLOSED")
+    approval_ref = (payload.approvalRef if payload else None) or f"worker-price-{approvalId}-{draft.draftId}"
     update_pending_price_approval(
         organization_id=organization_id,
         approval_id=approvalId,
@@ -6867,7 +7933,7 @@ def approve_pending_price_approval(
             client=client,
             real_apply_enabled=settings.real_price_apply_enabled,
             local_apply_enabled=settings.repricer_local_price_apply_enabled,
-            request=ApplyDraftRequest(scenario=draft_request.scenario, skipStatusPoll=True),
+            request=ApplyDraftRequest(scenario=draft_request.scenario),
         )
     except Exception as exc:
         update_pending_price_approval(
@@ -6886,33 +7952,22 @@ def approve_pending_price_approval(
     final_status = "applied" if job.state in {"accepted", "local_applied"} else job.state
     apply_result = job.lastApplyResult
     row_errors = [row.model_dump(mode="json") for row in job.rowErrors]
-    should_commit_local_price = job.state in {"accepted", "local_applied"} or (
-        bool(getattr(apply_result, "wbMutationSent", False))
-        and job.state not in {"blocked", "failed", "needs_attention"}
-        and not row_errors
-    )
+    should_commit_local_price = job.state == "local_applied" or (job.state == "accepted" and apply_result.priceConfirmed)
     if should_commit_local_price:
         committed_source = str(apply_mode if job.state in {"accepted", "local_applied"} else f"{apply_mode}_pending")
         if str(approval.get("frontendStrategyId") or "") == "illiquid":
             _commit_illiquid_runtime_step(
                 draft_request.articleId,
-                int(draft_request.candidateSellerPriceKopecks),
+                int(draft.normalized.candidateSellerPriceKopecks),
                 str(approval.get("explanation") or draft_request.reason or ""),
             )
-        _update_cached_goods_seller_price(
-            organization_id,
-            article_id=draft_request.articleId,
-            nm_id=draft_request.nmId,
-            seller_price_kopecks=int(draft_request.candidateSellerPriceKopecks),
-            wb_request_id=f"repricer-approval:{approvalId}",
-        )
         meta = (sku_row or {}).get("meta") or {}
         strategy = (sku_row or {}).get("strategy") or {}
         record_repricer_price_change(
             article_id=draft_request.articleId,
             sku_name=str(meta.get("name") or draft_request.articleId),
             old_price_kopecks=int(approval.get("oldPriceKopecks") or draft.normalized.currentSellerPriceKopecks or 0),
-            new_price_kopecks=int(draft_request.candidateSellerPriceKopecks),
+            new_price_kopecks=int(draft.normalized.candidateSellerPriceKopecks),
             trigger="algorithm",
             strategy_name=str(strategy.get("name") or approval.get("strategyName") or approval.get("frontendStrategyId") or "worker"),
             reason=str(approval.get("explanation") or draft_request.reason or ""),
@@ -7190,13 +8245,66 @@ def get_algorithm(request: Request) -> dict[str, Any]:
     return get_repricer_algorithm()
 
 
+class QuarterlyTaxRequest(BaseModel):
+    year: int = Field(ge=1900, le=9998, strict=True)
+    rates: list[Any] = Field(min_length=4, max_length=4)
+    revision: str = Field(min_length=64, max_length=64)
+
+
+@router.get("/api/v1/wb-repricer/quarterly-tax")
+def get_quarterly_tax(request: Request, year: int = Query(ge=1900, le=9998),
+                      session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    from app.platform.economics.wb_quarterly_tax import settings_in_session, year_view
+    actor = actor_from_request(request)
+    if not has_permission(actor, "settings:read"):
+        raise HTTPException(403, "NO_ACCESS:settings:read")
+    try:
+        return year_view(settings_in_session(session, actor.organization_id), year)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.put("/api/v1/wb-repricer/quarterly-tax")
+def put_quarterly_tax(request: Request, payload: QuarterlyTaxRequest,
+                      session: Session = Depends(get_db_session)) -> dict[str, Any]:
+    from app.platform.economics.wb_quarterly_tax import save_year, QuarterlyTaxConflict
+    actor = actor_from_request(request)
+    if not has_permission(actor, "settings:write"):
+        raise HTTPException(403, "NO_ACCESS:settings:write")
+    try:
+        return save_year(session, actor.organization_id, year=payload.year,
+                         rates=payload.rates, expected_revision=payload.revision)
+    except QuarterlyTaxConflict as exc:
+        session.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.put("/api/v1/wb-repricer/algorithm")
 def put_algorithm(
     request: Request,
     payload: dict[str, Any],
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
+    # Quarterly settings have their own scoped, validated optimistic write path.
+    # Legacy clients may echo this field but cannot replace it here.
+    payload = {key: value for key, value in payload.items() if key != "wbQuarterlyTax"}
     organization_id = _hydrate_org_repricer_state(request)
+    tax_confirmation = {}
+    if "taxPct" in payload:
+        previous = get_repricer_algorithm()
+        try:
+            previous_tax = _legacy_values(previous)[0]
+            updated_tax = _legacy_values({**previous, **payload})[0]
+        except EconomicsValidationError as exc:
+            _raise_invalid_economics(exc)
+        if updated_tax != previous_tax:
+            tax_confirmation = {
+                "tax_value_state": "configured",
+                "tax_evidence_status": "dated",
+            }
     response = put_repricer_algorithm(payload)
     if not _flush_org_repricer_state(organization_id):
         raise HTTPException(status_code=500, detail="ALGORITHM_SETTINGS_NOT_SAVED")
@@ -7211,6 +8319,7 @@ def put_algorithm(
                 source_reference=_economics_source_reference(
                     "algorithm", effective_from.isoformat()
                 ),
+                **tax_confirmation,
             )
         except EconomicsValidationError as exc:
             _raise_invalid_economics(exc)
@@ -7218,23 +8327,21 @@ def put_algorithm(
 
 
 @router.get("/api/v1/wb-repricer/promotions")
-def get_promotions(request: Request, scenario: str = Query(default="complete")) -> list[dict[str, Any]]:
+def get_promotions(request: Request, scenario: str = Query(default="complete"), refresh: bool = Query(default=False)) -> list[dict[str, Any]]:
     actor, wb_token = _request_actor_and_wb_token(request)
     thresholds_cache = _promotion_thresholds_cache(actor.organization_id)
-    cached = get_source_cache(actor.organization_id, "promotions") or {}
+    # Page summary must not replace the SKU membership cache used elsewhere.
+    cache_key = "promotions_listing"
+    cached = get_source_cache(actor.organization_id, cache_key) or {}
     cached_promotions = cached.get("promotions")
-    if isinstance(cached_promotions, list) and cached_promotions:
+    fetched_at = _parse_utc_datetime(get_source_cache_fetched_at(actor.organization_id, cache_key))
+    fresh = fetched_at is not None and 0 <= (datetime.now(timezone.utc) - fetched_at).total_seconds() < 300
+    if not refresh and fresh and isinstance(cached_promotions, list):
         promotions = _apply_promotion_threshold_cache(cached_promotions, thresholds_cache)
         return [_strip_internal_promotion_fields(item) for item in promotions]
-    try:
-        promotions = list_promotions(scenario, wb_token=wb_token)
-    except HTTPException as exc:
-        if exc.status_code in {429, 500, 502, 503, 504} and isinstance(cached_promotions, list):
-            promotions = _apply_promotion_threshold_cache(cached_promotions, thresholds_cache)
-            return [_strip_internal_promotion_fields(item) for item in promotions]
-        raise
+    promotions = list_promotions(scenario, wb_token=wb_token, summary_only=True)
     promotions = _apply_promotion_threshold_cache(promotions, thresholds_cache)
-    save_source_cache(actor.organization_id, "promotions", {"promotions": _promotions_for_cache(promotions), "count": len(promotions)})
+    save_source_cache(actor.organization_id, cache_key, {"promotions": _promotions_for_cache(promotions), "count": len(promotions)})
     return [_strip_internal_promotion_fields(item) for item in promotions]
 
 
@@ -7588,6 +8695,8 @@ def get_sku_timeseries(
     scenario: str = Query(default="complete"),
     days: int = Query(default=30, ge=1, le=90),
     include_raw: bool = Query(default=False, alias="includeRaw"),
+    date_from: date | None = Query(default=None, alias="dateFrom"),
+    date_to: date | None = Query(default=None, alias="dateTo"),
 ) -> dict[str, Any]:
     organization_id = _hydrate_org_repricer_state(request)
     rows = _list_repricer_skus_for_request(request, scenario, max_items=None, period_days=days)
@@ -7599,4 +8708,7 @@ def get_sku_timeseries(
         organization_id=organization_id,
         days=days,
         include_raw=include_raw,
+        date_from=date_from,
+        date_to=date_to,
+        finance_allowed=organization_id is not None and has_permission(actor_from_request(request), "finance:read"),
     )

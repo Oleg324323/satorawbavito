@@ -146,6 +146,13 @@ class OrganizationEconomicsVersionRow(Base):
             "evidence_status IN ('dated', 'undated', 'period_end_fallback')",
             name="ck_organization_economics_evidence_status",
         ),
+        CheckConstraint(
+            "(tax_value_state IS NULL AND tax_evidence_status IS NULL) OR "
+            "(tax_value_state IS NOT NULL AND tax_evidence_status IS NOT NULL "
+            "AND tax_value_state = 'configured' AND tax_evidence_status = 'dated' "
+            "AND tax_basis_points IS NOT NULL)",
+            name="ck_organization_economics_tax_evidence",
+        ),
         Index(
             "ix_organization_economics_resolve",
             "organization_id",
@@ -174,6 +181,8 @@ class OrganizationEconomicsVersionRow(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     source_reference: Mapped[str] = mapped_column(String(255), nullable=False)
     evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    tax_value_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tax_evidence_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     supersedes_organization_economics_version_id: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )

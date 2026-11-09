@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app import repricer_bff as repricer_bff_module
 from app.repricer_sprint_b import _buyer_price_for_accounting
 from tests.auth_helpers import auth_headers
+
+
+@pytest.fixture(autouse=True)
+def fake_user_wb_token(monkeypatch):
+    monkeypatch.setenv("VELLA_WB_API_MODE", "fake")
+    monkeypatch.setattr("app.routers.wb_repricer_sprint_b.get_user_wb_token_secret", lambda _user_id: "synthetic-sprint-b-token")
 
 
 def client() -> TestClient:
@@ -37,8 +44,10 @@ def _valid_draft_payload() -> dict:
 
 
 def test_recommendation_includes_formula_version_and_source_snapshot():
-    response = client().post(
+    api = client()
+    response = api.post(
         "/api/v1/wb-repricer/recommendation",
+        headers=auth_headers(api, "price_sender"),
         json={
             "scenario": "complete",
             "articleId": "FBBT_42",

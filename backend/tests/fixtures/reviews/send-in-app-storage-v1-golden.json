@@ -1,0 +1,37 @@
+{
+  "fixtureVersion": "t4-send-in-app-storage-v1",
+  "vectors": {
+    "sendRequest": {
+      "canonicalUtf8Json": "{\"bindingChecksum\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"decisionId\":\"00000000-0000-4000-8000-000000000002\",\"draftId\":\"00000000-0000-4000-8000-000000000001\",\"draftRevision\":9223372036854775808,\"externalReviewId\":\"000-é é 😀\\u0000\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"operationKind\":\"review.answer.create.v1\",\"organizationId\":1,\"schemaVersion\":\"review-send-request-v1\",\"textChecksum\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "sha256": "1df4b9008088e86ec3b973950406e515c72d7ecf376bcaf86051da231a11f9a2"
+    },
+    "reconciliationExact": {
+      "canonicalUtf8Json": "{\"answerChecksum\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"attemptId\":\"00000000-0000-4000-8000-000000000006\",\"commandId\":\"00000000-0000-4000-8000-000000000005\",\"evidenceId\":\"00000000-0000-4000-8000-000000000003\",\"evidenceKind\":\"reconciliation_read\",\"evidenceVersion\":\"review-answer-evidence-v1\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"observedAt\":\"2026-09-09T12:00:01.123456Z\",\"organizationId\":1,\"outcome\":\"exact\",\"providerAnswerId\":\"000-answer-é\\u0000\",\"readId\":\"00000000-0000-4000-8000-000000000007\",\"reconciliationStartedAt\":\"2026-09-09T12:00:00.000001Z\",\"reviewId\":\"00000000-0000-4000-8000-000000000004\",\"verifierVersion\":\"synthetic-v1\"}",
+      "sha256": "bf6f19f051e987ab9660938fc83562f08e60ae8717939c19ed317dc0a2bfa97f"
+    },
+    "dispatchIncomplete": {
+      "canonicalUtf8Json": "{\"answerChecksum\":null,\"attemptId\":\"00000000-0000-4000-8000-000000000006\",\"commandId\":\"00000000-0000-4000-8000-000000000005\",\"evidenceId\":\"00000000-0000-4000-8000-000000000011\",\"evidenceKind\":\"dispatch_ack\",\"evidenceVersion\":\"review-answer-evidence-v1\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"observedAt\":\"2026-09-09T12:00:01.123456Z\",\"organizationId\":1,\"outcome\":\"incomplete\",\"providerAnswerId\":null,\"readId\":null,\"reconciliationStartedAt\":null,\"reviewId\":\"00000000-0000-4000-8000-000000000004\",\"verifierVersion\":\"synthetic-v1\"}",
+      "sha256": "c2a59d16c83918bad0a37c37562b1cf6e213a429c71864114fdbfdef827e2607"
+    },
+    "sendAudit": {
+      "canonicalUtf8Json": "{\"actorKind\":\"membership\",\"actorMembershipId\":7,\"afterState\":\"sent\",\"aggregateId\":\"00000000-0000-4000-8000-000000000005\",\"aggregateVersion\":9223372036854775808,\"attemptId\":\"00000000-0000-4000-8000-000000000006\",\"beforeState\":\"ambiguous\",\"commandId\":\"00000000-0000-4000-8000-000000000005\",\"decisionId\":null,\"draftId\":null,\"eventId\":\"00000000-0000-4000-8000-000000000008\",\"eventKind\":\"send.sent\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"occurredAt\":\"2026-09-09T12:00:01.123456Z\",\"organizationId\":1,\"policyId\":null,\"reasonCode\":\"VERIFIED_EXACT_ANSWER\",\"schemaVersion\":\"review-audit-v1\"}",
+      "sha256": "0512b7cd29241054ecba30e30247ff6f91b3e4237d866971999d1b66760be486"
+    },
+    "enqueue": {
+      "canonicalUtf8Json": "{\"commandId\":\"00000000-0000-4000-8000-000000000005\",\"commandVersion\":9223372036854775808,\"eventKind\":\"send.ready\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"organizationId\":1,\"schemaVersion\":\"review-enqueue-v1\"}",
+      "sha256": "4888e83e46c22e07f0f1d37c87080668f14590197fd4dfb6d9dbbe5e9c31e586"
+    },
+    "notificationEvent": {
+      "canonicalUtf8Json": "{\"dedupeKey\":\"b6c58324017df7859f2f6779f26f71d19ec304d238a853c508714969e6ddafce\",\"details\":\"Проверьте текущую версию черновика в разделе отзывов.\",\"entityId\":\"00000000-0000-4000-8000-000000000001\",\"eventId\":\"00000000-0000-4000-8000-000000000009\",\"kind\":\"approval_required\",\"marketplaceAccountId\":11,\"occurredAt\":\"2026-09-09T12:00:01.123456Z\",\"organizationId\":1,\"producer\":\"reviews\",\"schemaVersion\":\"notification-event-v1\",\"scope\":\"account\",\"severity\":\"info\",\"sourceVersion\":9223372036854775808,\"title\":\"Ответ на отзыв требует подтверждения\"}",
+      "sha256": "3deb56761d601c4ca6ccbb3a0f551e5f278e4334f007c03761501b696d3d8fc8"
+    },
+    "readReceipt": {
+      "canonicalUtf8Json": "{\"dismissedAt\":null,\"eventId\":\"00000000-0000-4000-8000-000000000009\",\"marketplaceAccountId\":11,\"organizationId\":1,\"readAt\":\"2026-09-09T12:00:01.123456Z\",\"recipientMembershipId\":7,\"schemaVersion\":\"notification-in-app-receipt-v1\"}",
+      "sha256": "a129d69a67c1629ec054cd5f5b4d05fa70bced05dec02152284113f31fa6af5e"
+    },
+    "visibleAction": {
+      "canonicalUtf8Json": "{\"action\":\"read\",\"eventIds\":[\"00000000-0000-4000-8000-000000000009\",\"00000000-0000-4000-8000-000000000010\"],\"marketplaceAccountId\":11,\"organizationId\":1,\"recipientMembershipId\":7,\"schemaVersion\":\"notification-visible-action-v1\"}",
+      "sha256": "314c8479df4e74c87ff9966e3f5b65b8cdd174f91e1822a2378a22e16715c098"
+    }
+  }
+}

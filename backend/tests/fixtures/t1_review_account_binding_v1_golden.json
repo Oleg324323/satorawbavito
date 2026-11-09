@@ -1,0 +1,38 @@
+[
+  {
+    "name": "ascii-null-reference",
+    "descriptor": {"schemaVersion": 1, "organizationId": 1, "marketplaceAccountId": 11, "marketplace": "wb", "externalAccountId": "seller-A", "credentialRef": null},
+    "canonicalAscii": "{\"credentialRef\":null,\"externalAccountId\":\"seller-A\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"organizationId\":1,\"schemaVersion\":1}",
+    "sha256": "71a7e4a446ba44c9ea993b2332736e6407490d7acbbd380d92661bbb62bc9c60"
+  },
+  {
+    "name": "ascii-empty-reference",
+    "descriptor": {"schemaVersion": 1, "organizationId": 1, "marketplaceAccountId": 11, "marketplace": "wb", "externalAccountId": "seller-A", "credentialRef": ""},
+    "canonicalAscii": "{\"credentialRef\":\"\",\"externalAccountId\":\"seller-A\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"organizationId\":1,\"schemaVersion\":1}",
+    "sha256": "c367232907c44843dbd7ac1ab6d9c3da34cd5c72c68cfcedaecac9ce576432e6"
+  },
+  {
+    "name": "changed-external-account",
+    "descriptor": {"schemaVersion": 1, "organizationId": 1, "marketplaceAccountId": 11, "marketplace": "wb", "externalAccountId": "seller-B", "credentialRef": null},
+    "canonicalAscii": "{\"credentialRef\":null,\"externalAccountId\":\"seller-B\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"organizationId\":1,\"schemaVersion\":1}",
+    "sha256": "645db76e3ce7686e2233bdcd1a5f26a4751b3d8b01a9fc22ede0c255f200d92a"
+  },
+  {
+    "name": "unicode-max-int4-pure-nul-reference",
+    "descriptor": {"schemaVersion": 1, "organizationId": 2147483647, "marketplaceAccountId": 2147483647, "marketplace": "avito", "externalAccountId": " Магазин🚀e\u0301 ", "credentialRef": "ref/ключ\u0000\n"},
+    "canonicalAscii": "{\"credentialRef\":\"ref/\\u043a\\u043b\\u044e\\u0447\\u0000\\n\",\"externalAccountId\":\" \\u041c\\u0430\\u0433\\u0430\\u0437\\u0438\\u043d\\ud83d\\ude80e\\u0301 \",\"marketplace\":\"avito\",\"marketplaceAccountId\":2147483647,\"organizationId\":2147483647,\"schemaVersion\":1}",
+    "sha256": "68562e50e7f5a2e593684c155d217359cb05bdd75bfe4e199103a7de4a8a92e3"
+  },
+  {
+    "name": "unicode-non-nul-reference",
+    "descriptor": {"schemaVersion": 1, "organizationId": 2147483647, "marketplaceAccountId": 2147483647, "marketplace": "avito", "externalAccountId": " Магазин🚀e\u0301 ", "credentialRef": "ref/ключ\n"},
+    "canonicalAscii": "{\"credentialRef\":\"ref/\\u043a\\u043b\\u044e\\u0447\\n\",\"externalAccountId\":\" \\u041c\\u0430\\u0433\\u0430\\u0437\\u0438\\u043d\\ud83d\\ude80e\\u0301 \",\"marketplace\":\"avito\",\"marketplaceAccountId\":2147483647,\"organizationId\":2147483647,\"schemaVersion\":1}",
+    "sha256": "d4b7a0b0795f16881040b9a1657dec55995e2b3467335f659c11c270b512aa36"
+  },
+  {
+    "name": "control-characters-pure-nul-account",
+    "descriptor": {"schemaVersion": 1, "organizationId": 1, "marketplaceAccountId": 11, "marketplace": "wb", "externalAccountId": "\u0000\b\f\n\r\t\"\u001f\\\u007f", "credentialRef": " "},
+    "canonicalAscii": "{\"credentialRef\":\" \",\"externalAccountId\":\"\\u0000\\b\\f\\n\\r\\t\\\"\\u001f\\\\\\u007f\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"organizationId\":1,\"schemaVersion\":1}",
+    "sha256": "a91ab008c38e72ca5ade75ba9afa1d8c097d72d1d38a45f18859a69803a9fa7f"
+  }
+]

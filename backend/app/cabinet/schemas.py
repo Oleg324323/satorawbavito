@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from app.contracts.envelopes import UtcDateTime
 
@@ -11,6 +11,7 @@ from app.contracts.envelopes import UtcDateTime
 PermissionProfile = Literal["viewer", "settings_editor", "price_sender", "finance_viewer", "admin", "custom"]
 IntegrationProvider = Literal["wb", "avito"]
 IntegrationStatus = Literal["disconnected", "connected", "error"]
+MarketplaceCredentialStatus = Literal["missing", "active", "expired", "revoked"]
 
 
 class OrganizationView(BaseModel):
@@ -161,6 +162,42 @@ class UserAvitoCredentialsView(BaseModel):
 class UserAvitoCredentialsUpsertRequest(BaseModel):
     clientId: str = Field(min_length=4)
     clientSecret: str = Field(min_length=8)
+
+
+class MarketplaceCredentialWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unknown_fields(cls, value: object) -> object:
+        if isinstance(value, dict) and any(key not in cls.model_fields for key in value):
+            raise ValueError("CREDENTIAL_PAYLOAD_INVALID")
+        return value
+
+    wbToken: SecretStr | None = Field(
+        default=None,
+        min_length=8,
+        max_length=8_192,
+    )
+    clientId: SecretStr | None = Field(
+        default=None,
+        min_length=4,
+        max_length=8_192,
+    )
+    clientSecret: SecretStr | None = Field(
+        default=None,
+        min_length=8,
+        max_length=8_192,
+    )
+
+
+class MarketplaceCredentialStatusView(BaseModel):
+    marketplaceAccountId: int = Field(ge=1)
+    status: MarketplaceCredentialStatus
+    createdAt: UtcDateTime | None = None
+    updatedAt: UtcDateTime | None = None
+    expiresAt: UtcDateTime | None = None
+    revokedAt: UtcDateTime | None = None
 
 
 class UserPreferencesUpdateRequest(BaseModel):

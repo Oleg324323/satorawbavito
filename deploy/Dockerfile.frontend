@@ -1,0 +1,17 @@
+FROM node:22-alpine AS build
+WORKDIR /project
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci
+COPY frontend ./frontend
+COPY avito-orders-extension ./avito-orders-extension
+COPY wb-prices-extension ./wb-prices-extension
+COPY deploy ./deploy
+ARG SATORNA_DOMAIN
+# Build-time only; do not bypass the project's TypeScript gate.
+ENV NODE_OPTIONS=--max-old-space-size=2048
+RUN cd frontend && npm run build
+RUN node deploy/package-extensions.mjs --origin=https://${SATORNA_DOMAIN} --to-dist
+
+FROM caddy:2-alpine
+COPY --from=build /project/frontend/dist /srv
+COPY deploy/Caddyfile /etc/caddy/Caddyfile

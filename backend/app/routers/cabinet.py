@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.cabinet.schemas import (
     AuditEventView,
     CabinetMeView,
     IntegrationUpsertRequest,
     IntegrationView,
+    MarketplaceCredentialStatusView,
+    MarketplaceCredentialWriteRequest,
     SessionBulkRevokeResponse,
     SessionView,
     TeamUserCreateRequest,
@@ -43,10 +46,66 @@ from app.cabinet.store import (
 )
 from app.config import get_settings
 from app.contracts.envelopes import DataEnvelope, PaginatedEnvelope
-from app.control_plane.auth import actor_from_request, has_permission, hash_password
+from app.control_plane.auth import (
+    ActorContext,
+    actor_from_request,
+    has_permission,
+    hash_password,
+)
+from app.infra.db import get_session_factory
+from app.platform.integrations.access import get_marketplace_credential_actor
+from app.platform.integrations.credential_management import (
+    CredentialManagementError,
+    CredentialManagementService,
+)
+from app.platform.integrations.credential_store import (
+    CredentialMetadata,
+    _load_keyring,
+)
+from app.platform.integrations.wb_credentials import fetch_wb_seller_id
+from app.security.marketplace_credentials import MAX_SECRET_FIELD_BYTES
+from app.security import organization_openai
 
 
 router = APIRouter(tags=["cabinet"])
+
+
+@router.get("/api/v1/cabinet/openai-key")
+def get_openai_key_status(request: Request):
+    actor = _require_permission("cabinet:read", request)
+    return DataEnvelope(data=organization_openai.key_status(actor.organization_id))
+
+
+@router.put("/api/v1/cabinet/openai-key")
+async def put_openai_key(request: Request):
+    actor = _require_permission("integrations:write", request)
+    # Parse this sensitive payload ourselves: validation responses must not
+    # echo Pydantic input values containing a credential.
+    if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > 2048:
+        raise HTTPException(400, detail="OPENAI_KEY_INVALID")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > 2048:
+            raise HTTPException(400, detail="OPENAI_KEY_INVALID")
+    try:
+        import json
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"apiKey"}:
+            raise ValueError
+    except (ValueError, TypeError, UnicodeError):
+        raise HTTPException(400, detail="OPENAI_KEY_INVALID") from None
+    try:
+        view = await run_in_threadpool(organization_openai.save_key, actor.organization_id, payload["apiKey"])
+    except organization_openai.OpenAiKeyError as error:
+        raise HTTPException(400 if str(error) == "OPENAI_KEY_INVALID" else 503, detail=str(error)) from None
+    return DataEnvelope(data=view)
+
+
+@router.delete("/api/v1/cabinet/openai-key")
+def delete_openai_key(request: Request):
+    actor = _require_permission("integrations:write", request)
+    return DataEnvelope(data=organization_openai.delete_key(actor.organization_id))
 
 
 def _enqueue_wb_onboarding_sync(organization_id: int) -> None:
@@ -87,6 +146,163 @@ def _validate_avito_credentials_for_user_request(client_id: str, client_secret: 
         or any(char.isspace() for char in normalized_client_secret)
     ):
         raise HTTPException(status_code=400, detail="AVITO_CREDENTIALS_HAVE_WHITESPACE")
+
+
+def _credential_error(code: str) -> HTTPException:
+    if code == "WB_CREDENTIAL_IDENTITY_INVALID":
+        return HTTPException(status_code=400, detail={
+            "code": code, "message": "WB credential identity could not be verified"})
+    if code == "WB_SELLER_IDENTITY_MISMATCH":
+        return HTTPException(status_code=409, detail={
+            "code": code, "message": "WB seller identity does not match marketplace account"})
+    if code == "credential_management_access_denied":
+        status_code = 403
+    elif code == "credential_account_not_found":
+        status_code = 404
+    elif code in {
+        "credential_account_identity_mismatch",
+        "credential_auth_failed",
+        "credential_expired",
+        "credential_concurrent_update",
+    }:
+        status_code = 409
+    elif code in {
+        "credential_configuration_invalid",
+        "credential_persistence_failed",
+        "credential_key_unavailable",
+        "credential_management_context_invalid",
+        "credential_management_readback_required",
+    }:
+        status_code = 503
+    elif code == "credential_missing":
+        status_code = 404
+    else:
+        status_code = 400
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": code},
+    )
+
+
+def _credential_management_service() -> CredentialManagementService:
+    failed = False
+    try:
+        service = CredentialManagementService(session_factory=get_session_factory(),
+            keyring_loader=_load_keyring, wb_seller_verifier=fetch_wb_seller_id)
+    except Exception:  # noqa: BLE001 - never expose configured pool/key paths.
+        failed = True
+    if failed:
+        raise _credential_error("credential_configuration_invalid")
+    return service
+
+
+def _require_user_managed_credential_kind(
+    provider: str,
+    credential_kind: str,
+) -> None:
+    if (provider, credential_kind) not in {
+        ("wb", "wb_api"),
+        ("avito", "avito_oauth_client"),
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CREDENTIAL_KIND_UNSUPPORTED",
+                "message": "Credential kind is unsupported for this API",
+            },
+        )
+
+
+def _require_bounded_secret(value: str) -> None:
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        size = MAX_SECRET_FIELD_BYTES + 1
+    if size > MAX_SECRET_FIELD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CREDENTIAL_PAYLOAD_INVALID",
+                "message": "Credential payload is invalid",
+            },
+        )
+
+
+def _credential_payload(
+    provider: str,
+    credential_kind: str,
+    payload: MarketplaceCredentialWriteRequest,
+) -> dict[str, str]:
+    if provider == "wb" and credential_kind == "wb_api":
+        if (
+            payload.wbToken is None
+            or payload.clientId is not None
+            or payload.clientSecret is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "CREDENTIAL_PAYLOAD_INVALID",
+                    "message": "Credential payload does not match credential kind",
+                },
+            )
+        token = payload.wbToken.get_secret_value()
+        _require_bounded_secret(token)
+        _validate_wb_token_for_user_request(token)
+        return {"token": token}
+    if provider == "avito" and credential_kind == "avito_oauth_client":
+        if (
+            payload.wbToken is not None
+            or payload.clientId is None
+            or payload.clientSecret is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "CREDENTIAL_PAYLOAD_INVALID",
+                    "message": "Credential payload does not match credential kind",
+                },
+            )
+        client_id = payload.clientId.get_secret_value()
+        client_secret = payload.clientSecret.get_secret_value()
+        _require_bounded_secret(client_id)
+        _require_bounded_secret(client_secret)
+        _validate_avito_credentials_for_user_request(client_id, client_secret)
+        return {"clientId": client_id, "clientSecret": client_secret}
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "code": "CREDENTIAL_KIND_UNSUPPORTED",
+            "message": "Credential kind is unsupported for this API",
+        },
+    )
+
+
+def _credential_status_view(
+    marketplace_account_id: int,
+    metadata: CredentialMetadata | None,
+) -> MarketplaceCredentialStatusView:
+    if metadata is None:
+        return MarketplaceCredentialStatusView(
+            marketplaceAccountId=marketplace_account_id,
+            status="missing",
+        )
+    if metadata.revoked_at is not None:
+        status = "revoked"
+    elif metadata.expires_at is not None and metadata.expires_at <= datetime.now(
+        timezone.utc
+    ):
+        status = "expired"
+    else:
+        status = "active"
+    return MarketplaceCredentialStatusView(
+        marketplaceAccountId=marketplace_account_id,
+        status=status,
+        createdAt=metadata.created_at,
+        updatedAt=metadata.updated_at,
+        expiresAt=metadata.expires_at,
+        revokedAt=metadata.revoked_at,
+    )
 
 
 @router.get("/api/v1/cabinet/me", response_model=DataEnvelope[CabinetMeView])
@@ -213,6 +429,8 @@ def get_my_wb_token(request: Request) -> DataEnvelope[UserWbTokenView]:
 
 @router.put("/api/v1/cabinet/wb-token", response_model=DataEnvelope[UserWbTokenView])
 def put_my_wb_token(request: Request, payload: UserWbTokenUpsertRequest) -> DataEnvelope[UserWbTokenView]:
+    if get_settings().wb_live_sync_enabled:
+        raise HTTPException(409, detail={"code": "WB_USE_ACCOUNT_CONNECTION"})
     actor = _require_permission("cabinet:read", request)
     _validate_wb_token_for_user_request(payload.wbToken)
     updated = upsert_user_wb_token(
@@ -232,6 +450,8 @@ def put_my_wb_token(request: Request, payload: UserWbTokenUpsertRequest) -> Data
 
 @router.delete("/api/v1/cabinet/wb-token", response_model=DataEnvelope[UserWbTokenView])
 def delete_my_wb_token(request: Request) -> DataEnvelope[UserWbTokenView]:
+    if get_settings().wb_live_sync_enabled:
+        raise HTTPException(409, detail={"code": "WB_USE_ACCOUNT_CONNECTION"})
     actor = _require_permission("cabinet:read", request)
     cleared = delete_user_wb_token(
         user_id=actor.user_id,
@@ -282,6 +502,84 @@ def delete_my_avito_credentials(request: Request) -> DataEnvelope[UserAvitoCrede
         user_agent=request.headers.get("user-agent"),
     )
     return DataEnvelope(data=cleared)
+
+
+@router.get(
+    "/api/v1/cabinet/marketplace-accounts/{marketplaceAccountId}/credentials/{provider}/{credentialKind}",
+    response_model=DataEnvelope[MarketplaceCredentialStatusView],
+)
+def get_marketplace_account_credential_status(
+    marketplaceAccountId: int,
+    provider: str,
+    credentialKind: str,
+    actor: ActorContext = Depends(get_marketplace_credential_actor),
+    management: CredentialManagementService = Depends(_credential_management_service),
+) -> DataEnvelope[MarketplaceCredentialStatusView]:
+    _require_user_managed_credential_kind(provider, credentialKind)
+    code = None
+    try:
+        metadata = management.status(authenticated_actor=actor, marketplace_account_id=marketplaceAccountId,
+                                     provider=provider, credential_kind=credentialKind)
+    except CredentialManagementError as error:
+        code = error.code
+    if code is not None:
+        raise _credential_error(code)
+    return DataEnvelope(data=_credential_status_view(marketplaceAccountId, metadata))
+
+
+@router.put(
+    "/api/v1/cabinet/marketplace-accounts/{marketplaceAccountId}/credentials/{provider}/{credentialKind}",
+    response_model=DataEnvelope[MarketplaceCredentialStatusView],
+)
+def put_marketplace_account_credential(
+    marketplaceAccountId: int,
+    provider: str,
+    credentialKind: str,
+    payload: MarketplaceCredentialWriteRequest,
+    actor: ActorContext = Depends(get_marketplace_credential_actor),
+    management: CredentialManagementService = Depends(_credential_management_service),
+) -> DataEnvelope[MarketplaceCredentialStatusView]:
+    _require_user_managed_credential_kind(provider, credentialKind)
+    plaintext = _credential_payload(provider, credentialKind, payload)
+    code = None
+    try:
+        metadata = management.put(authenticated_actor=actor, marketplace_account_id=marketplaceAccountId,
+                                  provider=provider, credential_kind=credentialKind, plaintext=plaintext)
+    except CredentialManagementError as error:
+        code = error.code
+    finally:
+        plaintext.clear()
+    if code is not None:
+        raise _credential_error(code)
+    return DataEnvelope(
+        data=_credential_status_view(marketplaceAccountId, metadata)
+    )
+
+
+@router.delete(
+    "/api/v1/cabinet/marketplace-accounts/{marketplaceAccountId}/credentials/{provider}/{credentialKind}",
+    response_model=DataEnvelope[MarketplaceCredentialStatusView],
+)
+def delete_marketplace_account_credential(
+    marketplaceAccountId: int,
+    provider: str,
+    credentialKind: str,
+    reasonCode: str = Query(default="operator_revoked"),
+    actor: ActorContext = Depends(get_marketplace_credential_actor),
+    management: CredentialManagementService = Depends(_credential_management_service),
+) -> DataEnvelope[MarketplaceCredentialStatusView]:
+    _require_user_managed_credential_kind(provider, credentialKind)
+    code = None
+    try:
+        metadata = management.revoke(authenticated_actor=actor, marketplace_account_id=marketplaceAccountId,
+            provider=provider, credential_kind=credentialKind, reason_code=reasonCode)
+    except CredentialManagementError as error:
+        code = error.code
+    if code is not None:
+        raise _credential_error(code)
+    return DataEnvelope(
+        data=_credential_status_view(marketplaceAccountId, metadata)
+    )
 
 
 @router.get("/api/v1/cabinet/audit/events", response_model=PaginatedEnvelope[AuditEventView])

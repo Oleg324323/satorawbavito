@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from time import sleep
 
 from fastapi.testclient import TestClient
 import httpx
+import pytest
 
-from app.avito.stats import AvitoStatsAccount, AvitoStatsClient, AvitoStatsFetchRequest, AvitoStatsFetchResult, AvitoStatsItem, LiveAvitoStatsClient
+from app.avito.stats import AvitoStatsAccount, AvitoStatsDailyPoint, AvitoStatsFetchError, AvitoStatsFetchRequest, AvitoStatsFetchResult, AvitoStatsItem, LiveAvitoStatsClient
+from app.cabinet.store import AvitoCredentialsSecret
 from app.main import create_app
 from tests.auth_helpers import auth_headers
 
@@ -579,7 +584,7 @@ def test_avito_stats_endpoint_uses_saved_avito_credentials_and_caches_payload(mo
     assert recording_client.requests[0].dateFrom == date(2026, 7, 1)
     assert recording_client.requests[0].dateTo == date(2026, 7, 28)
     assert cached_payloads
-    assert cached_payloads[0][1] == "avito_stats:2026-07-01:2026-07-28:all"
+    assert cached_payloads[0][1].startswith("avito_stats:2026-07-01:2026-07-28:all:")
     assert cached_payloads[0][2]["rows"][0]["itemId"] == "8098482225"
 
 
@@ -594,7 +599,42 @@ def test_avito_stats_endpoint_reports_missing_avito_credentials():
     assert response.json()["error"]["message"] == "AVITO_CREDENTIALS_REQUIRED"
 
 
-def test_avito_stats_endpoint_returns_exact_period_cache_before_calling_avito(monkeypatch):
+def test_avito_stats_endpoint_pauses_after_rate_limit(monkeypatch):
+    cache: dict[str, dict] = {}
+    calls = 0
+
+    class RateLimitedClient:
+        def fetch_stats(self, _request):
+            nonlocal calls
+            calls += 1
+            return AvitoStatsFetchResult(
+                status="blocked",
+                error=AvitoStatsFetchError(code="rate_limited", message="Avito HTTP 429", retryable=True,
+                                           blockerIds=["AVITO_RATE_LIMIT"]),
+            )
+
+    monkeypatch.setattr("app.routers.avito_stats.get_user_avito_credentials_secret", lambda _user: AvitoCredentialsSecret(
+        client_id="synthetic-client", client_secret="synthetic-secret", cached_access_token=None, access_token_expires_at=None,
+    ))
+    monkeypatch.setattr("app.routers.avito_stats.resolve_user_avito_access_token", lambda **_kwargs: "current-token")
+    monkeypatch.setattr("app.routers.avito_stats.get_source_cache", lambda _org, key, **_kwargs: cache.get(key))
+    monkeypatch.setattr("app.routers.avito_stats.save_source_cache", lambda _org, key, payload: cache.update({key: payload}))
+    monkeypatch.setattr("app.routers.avito_stats.build_avito_stats_client", lambda **_kwargs: RateLimitedClient())
+
+    api = TestClient(create_app())
+    headers = auth_headers(api, "viewer")
+    params = {"dateFrom": "2026-07-01", "dateTo": "2026-07-28", "forceRefresh": "true"}
+    first = api.get("/api/v1/avito/stats", params=params, headers=headers)
+    second = api.get("/api/v1/avito/stats", params=params, headers=headers)
+
+    assert first.status_code == second.status_code == 200
+    assert calls == 1
+    assert first.json()["source"]["error"]["retryAfterUntil"]
+    assert second.json()["source"]["cache"]["status"] == "cooldown"
+    assert second.json()["source"]["error"]["code"] == "rate_limited"
+
+
+def test_avito_stats_endpoint_reuses_exact_period_cache_for_current_token(monkeypatch):
     cached_payload = {
         "status": "synced",
         "period": {"dateFrom": "2026-07-01", "dateTo": "2026-07-28", "days": 28},
@@ -616,12 +656,12 @@ def test_avito_stats_endpoint_returns_exact_period_cache_before_calling_avito(mo
         "source": {"mode": "live", "cache": {"status": "fresh", "savedAt": "2026-07-28T00:00:00+00:00"}},
     }
 
-    monkeypatch.setattr("app.routers.avito_stats.get_source_cache", lambda *_args, **_kwargs: cached_payload)
-
-    def fail_if_called(**_kwargs):
-        raise AssertionError("Avito OAuth must not be called while exact cached stats exist")
-
-    monkeypatch.setattr("app.routers.avito_stats.resolve_user_avito_access_token", fail_if_called)
+    keys = []
+    monkeypatch.setattr("app.routers.avito_stats.get_source_cache", lambda _org, key, **_kwargs: keys.append(key) or cached_payload)
+    monkeypatch.setattr("app.routers.avito_stats.get_user_avito_credentials_secret", lambda _user: AvitoCredentialsSecret(
+        client_id="synthetic-client", client_secret="synthetic-secret", cached_access_token=None, access_token_expires_at=None,
+    ))
+    monkeypatch.setattr("app.routers.avito_stats.resolve_user_avito_access_token", lambda **_kwargs: "current-token")
     api = TestClient(create_app())
     headers = auth_headers(api, "viewer")
 
@@ -635,3 +675,219 @@ def test_avito_stats_endpoint_returns_exact_period_cache_before_calling_avito(mo
     payload = response.json()
     assert payload["rows"][0]["itemId"] == "cached-1"
     assert payload["source"]["cache"]["status"] == "hit"
+    assert keys[0].startswith("avito_stats:2026-07-01:2026-07-28:all:")
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_stats_coalesces_refreshes_and_reads_cache_before_oauth(monkeypatch, empty):
+    from app.routers import avito_stats as route
+    cache = {}
+    calls = []
+    actor = SimpleNamespace(user_id="synthetic-user", organization_id=101)
+    credentials = AvitoCredentialsSecret(client_id="test-client", client_secret="test-secret",
+                                        cached_access_token=None, access_token_expires_at=None)
+
+    class Client:
+        def fetch_stats(self, request):
+            calls.append(request)
+            sleep(0.03)  # Overlap the callers, not their provider requests.
+            result = RecordingAvitoStatsClient().fetch_stats(request)
+            if empty:
+                result.items = []
+            return result
+
+    monkeypatch.setattr(route, "actor_from_request", lambda _: actor)
+    monkeypatch.setattr(route, "has_permission", lambda *_: True)
+    monkeypatch.setattr(route, "get_user_avito_credentials_secret", lambda _: credentials)
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", lambda **_: "first-test-token")
+    monkeypatch.setattr(route, "get_source_cache", lambda org, key, **_: cache.get((org, key)))
+    monkeypatch.setattr(route, "save_source_cache", lambda org, key, payload: cache.update({(org, key): payload}))
+    monkeypatch.setattr(route, "_client", lambda _: Client())
+
+    def load(force=True, start=date(2026, 7, 1)):
+        return route.get_avito_stats(None, start, date(2026, 7, 28), 28, [], force)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        responses = list(executor.map(lambda _: load(), range(4)))
+    assert len(calls) == 1
+    assert all(response["status"] == "synced" for response in responses)
+    assert [response["source"]["cache"]["status"] for response in responses].count("fresh") == 1
+
+    def oauth_unavailable(**_):
+        raise AssertionError("A saved snapshot must not require OAuth")
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", oauth_unavailable)
+    assert load()["source"]["cache"]["status"] == "hit"
+    assert load(False)["rows"] == responses[0]["rows"]
+    assert len(calls) == 1
+
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", lambda **_: "renewed-test-token")
+    # Another period, organization or credential must never reuse this snapshot.
+    load(start=date(2026, 7, 2))
+    actor.organization_id = 102
+    load()
+    credentials = AvitoCredentialsSecret(client_id="another-test-client", client_secret="test-secret",
+                                        cached_access_token=None, access_token_expires_at=None)
+    load()
+    assert len(calls) == 4
+
+
+def test_stats_keeps_saved_rows_when_forced_refresh_is_rate_limited(monkeypatch):
+    from app.routers import avito_stats as route
+    cache = {}
+    actor = SimpleNamespace(user_id="synthetic-user", organization_id=103)
+    credentials = AvitoCredentialsSecret(client_id="test-client", client_secret="test-secret",
+                                        cached_access_token=None, access_token_expires_at=None)
+    scope = "synthetic-scope"
+    calls = []
+    def fetch(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return RecordingAvitoStatsClient().fetch_stats(request)
+        return AvitoStatsFetchResult(status="blocked", error=AvitoStatsFetchError(
+            code="rate_limited", message="Avito HTTP 429", retryable=True, blockerIds=["AVITO_RATE_LIMIT"]))
+    monkeypatch.setattr(route, "get_source_cache", lambda org, key, **_: cache.get((org, key)))
+    monkeypatch.setattr(route, "save_source_cache", lambda org, key, payload: cache.update({(org, key): payload}))
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", lambda **_: "test-token")
+    monkeypatch.setattr(route, "_client", lambda _: SimpleNamespace(fetch_stats=fetch))
+    def load():
+        return route._load_stats(actor, credentials, scope, date(2026, 7, 1), date(2026, 7, 28), 28, [], True)
+    first = load()
+    first["source"]["cache"]["savedAt"] = "2000-01-01T00:00:00+00:00"
+    for _ in range(2):
+        response = load()
+        assert response["status"] == "partial"
+        assert response["rows"] == first["rows"]
+        assert response["source"]["error"]["code"] == "rate_limited"
+    assert len(calls) == 2
+    assert first["source"]["error"] is None
+
+
+def test_day_grouping_requests_real_daily_metrics_in_one_call():
+    client = LiveAvitoStatsClient(access_token="synthetic-token", base_url="https://api.avito.ru")
+    http = RecordingAvitoStatsHttpClient({"result": {"groupings": [
+        {"id": "2026-07-27", "type": "day", "metrics": [{"slug": "views", "value": 10}]},
+        {"id": "2026-07-28", "type": "day", "metrics": [{"slug": "views", "value": 20}]},
+    ]}})
+    rows, daily = client._stats_totals(http,
+        AvitoStatsFetchRequest(dateFrom=date(2026, 7, 27), dateTo=date(2026, 7, 28), grouping="day"),
+        [AvitoStatsAccount(accountId="account", accountName="Test")])
+    assert len(http.posts) == 1
+    assert http.posts[0]["json"]["grouping"] == "day"
+    assert http.posts[0]["json"]["limit"] == 1000
+    assert rows[0].views == 30
+    assert [(point.date, point.views) for point in daily] == [(date(2026, 7, 27), 10), (date(2026, 7, 28), 20)]
+
+
+def test_daily_summary_excludes_extra_comparison_days_and_cache_is_separate(monkeypatch):
+    from app.routers import avito_stats as route
+    cache, calls = {}, []
+    monkeypatch.setattr(route, "list_source_cache_by_prefix", lambda *_, **__: [])
+    actor = SimpleNamespace(user_id="test-user", organization_id=104)
+    credentials = AvitoCredentialsSecret(client_id="test-client", client_secret="test-secret",
+                                        cached_access_token=None, access_token_expires_at=None)
+    def fetch(request):
+        calls.append(request)
+        return AvitoStatsFetchResult(status="synced",
+            accounts=[AvitoStatsAccount(accountId="test", accountName="Test")],
+            items=[AvitoStatsItem(itemId="totals:test", title="Test", accountId="test", accountName="Test", views=210)],
+            daily=[AvitoStatsDailyPoint(date=date(2026, 7, day), accountId="test", accountName="Test",
+                                       views=(day - 22) * 10, contacts=1) for day in range(23, 29)])
+    monkeypatch.setattr(route, "get_source_cache", lambda org, key, **_: cache.get((org, key)))
+    monkeypatch.setattr(route, "save_source_cache", lambda org, key, payload: cache.update({(org, key): payload}))
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", lambda **_: "synthetic-token")
+    monkeypatch.setattr(route, "_client", lambda _: SimpleNamespace(fetch_stats=fetch))
+    def load(daily):
+        return route._load_stats(actor, credentials, "test-scope", date(2026, 7, 28), date(2026, 7, 28), 1, [], False, daily)
+    result = load(True)
+    assert calls[0].dateFrom == date(2026, 7, 23)
+    assert calls[0].dateTo == date(2026, 7, 28)
+    assert calls[0].grouping == "day"
+    assert result["summary"]["views"] == 60
+    assert result["summary"]["contacts"] == 1
+    assert result["summary"]["favorites"] is None
+    assert len(result["timeline"]) == 6
+    assert load(True)["source"]["cache"]["status"] == "hit"
+    assert len(calls) == 1
+    load(False)
+    assert calls[-1].grouping == "totals"
+    assert len(calls) == len(cache) == 2
+
+
+def test_timeline_keeps_unknown_metrics_unknown_when_aggregating_accounts():
+    from app.routers.avito_stats import _timeline
+    result = _timeline([
+        AvitoStatsDailyPoint(date=date(2026, 7, 28), accountId="a", accountName="A", views=10, contacts=0),
+        AvitoStatsDailyPoint(date=date(2026, 7, 28), accountId="b", accountName="B", views=20, contacts=None),
+    ])
+    assert result[0]["views"] == 30
+    assert result[0]["contacts"] is None
+    assert result[0]["favorites"] is None
+
+
+@pytest.mark.parametrize("failure", ["oauth", "cooldown", "provider"])
+def test_daily_failure_keeps_existing_totals_snapshot(monkeypatch, failure):
+    from app.routers import avito_stats as route
+    monkeypatch.setattr(route, "list_source_cache_by_prefix", lambda *_, **__: [])
+    actor = SimpleNamespace(user_id="test-user", organization_id=105)
+    credentials = AvitoCredentialsSecret(client_id="test-client", client_secret="test-secret",
+                                        cached_access_token=None, access_token_expires_at=None)
+    start, end, scope = date(2026, 7, 1), date(2026, 7, 28), "test-scope"
+    cached = {"status": "synced", "summary": {"views": 123}, "rows": [{"views": 123}],
+              "timeline": [], "period": {"dateFrom": start.isoformat(), "dateTo": end.isoformat()},
+              "source": {"cache": {"status": "fresh", "savedAt": "2026-07-28T00:00:00+00:00"}}}
+    total_key = route.scoped_avito_cache_key(route._cache_key(start, end, []), scope)
+    def get_cache(_org, key, **_):
+        if key == total_key:
+            return cached
+        if failure == "cooldown" and key.startswith("avito_stats_rate_limit:"):
+            return {"retryAfterUntil": "2099-01-01T00:00:00+00:00"}
+    def oauth(**_):
+        if failure == "oauth":
+            raise RuntimeError("synthetic auth unavailable")
+        return "synthetic-token"
+    def fetch(_):
+        assert failure == "provider"
+        return AvitoStatsFetchResult(status="blocked", error=AvitoStatsFetchError(
+            code="rate_limited", message="Avito HTTP 429", retryable=True))
+    monkeypatch.setattr(route, "get_source_cache", get_cache)
+    monkeypatch.setattr(route, "save_source_cache", lambda *_: None)
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", oauth)
+    monkeypatch.setattr(route, "_client", lambda _: SimpleNamespace(fetch_stats=fetch))
+    result = route._load_stats(actor, credentials, scope, start, end, 28, [], False, True)
+    assert result["status"] == "partial"
+    assert result["summary"]["views"] == 123
+    assert result["timeline"] == []
+    assert cached["source"]["cache"]["status"] == "fresh"
+
+
+def test_reuses_quarter_snapshot_for_week_without_oauth_or_provider(monkeypatch):
+    from app.routers import avito_stats as route
+    start, end, scope = date(2026, 7, 2), date(2026, 10, 1), "test-scope"
+    from datetime import timedelta
+    points = [{"date": (start + timedelta(days=i)).isoformat(), "views": 10, "contacts": 2, "spendKopecks": 100}
+              for i in range(92)]
+    snapshot = {"status": "synced", "period": {"dateFrom": str(start), "dateTo": str(end), "days": 92},
+                "summary": {"views": 920}, "rows": [{"views": 920}], "timeline": points,
+                "sourceKey": route.scoped_avito_cache_key(route._cache_key(start, end, []) + ":daily", scope),
+                "source": {"cache": {"status": "fresh", "savedAt": "2026-10-01T14:00:00+00:00"}}}
+    monkeypatch.setattr(route, "list_source_cache_by_prefix", lambda *_, **__: [snapshot])
+    monkeypatch.setattr(route, "get_source_cache", lambda *_, **__: None)
+    def no_oauth(**_):
+        raise AssertionError("No OAuth or provider reads needed for a cached subrange")
+    monkeypatch.setattr(route, "resolve_user_avito_access_token", no_oauth)
+    actor = SimpleNamespace(user_id="test-user", organization_id=106)
+    result = route._load_stats(actor, None, scope, date(2026, 9, 25), end, 7, [], False, True)
+    assert result["period"] == {"dateFrom": "2026-09-25", "dateTo": "2026-10-01", "days": 7}
+    assert result["summary"]["views"] == 70
+    assert result["summary"]["contacts"] == 14
+    assert result["summary"]["conversionPct"] == 20
+    assert result["source"]["cache"]["status"] == "hit"
+    assert snapshot["summary"]["views"] == 920
+    assert snapshot["source"]["cache"]["status"] == "fresh"
+    # Another credential or account selection cannot use this snapshot.
+    assert route._daily_cache_for_period(106, "other", date(2026, 9, 25), end, 7, []) is None
+    assert route._daily_cache_for_period(106, scope, date(2026, 9, 25), end, 7, ["other"]) is None
+    # Wider ranges or incomplete daily history are not silently reported as complete.
+    assert route._daily_cache_for_period(106, scope, date(2026, 6, 1), end, 123, []) is None
+    snapshot["timeline"] = points[:-1]
+    assert route._daily_cache_for_period(106, scope, date(2026, 9, 25), end, 7, []) is None

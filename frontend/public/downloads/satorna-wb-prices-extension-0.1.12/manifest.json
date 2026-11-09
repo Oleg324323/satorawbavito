@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "111",
+  "name": "Satorna — цены Wildberries",
+  "version": "0.1.12",
+  "description": "Собирает наблюдаемые цены покупателя WB пакетами и сохраняет их в каталог Satorna.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://www.wildberries.ru/*", "https://card.wb.ru/*", "https://api.elfprint-system.ru/*"],
+  "optional_host_permissions": ["https://*/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "src/background.js" },
+  "action": { "default_popup": "src/popup.html", "default_title": "Satorna — цены WB" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.wildberries.ru/catalog/*/detail.aspx*", "https://www.wildberries.ru/seller/*"],
+      "js": ["src/contract.js", "src/content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://www.wildberries.ru/catalog/*/detail.aspx*", "https://www.wildberries.ru/seller/*"],
+      "js": ["src/page-observer.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    }
+  ]
+}

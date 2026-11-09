@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +18,7 @@ from app.cabinet.orm import (
 from app.infra.models import Base
 from app.platform.integrations import wb_credentials
 from app.platform.integrations.orm import MarketplaceAccountRow
+from app.platform.identity.orm import IamMembershipRow
 
 
 SELLER_ID = "64f8d3e5-3d25-4b5c-9f23-0fd3937af451"
@@ -168,6 +169,103 @@ def test_bind_wb_credential_never_replaces_a_different_verified_seller(
             token_id=1,
             expected_external_account_id=other_seller_id,
         )
+
+
+def test_repeated_verified_binding_preserves_account_and_token_identity(binding_db, monkeypatch):
+    _engine, factory = binding_db
+    monkeypatch.setattr(wb_credentials, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(wb_credentials, "fetch_wb_seller_id", lambda _token: SELLER_ID)
+    for _ in range(2):
+        wb_credentials.bind_wb_credential(2, marketplace_account_id=2, token_id=1,
+            expected_external_account_id="legacy-org-2")
+    with factory() as session:
+        account_id, reference, token = wb_credentials.resolve_bound_wb_credential(session, 2, marketplace_account_id=2)
+        assert (account_id, reference, token) == (2, "lk_user_wb_tokens:1", "original-secret")
+        assert session.query(MarketplaceAccountRow).count() == 1
+        assert session.query(LkUserWbTokenRow).count() == 1
+        assert session.query(IamMembershipRow).count() == 0
+
+
+@pytest.mark.parametrize("invalid", ["foreign_organization", "inactive_owner", "missing_token"])
+def test_verified_binding_rejects_invalid_token_ownership_before_provider_probe(binding_db, monkeypatch, invalid):
+    _engine, factory = binding_db
+    monkeypatch.setattr(wb_credentials, "get_session_factory", lambda: factory)
+    def unexpected_probe(_token):
+        pytest.fail("Invalid token ownership must be rejected before a WB request")
+    monkeypatch.setattr(wb_credentials, "fetch_wb_seller_id", unexpected_probe)
+    token_id = 1
+    with factory() as session:
+        if invalid == "foreign_organization":
+            session.add_all([
+                LkOrganizationRow(organization_id=3, slug="three", name="Three"),
+                LkUserRow(user_id="owner-three", organization_id=3, email="three@example.com",
+                    password_hash="unused", full_name="Three", permission_profile="admin", is_active=True),
+                LkUserWbTokenRow(token_id=3, user_id="owner-three", organization_id=3,
+                    wb_token="synthetic-foreign-token", token_masked="***"),
+            ])
+            token_id = 3
+        elif invalid == "inactive_owner":
+            session.get(LkUserRow, "owner-two").is_active = False
+        else:
+            session.delete(session.get(LkUserWbTokenRow, token_id))
+        session.commit()
+    with pytest.raises(wb_credentials.WbCredentialBindingError):
+        wb_credentials.bind_wb_credential(2, marketplace_account_id=2, token_id=token_id,
+            expected_external_account_id="legacy-org-2")
+    with factory() as session:
+        assert session.get(MarketplaceAccountRow, 2).credential_ref is None
+        assert session.query(LkAuditEventRow).count() == 0
+
+
+def test_resolver_still_rejects_multiple_connected_accounts_after_verified_binding(binding_db, monkeypatch):
+    _engine, factory = binding_db
+    monkeypatch.setattr(wb_credentials, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(wb_credentials, "fetch_wb_seller_id", lambda _token: SELLER_ID)
+    wb_credentials.bind_wb_credential(2, marketplace_account_id=2, token_id=1,
+        expected_external_account_id="legacy-org-2")
+    with factory() as session:
+        session.add(MarketplaceAccountRow(marketplace_account_id=3, organization_id=2,
+            marketplace="wb", external_account_id="another-seller", status="connected"))
+        session.commit()
+        with pytest.raises(wb_credentials.WbCredentialBindingError):
+            wb_credentials.resolve_bound_wb_credential(session, 2, marketplace_account_id=2)
+
+
+def test_funnel_scope_requires_explicit_binding_and_preserves_membership_checks(binding_db, monkeypatch):
+    from fastapi import HTTPException
+    from app.routers import wb_sales_funnel as router
+
+    _engine, factory = binding_db
+    monkeypatch.setattr(wb_credentials, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(wb_credentials, "fetch_wb_seller_id", lambda _token: SELLER_ID)
+    actor = SimpleNamespace(organization_id=2, user_id="owner-two")
+    monkeypatch.setattr(router, "actor_from_request", lambda _request: actor)
+    start, end = date(2026, 10, 19), date(2026, 10, 25)
+    with factory() as session:
+        with pytest.raises(HTTPException) as error:
+            router._scope(None, session, start, end, 2)
+        assert error.value.status_code == 409
+        assert session.get(MarketplaceAccountRow, 2).credential_ref is None
+        assert session.query(LkAuditEventRow).count() == 0
+    wb_credentials.bind_wb_credential(2, marketplace_account_id=2, token_id=1,
+        expected_external_account_id="legacy-org-2")
+    with factory() as session:
+        with pytest.raises(HTTPException) as error:
+            router._scope(None, session, start, end, 2)
+        assert error.value.status_code == 403  # A binding does not grant membership.
+        membership = IamMembershipRow(organization_id=2, user_id="owner-two", role="admin",
+            permissions=[], scope_mode="selected", allowed_account_ids=[], is_active=True)
+        session.add(membership)
+        session.commit()
+        with pytest.raises(HTTPException) as error:
+            router._scope(None, session, start, end, 2)
+        assert error.value.status_code == 403  # An unrelated scope remains denied.
+        membership.allowed_account_ids = [2]
+        session.commit()
+        resolved_actor, account, scope, period = router._scope(None, session, start, end, 2)
+        assert resolved_actor is actor and account == 2
+        assert scope == router.scope_key(2, "original-secret")
+        assert (period.date_from, period.date_to) == (start, end)
 
 
 def test_token_rotation_and_delete_invalidate_credential_binding(

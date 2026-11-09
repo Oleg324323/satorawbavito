@@ -1,0 +1,25 @@
+{
+  "schema_version": "avito-browser-evidence-v1",
+  "idempotency_key": "11111111-1111-4111-8111-111111111111",
+  "captured_at": "2026-09-09T12:34:56.123456+03:00",
+  "orders": [
+    {
+      "external_order_id": "000-synthetic-order",
+      "raw_status": "synthetic-unknown-status",
+      "items": [
+        {
+          "external_item_id": "000-synthetic-listing",
+          "stable_order_line_id": null,
+          "occurrence_index": 0,
+          "quantity": 3
+        },
+        {
+          "external_item_id": "000-synthetic-listing",
+          "stable_order_line_id": null,
+          "occurrence_index": 1,
+          "quantity": 1
+        }
+      ]
+    }
+  ]
+}

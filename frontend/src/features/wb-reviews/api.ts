@@ -1,5 +1,10 @@
 import { apiData, apiRequest } from '@/lib/api'
 import { authorizationHeaders } from '@/features/auth/authApi'
+import { canonicalReviewsEnabled } from './canonicalReviewDetail'
+
+function requireLegacyReviewWriter() {
+  if (canonicalReviewsEnabled) throw new Error('Используйте локальную каноническую карточку отзыва. Прежняя запись и отправка отключены.')
+}
 
 export type WbReviewFeedback = {
   feedbackId: string
@@ -324,6 +329,7 @@ export async function getWbReviewSyncStatus(accessToken: string) {
 }
 
 export async function generateWbReviewDraft(accessToken: string, feedbackId: string, regenerate = true, brandVoiceId = 'wb-default', promptInstruction?: string) {
+  requireLegacyReviewWriter()
   return apiData<WbReviewDraft>('/api/v1/wb-reviews/drafts/generate', {
     method: 'POST',
     headers: auth(accessToken),
@@ -332,6 +338,7 @@ export async function generateWbReviewDraft(accessToken: string, feedbackId: str
 }
 
 export async function generateWbReviewDraftsBatch(accessToken: string, items: WbReviewDraftBatchGenerateItem[], regenerate = true) {
+  requireLegacyReviewWriter()
   return apiData<WbReviewDraftBatchGenerateResponse>('/api/v1/wb-reviews/drafts/generate-batch', {
     method: 'POST',
     headers: auth(accessToken),
@@ -340,6 +347,7 @@ export async function generateWbReviewDraftsBatch(accessToken: string, items: Wb
 }
 
 export async function approveWbReviewDraft(accessToken: string, draftId: string, reason = 'approved from reviews page') {
+  requireLegacyReviewWriter()
   return apiData<WbReviewDraft>(`/api/v1/wb-reviews/drafts/${encodeURIComponent(draftId)}/approve`, {
     method: 'POST',
     headers: auth(accessToken),
@@ -348,6 +356,7 @@ export async function approveWbReviewDraft(accessToken: string, draftId: string,
 }
 
 export async function rejectWbReviewDraft(accessToken: string, draftId: string, reason = 'rejected from reviews page') {
+  requireLegacyReviewWriter()
   return apiData<WbReviewDraft>(`/api/v1/wb-reviews/drafts/${encodeURIComponent(draftId)}/reject`, {
     method: 'POST',
     headers: auth(accessToken),
@@ -356,6 +365,7 @@ export async function rejectWbReviewDraft(accessToken: string, draftId: string, 
 }
 
 export async function requestWbReviewSend(accessToken: string, draftId: string) {
+  requireLegacyReviewWriter()
   return apiData<WbReviewSendJob>(`/api/v1/wb-reviews/drafts/${encodeURIComponent(draftId)}/send`, {
     method: 'POST',
     headers: auth(accessToken),

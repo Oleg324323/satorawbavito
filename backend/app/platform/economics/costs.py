@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -75,7 +75,7 @@ def _view(row: Any) -> CostValue:
 
 class CostsService:
     def __init__(self, session: Session, organization_id: int, *, now: Callable[[], datetime] = utc_now):
-        if organization_id < 1:
+        if type(organization_id) is not int or organization_id < 1:
             raise CostValidationError("organization_id must be positive")
         self.session = session
         self.organization_id = organization_id
@@ -85,6 +85,7 @@ class CostsService:
         set_tenant_context(self.session, self.organization_id)
 
     def _sku(self, catalog_sku_id: int) -> CatalogSkuRow:
+        self._validate_sku_id(catalog_sku_id)
         self._prepare()
         row = self.session.scalar(
             select(CatalogSkuRow).where(
@@ -95,6 +96,11 @@ class CostsService:
         if row is None:
             raise CostNotFoundError("catalog SKU not found")
         return row
+
+    @staticmethod
+    def _validate_sku_id(catalog_sku_id: int) -> None:
+        if type(catalog_sku_id) is not int or catalog_sku_id < 1:
+            raise CostValidationError("catalog_sku_id must be a positive internal integer")
 
     def _by_reference(self, source: str, source_reference: str) -> CatalogCostVersionRow | None:
         self._prepare()
@@ -163,6 +169,10 @@ class CostsService:
             raise CostValidationError("source and source_reference are required")
         effective_at = _aware_utc(effective_from)
         self._sku(catalog_sku_id)
+        self.session.scalar(select(CatalogSkuRow).where(
+            CatalogSkuRow.organization_id == self.organization_id,
+            CatalogSkuRow.catalog_sku_id == catalog_sku_id,
+        ).with_for_update())
         if created_by_user_id is not None:
             if created_by_membership_id is not None:
                 raise CostValidationError("provide either created_by_user_id or created_by_membership_id")
@@ -224,60 +234,86 @@ class CostsService:
     def get_cost_at(self, catalog_sku_id: int, at: datetime) -> CostValue:
         effective_at = _aware_utc(at)
         self._sku(catalog_sku_id)
-        row = self.session.scalar(
-            select(CatalogCostVersionRow)
-            .where(
-                CatalogCostVersionRow.organization_id == self.organization_id,
-                CatalogCostVersionRow.catalog_sku_id == catalog_sku_id,
-                CatalogCostVersionRow.effective_from <= effective_at,
-            )
-            .order_by(
-                CatalogCostVersionRow.effective_from.desc(),
-                CatalogCostVersionRow.created_at.desc(),
-                CatalogCostVersionRow.cost_version_id.desc(),
-            )
-            .limit(1)
-        )
-        return _view(row) if row is not None else CostValue(None, catalog_sku_id, None, "missing")
+        return self.get_costs_for_points([(catalog_sku_id, effective_at)])[(catalog_sku_id, effective_at)]
 
     def get_current_cost(self, catalog_sku_id: int) -> CostValue:
         return self.get_cost_at(catalog_sku_id, self.now())
 
+    def set_current_cost(
+        self, *, catalog_sku_id: int, amount_kopecks: int,
+        expected_cost_version_id: int | None, source_reference: str,
+        created_by_user_id: str,
+    ) -> CostValue:
+        """Interactive edit: server time, optimistic version and retry-safe identity.
+
+        Lock the SKU, not the cost row: a first write has no cost row to lock.
+        All interactive writers use this transaction boundary. Historical import
+        remains a separate operation and must not be triggered by the editor.
+        """
+        if self.session.get_bind().dialect.name == "sqlite":
+            connection = self.session.connection()
+            if not connection.connection.driver_connection.in_transaction:
+                self.session.execute(text("BEGIN IMMEDIATE"))
+        self._sku(catalog_sku_id)
+        self.session.scalar(select(CatalogSkuRow).where(
+            CatalogSkuRow.organization_id == self.organization_id,
+            CatalogSkuRow.catalog_sku_id == catalog_sku_id,
+        ).with_for_update())
+        existing = self._by_reference("manual-current", source_reference)
+        effective_at = _db_utc(existing.effective_from) if existing else self.now()
+        if existing is None:
+            current = self.get_cost_at(catalog_sku_id, effective_at)
+            if current.cost_version_id != expected_cost_version_id:
+                raise CostConflictError("cost version changed; reload before saving")
+        return self.set_cost(
+            catalog_sku_id=catalog_sku_id, amount_kopecks=amount_kopecks,
+            value_state="configured", effective_from=effective_at,
+            source="manual-current", source_reference=source_reference,
+            evidence_status="dated", supersedes_cost_version_id=expected_cost_version_id,
+            created_by_user_id=created_by_user_id,
+        )
+
+    def replace_example_cost(
+        self, *, catalog_sku_id: int, amount_kopecks: int,
+        expected_cost_version_id: int, source_reference: str, created_by_user_id: str,
+    ) -> CostValue:
+        """Explicitly replace a user-requested example, retaining its audit history."""
+        if self.session.get_bind().dialect.name == "sqlite":
+            connection = self.session.connection()
+            if not connection.connection.driver_connection.in_transaction:
+                self.session.execute(text("BEGIN IMMEDIATE"))
+        self._sku(catalog_sku_id)
+        self.session.scalar(select(CatalogSkuRow).where(
+            CatalogSkuRow.organization_id == self.organization_id,
+            CatalogSkuRow.catalog_sku_id == catalog_sku_id,
+        ).with_for_update())
+        existing = self._by_reference('example-replacement', source_reference)
+        example = self.session.scalar(select(CatalogCostVersionRow).where(
+            CatalogCostVersionRow.organization_id == self.organization_id,
+            CatalogCostVersionRow.catalog_sku_id == catalog_sku_id,
+            CatalogCostVersionRow.cost_version_id == expected_cost_version_id,
+            CatalogCostVersionRow.source == 'user-example',
+            CatalogCostVersionRow.value_state == 'assumed',
+        ))
+        if example is None:
+            raise CostConflictError('Only an explicitly marked example can be replaced historically')
+        if existing is None and self.get_current_cost(catalog_sku_id).cost_version_id != expected_cost_version_id:
+            raise CostConflictError('cost version changed; reload before saving')
+        return self.set_cost(catalog_sku_id=catalog_sku_id, amount_kopecks=amount_kopecks,
+            value_state='configured', effective_from=_db_utc(example.effective_from),
+            source='example-replacement', source_reference=source_reference, evidence_status='dated',
+            supersedes_cost_version_id=expected_cost_version_id, created_by_user_id=created_by_user_id)
+
     def get_costs_at(self, catalog_sku_ids: list[int], at: datetime) -> dict[int, CostValue]:
+        for sku_id in catalog_sku_ids:
+            self._validate_sku_id(sku_id)
         effective_at = _aware_utc(at)
         sku_ids = sorted(set(catalog_sku_ids))
         if not sku_ids:
             return {}
-        self._prepare()
-        ranked = (
-            select(
-                CatalogCostVersionRow.cost_version_id.label("cost_version_id"),
-                func.row_number()
-                .over(
-                    partition_by=CatalogCostVersionRow.catalog_sku_id,
-                    order_by=(
-                        CatalogCostVersionRow.effective_from.desc(),
-                        CatalogCostVersionRow.created_at.desc(),
-                        CatalogCostVersionRow.cost_version_id.desc(),
-                    ),
-                )
-                .label("position"),
-            )
-            .where(
-                CatalogCostVersionRow.organization_id == self.organization_id,
-                CatalogCostVersionRow.catalog_sku_id.in_(sku_ids),
-                CatalogCostVersionRow.effective_from <= effective_at,
-            )
-            .subquery()
-        )
-        rows = self.session.scalars(
-            select(CatalogCostVersionRow)
-            .join(ranked, CatalogCostVersionRow.cost_version_id == ranked.c.cost_version_id)
-            .where(ranked.c.position == 1)
-        ).all()
-        resolved = {row.catalog_sku_id: _view(row) for row in rows}
+        resolved = self.get_costs_for_points([(sku_id, effective_at) for sku_id in sku_ids])
         return {
-            sku_id: resolved.get(sku_id, CostValue(None, sku_id, None, "missing"))
+            sku_id: resolved[(sku_id, effective_at)]
             for sku_id in sku_ids
         }
 
@@ -286,6 +322,8 @@ class CostsService:
         catalog_sku_ids: list[int],
         at: list[datetime],
     ) -> dict[tuple[int, datetime], CostValue]:
+        for sku_id in catalog_sku_ids:
+            self._validate_sku_id(sku_id)
         sku_ids = sorted(set(catalog_sku_ids))
         instants = sorted({_aware_utc(value) for value in at})
         if not sku_ids or not instants:
@@ -298,6 +336,8 @@ class CostsService:
         self,
         points: list[tuple[int, datetime]],
     ) -> dict[tuple[int, datetime], CostValue]:
+        for sku_id, _ in points:
+            self._validate_sku_id(sku_id)
         normalized = {
             instant: _aware_utc(instant)
             for instant in dict.fromkeys(instant for _, instant in points)
@@ -335,17 +375,25 @@ class CostsService:
         for sku_id in sku_ids:
             versions = history.get(sku_id, [])
             position = 0
-            current: CatalogCostVersionRow | None = None
             current_value = CostValue(None, sku_id, None, "missing")
             for instant in instants_by_sku[sku_id]:
-                previous = current
                 while position < len(versions) and _db_utc(
                     versions[position].effective_from
                 ) <= instant:
-                    current = versions[position]
+                    candidate = _view(versions[position])
+                    repeated_legacy_value = (
+                        current_value.value_state == "configured"
+                        and current_value.evidence_status == "dated"
+                        and candidate.amount_kopecks == current_value.amount_kopecks
+                        and candidate.value_state == "assumed"
+                        and candidate.evidence_status == "undated"
+                        and (candidate.source or "").startswith("legacy_")
+                    )
+                    # Reimporting the same value cannot revoke its dated evidence.
+                    # A changed amount or an explicit missing value still takes effect.
+                    if not repeated_legacy_value:
+                        current_value = candidate
                     position += 1
-                if current is not previous and current is not None:
-                    current_value = _view(current)
                 resolved[(sku_id, instant)] = current_value
         return resolved
 

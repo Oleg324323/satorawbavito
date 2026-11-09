@@ -9,6 +9,28 @@ from app.avito.stats import AvitoStatsAccount
 from app.main import create_app
 from tests.auth_helpers import auth_headers
 from tests.test_avito_stats import RecordingAvitoItemsHttpClient, RecordingAvitoStatsHttpClient
+import pytest
+
+
+def test_inventory_remains_available_when_optional_analytics_fail(monkeypatch):
+    client = LiveAvitoListingsClient(access_token="synthetic", base_url="https://api.avito.ru")
+    def unavailable(*_):
+        raise ValueError("Synthetic analytics unavailable")
+    monkeypatch.setattr(client, "_v2_item_analytics_for_account", unavailable)
+    rows = client._listing_rows(None, AvitoListingsFetchRequest(dateFrom=date(2026, 9, 1), dateTo=date(2026, 9, 7)),
+        [AvitoStatsAccount(accountId="a", accountName="Synthetic")],
+        [{"itemId": "000123", "title": "Saved inventory", "accountId": "a", "status": "active", "price": 100}])
+    assert len(rows) == 1
+    assert rows[0].itemId == "000123"
+    assert rows[0].views is None and rows[0].impressions is None
+    assert client.analytics_error.code == "avito_analytics_failed"
+
+
+def test_repeated_catalog_page_is_not_published_as_complete():
+    page = {"resources": [{"id": index + 1000, "title": f"Item {index}"} for index in range(99)]}
+    client = LiveAvitoListingsClient(access_token="synthetic", base_url="https://api.avito.ru")
+    with pytest.raises(ValueError, match="repeated"):
+        client._items(RecordingAvitoItemsHttpClient([page, page]), [AvitoStatsAccount(accountId="a", accountName="Synthetic")])
 
 
 def test_live_avito_listings_client_fetches_registry_statuses_and_period_metrics():
@@ -100,7 +122,7 @@ def test_live_avito_listings_items_preserve_status_and_price_from_core_items():
     assert rows[1]["price"] == 2990
 
 
-def test_live_avito_listings_items_fallback_to_public_og_image():
+def test_live_avito_listings_leaves_missing_photos_for_one_time_extension_import():
     http_client = RecordingAvitoItemsHttpClient(
         [
             {
@@ -137,8 +159,8 @@ def test_live_avito_listings_items_fallback_to_public_og_image():
 
     rows = client._items(http_client, [AvitoStatsAccount(accountId="365024549", accountName="Bless T")])
 
-    assert rows[0]["imageUrl"] == "https://img.avito.st/image.jpg"
-    assert http_client.gets[1]["url"] == "https://www.avito.ru/moskva/odezhda/item_8098482225"
+    assert rows[0]["imageUrl"] is None
+    assert len(http_client.gets) == 1
 
 
 class RecordingListingsClient:
@@ -219,4 +241,4 @@ def test_avito_listings_endpoint_uses_saved_credentials_period_and_cache(monkeyp
     assert recording_client is not None
     assert recording_client.access_token == "avito-bearer-token"
     assert recording_client.requests[0].dateFrom == date(2026, 7, 1)
-    assert cached_payloads[0][1] == "avito_listings_v2:2026-07-01:2026-07-28:all"
+    assert cached_payloads[0][1].startswith("avito_listings_v2:2026-07-01:2026-07-28:all:")

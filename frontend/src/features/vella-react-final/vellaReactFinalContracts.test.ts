@@ -33,7 +33,7 @@ describe('React Vella final contracts', () => {
     const app = read('src/App.tsx')
     const shell = read('src/features/vella-react-final/shell/VellaProductionShell.tsx')
     expect(app).toContain('<Route path="/wb/repricer/stats" element={<VellaHtmlParityPage />} />')
-    expect(app).toContain('<Route path="/wb/reports/expenses" element={<VellaHtmlParityPage />} />')
+    expect(app).toContain('<Route path="/wb/reports/expenses" element={<Navigate to="/wb/reports/pnl" replace />} />')
     expect(app).toContain('<Route path="/wb/sources" element={<VellaHtmlParityPage />} />')
     expect(app).not.toContain('WbExpensesPage as VellaReactFinalExpensesPage')
     expect(app).not.toContain('WbRepricerStatsPage as VellaReactFinalRepricerStatsPage')

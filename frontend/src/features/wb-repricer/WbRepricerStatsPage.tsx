@@ -9,6 +9,10 @@ function numberValue(value: number | null | undefined) {
   return Number.isFinite(Number(value)) ? Number(value) : 0
 }
 
+function basketNumber(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('ru-RU')
+}
+
 function rubKopecks(value: number | null | undefined) {
   if (value == null) return '—'
   return (Number(value) / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
@@ -106,17 +110,18 @@ export function WbRepricerStatsPage() {
     (acc, row) => ({
       impressions: acc.impressions + numberValue(row.metrics?.impressions),
       clicks: acc.clicks + numberValue(row.metrics?.clicks),
-      baskets: acc.baskets + numberValue(row.metrics?.baskets),
+      baskets: acc.baskets == null || row.metrics?.baskets == null
+        ? null : acc.baskets + numberValue(row.metrics.baskets),
       orders: acc.orders + numberValue(row.metrics?.orders),
       stock: acc.stock + numberValue(row.metrics?.stockUnits),
     }),
-    { impressions: 0, clicks: 0, baskets: 0, orders: 0, stock: 0 },
+    { impressions: 0, clicks: 0, baskets: 0 as number | null, orders: 0, stock: 0 },
   ), [rows])
   const summary = payload?.summary
   const kpis = {
     impressions: summary?.impressions ?? totals.impressions,
     clicks: summary?.clicks ?? totals.clicks,
-    baskets: summary?.baskets ?? totals.baskets,
+    baskets: summary?.baskets !== undefined ? summary.baskets : totals.baskets,
     orders: summary?.orders ?? totals.orders,
   }
 
@@ -160,15 +165,15 @@ export function WbRepricerStatsPage() {
             <div className="vella-report-head">
               <div>
                 <h1>Статистика репрайсера</h1>
-                <p>Воронка за выбранный период: показы, клики, корзины, заказы, остатки и медиана цены. Экран помогает настройке репрайсера и не дублирует full BI отчёты.</p>
+                <p>Рекламные показы и клики, корзины и заказы WB за выбранный период, остатки и ориентир цены.</p>
               </div>
               <span className={`vella-badge ${error ? 'bad' : loading ? 'warn' : 'good'}`}>{error ? 'ошибка загрузки' : loading ? 'загрузка' : 'backend live'}</span>
             </div>
 
             <div className="vella-kpis">
-              <div className="vella-kpi"><div className="vella-kpi-label">Показы <HelpTip>Источник рекламы WB берётся из backend diagnostics.</HelpTip></div><div className="vella-kpi-value">{kpis.impressions.toLocaleString('ru-RU')}</div></div>
-              <div className="vella-kpi"><div className="vella-kpi-label">CTR</div><div className="vella-kpi-value">{summary?.adCtrPct == null ? pct(kpis.clicks, kpis.impressions) : `${summary.adCtrPct.toFixed(1)}%`}</div></div>
-              <div className="vella-kpi"><div className="vella-kpi-label">Корзины</div><div className="vella-kpi-value">{kpis.baskets.toLocaleString('ru-RU')}</div><div className="vella-kpi-delta good">{kpis.orders.toLocaleString('ru-RU')} заказов</div></div>
+              <div className="vella-kpi"><div className="vella-kpi-label">Показы рекламы <HelpTip>Показы рекламных кампаний WB за выбранный период.</HelpTip></div><div className="vella-kpi-value">{kpis.impressions.toLocaleString('ru-RU')}</div></div>
+              <div className="vella-kpi"><div className="vella-kpi-label">CTR рекламы</div><div className="vella-kpi-value">{summary?.adCtrPct == null ? pct(kpis.clicks, kpis.impressions) : `${summary.adCtrPct.toFixed(1)}%`}</div></div>
+              <div className="vella-kpi"><div className="vella-kpi-label">Корзины</div><div className="vella-kpi-value">{basketNumber(kpis.baskets)}</div><div className="vella-kpi-delta good">{kpis.orders.toLocaleString('ru-RU')} заказов</div></div>
               <div className="vella-kpi"><div className="vella-kpi-label">Защита цены <HelpTip>Цены не отправляются при устаревших или неподтверждённых финансах, СПП или источниках.</HelpTip></div><div className="vella-kpi-value">{(summary?.priceBlocked ?? 0).toLocaleString('ru-RU')} SKU</div><div className="vella-kpi-delta warn">{(summary?.canRecalculate ?? 0).toLocaleString('ru-RU')} можно пересчитать</div></div>
             </div>
 
@@ -194,8 +199,8 @@ export function WbRepricerStatsPage() {
                       <th>Статус</th>
                       <th>Менеджер</th>
                       <th>Фильтры</th>
-                      <th className="num">Показы</th>
-                      <th className="num">Клики</th>
+                      <th className="num">Показы рекламы</th>
+                      <th className="num">Клики рекламы</th>
                       <th className="num">Корзины</th>
                       <th className="num">Заказы</th>
                       <th className="num">CR корзины→заказ</th>
@@ -213,9 +218,11 @@ export function WbRepricerStatsPage() {
                         <td>{rowHasPromo(row) ? 'акция' : 'без акции'} · {rowHasAds(row) ? 'реклама' : 'без рекламы'}</td>
                         <td className="num">{numberValue(row.metrics?.impressions).toLocaleString('ru-RU')}</td>
                         <td className="num">{numberValue(row.metrics?.clicks).toLocaleString('ru-RU')}</td>
-                        <td className="num">{numberValue(row.metrics?.baskets).toLocaleString('ru-RU')}</td>
+                        <td className="num">{basketNumber(row.metrics?.baskets)}</td>
                         <td className="num">{numberValue(row.metrics?.orders).toLocaleString('ru-RU')}</td>
-                        <td className="num">{row.metrics?.cartToOrderCrPct == null ? pct(row.metrics?.orders, row.metrics?.baskets) : `${row.metrics.cartToOrderCrPct.toFixed(1)}%`}</td>
+                        <td className="num">{row.metrics?.cartToOrderCrPct !== undefined
+                          ? row.metrics.cartToOrderCrPct == null ? '—' : `${row.metrics.cartToOrderCrPct.toFixed(1)}%`
+                          : pct(row.metrics?.orders, row.metrics?.baskets)}</td>
                         <td className="num">{numberValue(row.metrics?.stockUnits).toLocaleString('ru-RU')}</td>
                         <td className="num">{rubKopecks(row.metrics?.medianPriceKopecks)}</td>
                         <td><span className={`vella-badge ${statusClass(row.sources?.status)}`}>{sourceStatusLabel(row.sources?.status)}</span> {rowBlockers(row)}</td>

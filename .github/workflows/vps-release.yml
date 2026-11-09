@@ -1,0 +1,107 @@
+name: VPS build and extension integration
+on:
+  push:
+    branches: ['main', 'codex/vps-release-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vps-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ORDERS_TEST_USE_LOCAL_CLUSTER: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: '3.11'}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: {node-version: '22'}
+      - name: Install isolated test prerequisites
+        run: |
+          python -m pip install './backend[test]'
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-16
+          echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
+      - name: Extension contracts and worker regressions
+        run: node --test avito-orders-extension/tests/*.test.mjs wb-prices-extension/tests/*.test.mjs
+      - name: Extension to HTTP to database to platform gates
+        working-directory: backend
+        run: |
+          python -m pytest -q tests/test_organization_openai.py tests/test_production_cabinet_security.py tests/test_avito_collection_pipeline.py tests/test_avito_chat_size.py tests/test_avito_orders_ai.py tests/test_avito_orders.py tests/test_avito_orders_queue.py tests/test_avito_picking_freshness.py tests/test_avito_local_ai_key.py tests/test_repricer_page_finance.py tests/test_repricer_page_finance_cache.py tests/test_wb_browser_prices.py tests/test_wb_browser_prices_overlay.py tests/test_wb_browser_prices_snapshot.py tests/test_empty_database_migrations.py
+      - name: Report loading and retained hotfix regressions
+        working-directory: backend
+        run: |
+          python -m pytest -q tests/test_advertising_raw_normalization.py tests/test_advertising_raw_service.py tests/test_avito_size_rules_only.py tests/test_local_project_startup.py tests/test_repricer_reporting_regressions.py
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SATORNA_DOMAIN: satorna.example.org
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - name: Ephemeral CI-only infrastructure secrets, never provider credentials
+        run: |
+          python - <<'PY'
+          import os, secrets
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              for name in ('POSTGRES_PASSWORD', 'POSTGRES_ADMIN_PASSWORD', 'VELLA_AUTH_SECRET'):
+                  value = secrets.token_hex(32)
+                  print('::add-mask::' + value)
+                  stream.write(name + '=' + value + '\n')
+          PY
+      - name: Validate and build full production backend and frontend
+        run: |
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml config --quiet
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml build api web
+      - name: Fresh PostgreSQL migrations and production HTTP smoke
+        run: |
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml up -d --wait api worker beat
+          docker cp deploy/smoke.py "$(docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml ps -q api)":/tmp/smoke.py
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml exec -T api python /tmp/smoke.py
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml exec -T api python -m celery -A app.infra.celery_app:celery_app inspect ping --timeout=10
+      - name: Static frontend, Caddy proxy and published extension archives
+        run: |
+          docker run -d --name satorna-ci-web --network satorna-ci_default -e SATORNA_DOMAIN=http://localhost -p 127.0.0.1:18080:80 satorna-web:vps
+          python - <<'PY'
+          import io, json, time, urllib.error, urllib.request, zipfile
+          # Host must match the CI-only Caddy site (http://localhost).
+          base = 'http://localhost:18080'
+          for attempt in range(20):
+              try:
+                  assert json.load(urllib.request.urlopen(base + '/health/ready'))['status'] == 'ready'
+                  break
+              except Exception:
+                  if attempt == 19: raise
+                  time.sleep(1)
+          assert b'<html' in urllib.request.urlopen(base + '/settings/profile').read().lower()
+          try:
+              urllib.request.urlopen(base + '/api/v1/cabinet/me')
+              raise AssertionError('Protected API unexpectedly allowed anonymous access')
+          except urllib.error.HTTPError as error:
+              assert error.code == 401
+              assert json.load(error)['error']['message'] == 'AUTH_REQUIRED'
+          for name in ('wb-prices', 'avito-orders'):
+              with open(name + '-extension/manifest.json') as source_manifest:
+                  version = json.load(source_manifest)['version']
+              data = urllib.request.urlopen(base + '/downloads/satorna-' + name + '-extension.zip').read()
+              with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                  manifest = json.loads(archive.read('manifest.json'))
+                  assert manifest['version'] == version
+                  connection = archive.read('src/connection.js').decode()
+                  assert 'https://satorna.example.org' in connection
+                  if name == 'avito-orders':
+                      bridge = next(entry for entry in manifest['content_scripts'] if 'src/satorna-bridge.js' in entry['js'])
+                      assert 'https://satorna.example.org/*' in bridge['matches']
+          print('Caddy /api routing, SPA route and VPS-bound extension downloads PASS.')
+          PY
+      - name: Remove disposable CI containers only
+        if: always()
+        run: |
+          docker rm -f satorna-ci-web 2>/dev/null || true
+          docker compose -p satorna-ci --env-file deploy/.env.example -f deploy/compose.yml down -v --remove-orphans

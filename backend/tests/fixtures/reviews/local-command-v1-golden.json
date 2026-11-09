@@ -1,0 +1,50 @@
+[
+  {
+    "name": "policy-create",
+    "type": "request",
+    "canonicalUtf8Json": "{\"actorMembershipId\":3,\"input\":{\"policy\":{\"approvalMode\":\"manual\",\"marketplace\":\"wb\",\"marketplaceAccountId\":2,\"modelVersion\":\"fake-v1\",\"organizationId\":1,\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"schemaVersion\":\"review-policy-v1\",\"templateVersion\":\"manual-v1\",\"version\":9223372036854775808}},\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"marketplace\":\"wb\",\"marketplaceAccountId\":2,\"operationKind\":\"review.policy.create.v1\",\"organizationId\":1,\"schemaVersion\":\"review-local-command-v1\"}",
+    "sha256": "c66ba83f69a7bb09ad9c7d50918d327406f2120a72a9b9822d2ce8e04fd389fd"
+  },
+  {
+    "name": "policy-select",
+    "type": "request",
+    "canonicalUtf8Json": "{\"actorMembershipId\":3,\"input\":{\"expectedHeadVersion\":0,\"policyChecksum\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808},\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"marketplace\":\"wb\",\"marketplaceAccountId\":2,\"operationKind\":\"review.policy.select.v1\",\"organizationId\":1,\"schemaVersion\":\"review-local-command-v1\"}",
+    "sha256": "64e7a9d4a24b6e511a951802ce526c89dc967f58a6049893a7dacd93c985ce66"
+  },
+  {
+    "name": "draft-publish",
+    "type": "request",
+    "canonicalUtf8Json": "{\"actorMembershipId\":3,\"input\":{\"draftId\":\"10000000-0000-4000-8000-000000000003\",\"expectedDraftRevision\":0,\"expectedHeadVersion\":0,\"expectedPolicyHeadId\":\"10000000-0000-4000-8000-000000000004\",\"expectedPolicyHeadVersion\":9223372036854775808,\"externalReviewId\":\"0007-Ж\",\"generation\":{\"actorMembershipId\":3,\"completedAt\":\"2026-09-09T12:00:01.654321Z\",\"generationId\":\"10000000-0000-4000-8000-000000000005\",\"mode\":\"fake\",\"modelVersion\":\"fake-v1\",\"policyChecksum\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"schemaVersion\":\"review-generation-v1\",\"sourceChecksum\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sourceObservationId\":\"10000000-0000-4000-8000-000000000006\",\"startedAt\":\"2026-09-09T12:00:00.123456Z\",\"templateVersion\":\"manual-v1\"},\"reviewId\":\"10000000-0000-4000-8000-000000000007\",\"text\":\" é é 🚀 \\\"\\n\\t\\u0000 \"},\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"marketplace\":\"wb\",\"marketplaceAccountId\":2,\"operationKind\":\"review.draft.publish.v1\",\"organizationId\":1,\"schemaVersion\":\"review-local-command-v1\"}",
+    "sha256": "b62f4c8a04e0b38466c56f535ba8b63af593836b8234955f7f3da218532e51bd"
+  },
+  {
+    "name": "decision-record",
+    "type": "request",
+    "canonicalUtf8Json": "{\"actorMembershipId\":3,\"input\":{\"bindingChecksum\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"decisionKind\":\"approved\",\"draftId\":\"10000000-0000-4000-8000-000000000003\",\"draftRevision\":9223372036854775808,\"expectedHeadVersion\":9223372036854775809,\"expectedPolicyHeadId\":\"10000000-0000-4000-8000-000000000004\",\"expectedPolicyHeadVersion\":9223372036854775808,\"externalReviewId\":\"0007-Ж\",\"reviewId\":\"10000000-0000-4000-8000-000000000007\",\"sourceObservationId\":\"10000000-0000-4000-8000-000000000006\"},\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"marketplace\":\"wb\",\"marketplaceAccountId\":2,\"operationKind\":\"review.decision.record.v1\",\"organizationId\":1,\"schemaVersion\":\"review-local-command-v1\"}",
+    "sha256": "589082de8f156763334a3112160b71178798255d5a92df09f3bcf8d5918102c7"
+  },
+  {
+    "name": "policy-create",
+    "type": "result",
+    "canonicalUtf8Json": "{\"auditEventId\":\"10000000-0000-4000-8000-000000000008\",\"completedAt\":\"2026-09-09T12:00:02.987654Z\",\"decisionId\":null,\"draftId\":null,\"draftRevision\":null,\"headId\":null,\"headVersion\":null,\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"operationKind\":\"review.policy.create.v1\",\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"schemaVersion\":\"review-local-command-result-v1\"}",
+    "sha256": "0b505ac9759d4e966a3557c2a0d0d8ce2c641d880deacb771872d42c81c44234"
+  },
+  {
+    "name": "policy-select",
+    "type": "result",
+    "canonicalUtf8Json": "{\"auditEventId\":\"10000000-0000-4000-8000-000000000008\",\"completedAt\":\"2026-09-09T12:00:02.987654Z\",\"decisionId\":null,\"draftId\":null,\"draftRevision\":null,\"headId\":\"10000000-0000-4000-8000-000000000004\",\"headVersion\":1,\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"operationKind\":\"review.policy.select.v1\",\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"schemaVersion\":\"review-local-command-result-v1\"}",
+    "sha256": "426da998bb6f1e07dae8699e9c9f2097eaab96333ad4313b7b2f2fa9f43c273c"
+  },
+  {
+    "name": "draft-publish",
+    "type": "result",
+    "canonicalUtf8Json": "{\"auditEventId\":\"10000000-0000-4000-8000-000000000008\",\"completedAt\":\"2026-09-09T12:00:02.987654Z\",\"decisionId\":null,\"draftId\":\"10000000-0000-4000-8000-000000000003\",\"draftRevision\":1,\"headId\":\"10000000-0000-4000-8000-000000000009\",\"headVersion\":1,\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"operationKind\":\"review.draft.publish.v1\",\"policyId\":\"10000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"schemaVersion\":\"review-local-command-result-v1\"}",
+    "sha256": "045018133eee42b868bb581ba0952de2b0c5c0460e0de4395f68e9e2fd87422a"
+  },
+  {
+    "name": "decision-record",
+    "type": "result",
+    "canonicalUtf8Json": "{\"auditEventId\":\"10000000-0000-4000-8000-000000000008\",\"completedAt\":\"2026-09-09T12:00:02.987654Z\",\"decisionId\":\"10000000-0000-4000-8000-000000000010\",\"draftId\":\"10000000-0000-4000-8000-000000000003\",\"draftRevision\":9223372036854775808,\"headId\":\"10000000-0000-4000-8000-000000000009\",\"headVersion\":9223372036854775810,\"localCommandId\":\"10000000-0000-4000-8000-000000000002\",\"operationKind\":\"review.decision.record.v1\",\"policyId\":null,\"policyVersion\":null,\"schemaVersion\":\"review-local-command-result-v1\"}",
+    "sha256": "a3057c8a16224b69c03e1283acdf866709bff556da3189f1b7571ba8c71e257b"
+  }
+]

@@ -3,6 +3,9 @@ import {
   AbcReportResponseSchema,
   AdsPerformanceResponseSchema,
   AiReviewApprovalSchema,
+  ManualCostSchema,
+  PnlRowSchema,
+  PnlTotalsSchema,
   PnlReportResponseSchema,
   RnpReportResponseSchema,
 } from './schemas'
@@ -19,6 +22,28 @@ const sourceEvidence = [{
 }]
 
 describe('WB 19.05 report contract schemas', () => {
+  test.each([[-60, -4, -56], [0, 0, 0], [100000, null, null]])('preserves factual revenue %s, tax %s and profit %s', (revenue, tax, profit) => {
+    const row = {
+      rowId: 'returns', label: 'Returns', brandId: null, managerId: null, skuId: 'SYNTHETIC',
+      revenueKopecks: revenue, taxKopecks: tax, netProfitKopecks: profit, marginPct: null,
+      cogsKopecks: 0, commissionKopecks: 0, logisticsKopecks: 0, storageKopecks: 0,
+      adSpendKopecks: 0, overheadKopecks: 0, sourceStatus: 'partial', confidence: 'medium',
+    }
+    expect(PnlRowSchema.parse(row)).toEqual(row)
+    expect(PnlTotalsSchema.parse(row).revenueKopecks).toBe(revenue)
+    expect(ManualCostSchema.parse({ costId: 'tax', label: 'Tax', amountKopecks: tax,
+      allocationBase: 'sku', sourceStatus: 'partial', blockerIds: [] }).amountKopecks).toBe(tax)
+    expect(PnlRowSchema.parse({ ...row, cogsKopecks: -1, commissionKopecks: -2,
+      logisticsKopecks: -3, storageKopecks: -4, overheadKopecks: -5 }).storageKopecks).toBe(-4)
+  })
+
+  test('keeps arbitrary manual costs nonnegative but preserves settlement credits', () => {
+    for (const costId of ['storage', 'overhead', 'unverified-manual']) {
+      expect(ManualCostSchema.safeParse({ costId, label: 'Cost', amountKopecks: -4,
+        allocationBase: 'sku', sourceStatus: 'fresh', blockerIds: [] }).success).toBe(costId !== 'unverified-manual')
+    }
+  })
+
   test('blocks P&L closeout when source blockers are unresolved', () => {
     const result = PnlReportResponseSchema.safeParse({
       sourceStatus: 'blocked',

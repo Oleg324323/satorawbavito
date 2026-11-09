@@ -39,6 +39,7 @@ def raw_row(**overrides: object) -> dict[str, object]:
         "srid": "sale-1",
     }
     row.update(overrides)
+    row.setdefault("sellerOperName", row.get("docTypeName"))
     return row
 
 
@@ -64,7 +65,7 @@ def test_normalizer_uses_exact_kopecks_and_explicit_report_semantics() -> None:
     assert main.units == 1
     assert main.sign == 1
     assert main.correction_at == datetime(2026, 8, 22, 21, tzinfo=timezone.utc)
-    assert main.additional_payment_kopecks == 404
+    assert main.additional_payment_kopecks == -1_414  # Both adjustments are costs.
     assert redemption_return.report_type == "redemptions"
     assert redemption_return.revenue_kopecks == -10_025
     assert redemption_return.commission_kopecks == -10_010
@@ -169,3 +170,30 @@ def test_loyalty_money_preserves_missing_zero_and_signed_source_values() -> None
 def test_loyalty_money_rejects_boolean_values(field: str) -> None:
     with pytest.raises(FinanceNormalizationError, match="invalid money"):
         normalize_operation(raw_row(**{field: True}), 2, 31, PERIOD)
+
+
+@pytest.mark.parametrize("document", ["Продажа", "Возврат"])
+@pytest.mark.parametrize("missing", [None, ""])
+def test_trade_revenue_is_required(document: str, missing: object) -> None:
+    with pytest.raises(FinanceNormalizationError, match="missing trade revenue"):
+        normalize_operation(
+            raw_row(docTypeName=document, retailAmount=missing), 2, 31, PERIOD
+        )
+
+
+@pytest.mark.parametrize("field", [
+    "retailAmount", "ppvzSalesCommission", "acquiringFee", "deliveryService",
+    "paidStorage", "paidAcceptance", "penalty", "deduction",
+    "additionalPayment", "paymentSchedule", "forPay",
+])
+@pytest.mark.parametrize("value", [True, False])
+def test_all_money_fields_reject_booleans(field: str, value: bool) -> None:
+    with pytest.raises(FinanceNormalizationError, match="invalid money"):
+        normalize_operation(raw_row(**{field: value}), 2, 31, PERIOD)
+
+
+def test_zero_trade_revenue_and_non_trade_rows_remain_valid() -> None:
+    assert normalize_operation(raw_row(retailAmount=0), 2, 31, PERIOD).revenue_kopecks == 0
+    assert normalize_operation(
+        raw_row(docTypeName="", retailAmount=None, paidStorage="12.34"), 2, 31, PERIOD
+    ).storage_kopecks == 1_234

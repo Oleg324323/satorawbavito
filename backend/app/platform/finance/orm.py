@@ -183,6 +183,9 @@ class WbFinanceOperationRow(Base):
     deduction_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     additional_payment_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     acquiring_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payable_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    advertising_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    compensation_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     cashback_amount_kopecks: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
@@ -307,6 +310,9 @@ class WbFinanceSyncRunSkuPnlRollupRow(Base):
     deduction_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     additional_payment_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     acquiring_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payable_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    advertising_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    compensation_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     cashback_amount_kopecks: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
@@ -359,6 +365,9 @@ class WbFinanceSyncRunSkuDailyPnlRollupRow(Base):
     deduction_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     additional_payment_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
     acquiring_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payable_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    advertising_kopecks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    compensation_kopecks: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     cashback_amount_kopecks: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )

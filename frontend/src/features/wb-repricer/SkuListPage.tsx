@@ -233,16 +233,30 @@ function PMinCell({ row }: { row: Row }) {
   return <span className="text-xs font-mono text-muted-foreground">{formatRub(pMin)}</span>
 }
 
-function PromotionDot({ value, label, promotionId }: { value?: 'yes' | 'no', label?: string | null, promotionId?: string | number | null }) {
+function PromotionDot({ value, label, promotionId, reason }: {
+  value?: 'yes' | 'no' | 'unknown'
+  label?: string | null
+  promotionId?: string | number | null
+  reason?: string | null
+}) {
+  if (value !== 'yes' && value !== 'no') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={reason || 'Нет подтверждённых данных об участии в акциях'}>
+        <span className="size-2 rounded-full bg-slate-400" />Нет данных
+      </span>
+    )
+  }
   const active = value === 'yes'
   const labelText = label?.trim()
   const rawLabel = labelText && !/^Участвует:/i.test(labelText) ? labelText : null
   const fallbackLabel = promotionId != null ? `Акция ${promotionId}` : ''
   const promoLabel = active
     ? (rawLabel && rawLabel !== 'В акции' ? rawLabel : fallbackLabel || rawLabel || 'да')
-    : (/^Не участвует:/i.test(labelText || '') ? labelText || 'нет' : 'нет')
+    : (labelText === 'Нет в обычных' || /^Не участвует:/i.test(labelText || '') ? labelText || 'нет' : 'нет')
+  const tooltip = reason || (active ? promoLabel : promoLabel === 'Нет в обычных'
+    ? 'Не участвует в проверенных обычных акциях. Автоакции не проверены.' : 'Не участвует в акции')
   return (
-    <span className="inline-flex max-w-[180px] items-center gap-1.5 text-xs" title={active ? promoLabel : 'Не участвует в акции'}>
+    <span className="inline-flex max-w-[180px] items-center gap-1.5 text-xs" title={tooltip}>
       <span className={`size-2 rounded-full ${active ? 'bg-emerald-500' : 'bg-red-500'}`} />
       <span className="truncate">{promoLabel}</span>
     </span>
@@ -896,7 +910,7 @@ export function SkuListPage({ onOpenCard }: { onOpenCard: (articleId: string) =>
                 </td>
 
                 <td className="px-3 py-1.5 text-center">
-                  <PromotionDot value={row.analytics?.promotionStatus} label={row.analytics?.promotionStatusText || row.analytics?.promotionName} promotionId={row.analytics?.promotionId} />
+                  <PromotionDot value={row.analytics?.promotionStatus} label={row.analytics?.promotionStatusText || row.analytics?.promotionName} promotionId={row.analytics?.promotionId} reason={row.analytics?.promotionStatusReason} />
                 </td>
 
                 {/* Цена */}

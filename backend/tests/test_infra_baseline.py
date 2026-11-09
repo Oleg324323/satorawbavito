@@ -40,23 +40,28 @@ def test_health_exposes_infrastructure_config_flags():
     assert infra["celeryResultBackendConfigured"] is True
 
 
-def test_celery_app_is_configured_from_settings():
-    settings = get_settings()
-    celery_app = get_celery_app()
+def test_celery_app_is_configured_from_settings(monkeypatch):
+    monkeypatch.setenv("VELLA_REPRICER_SCHEDULER_ENABLED", "true")
+    get_celery_app.cache_clear()
+    try:
+        settings = get_settings()
+        celery_app = get_celery_app()
 
-    assert celery_app.conf.broker_url == settings.celery_broker_url
-    assert celery_app.conf.result_backend == settings.celery_result_backend
-    assert "repricer-execute-assigned" in celery_app.conf.beat_schedule
-    assert "repricer-execute-avito" in celery_app.conf.beat_schedule
-    assert (
-        celery_app.conf.beat_schedule["repricer-execute-avito"]["task"]
-        == "repricer.execute_avito_all_orgs"
-    )
-    assert "repricer-sync-wb-nightly" in celery_app.conf.beat_schedule
-    assert (
-        celery_app.conf.beat_schedule["repricer-sync-wb-nightly"]["task"]
-        == "repricer.sync_wb_nightly_all_orgs"
-    )
+        assert celery_app.conf.broker_url == settings.celery_broker_url
+        assert celery_app.conf.result_backend == settings.celery_result_backend
+        assert "repricer-execute-assigned" in celery_app.conf.beat_schedule
+        assert "repricer-execute-avito" in celery_app.conf.beat_schedule
+        assert (
+            celery_app.conf.beat_schedule["repricer-execute-avito"]["task"]
+            == "repricer.execute_avito_all_orgs"
+        )
+        assert "repricer-sync-wb-nightly" in celery_app.conf.beat_schedule
+        assert (
+            celery_app.conf.beat_schedule["repricer-sync-wb-nightly"]["task"]
+            == "repricer.sync_wb_nightly_all_orgs"
+        )
+    finally:
+        get_celery_app.cache_clear()
 
 
 def test_infra_metadata_contains_baseline_table():

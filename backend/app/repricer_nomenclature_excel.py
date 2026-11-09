@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from html import escape
 from io import BytesIO
+from math import isfinite
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -131,21 +132,46 @@ def _col_ref(index: int) -> str:
     return value
 
 
-def _cell_xml(value: Any, cell_ref: str) -> str:
+def validate_xlsx_text(value: str) -> str:
+    if any(
+        code not in (9, 10, 13)
+        and not 0x20 <= code <= 0xD7FF
+        and not 0xE000 <= code <= 0xFFFD
+        and not 0x10000 <= code <= 0x10FFFF
+        for code in map(ord, value)
+    ):
+        raise ValueError("Invalid XML character in XLSX text")
+    return value
+
+
+def _cell_xml(value: Any, cell_ref: str, style: int = 0, preserve_text: bool = False) -> str:
+    style_attr = f' s="{style}"' if style else ""
     if value is None:
         return f'<c r="{cell_ref}"/>'
     if isinstance(value, bool):
         return f'<c r="{cell_ref}" t="b"><v>{1 if value else 0}</v></c>'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f'<c r="{cell_ref}"><v>{value}</v></c>'
-    return f'<c r="{cell_ref}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("XLSX numbers must be finite")
+        return f'<c r="{cell_ref}"{style_attr}><v>{value}</v></c>'
+    text = validate_xlsx_text(str(value))
+    space = ' xml:space="preserve"' if preserve_text else ""
+    return f'<c r="{cell_ref}" t="inlineStr"><is><t{space}>{escape(text)}</t></is></c>'
 
 
-def build_xlsx(rows: list[list[Any]]) -> bytes:
+def build_xlsx(rows: list[list[Any]], *, sheet_name: str = "repricer", column_formats: list[int] | None = None, data_rows: int | None = None) -> bytes:
+    if (
+        not 1 <= len(sheet_name) <= 31
+        or any(character in "[]:*?/\\" for character in sheet_name)
+    ):
+        raise ValueError("Invalid XLSX sheet name")
+    validate_xlsx_text(sheet_name)
     sheet_rows: list[str] = []
     for row_index, row in enumerate(rows, start=1):
         cells = [
-            _cell_xml(value, f"{_col_ref(column_index)}{row_index}")
+            _cell_xml(value, f"{_col_ref(column_index)}{row_index}",
+                      column_formats[column_index] if column_formats and 1 < row_index <= (data_rows or 0) + 1 and column_index < len(column_formats) else 0,
+                      preserve_text=bool(column_formats))
             for column_index, value in enumerate(row)
         ]
         sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
@@ -155,14 +181,18 @@ def build_xlsx(rows: list[list[Any]]) -> bytes:
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<dimension ref="{dimension}"/>'
+        + ('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' if column_formats else '')
+        +
         f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        + (f'<autoFilter ref="A1:{_col_ref(len(column_formats)-1)}{(data_rows or 0)+1}"/>' if column_formats else '')
+        +
         "</worksheet>"
     )
     workbook = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        '<sheets><sheet name="repricer" sheetId="1" r:id="rId1"/></sheets>'
+        f'<sheets><sheet name="{escape(sheet_name, quote=True)}" sheetId="1" r:id="rId1"/></sheets>'
         "</workbook>"
     )
     rels = (
@@ -187,6 +217,11 @@ def build_xlsx(rows: list[list[Any]]) -> bytes:
         "</Types>"
     )
 
+    if column_formats:
+        workbook_rels = workbook_rels.replace('</Relationships>',
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
+        content_types = content_types.replace('</Types>',
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>')
     buffer = BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types)
@@ -194,6 +229,16 @@ def build_xlsx(rows: list[list[Any]]) -> bytes:
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         archive.writestr("xl/worksheets/sheet1.xml", sheet)
+        if column_formats:
+            # 1=count, 2=RUB, 3=percentage stored as a fraction (0.28).
+            archive.writestr("xl/styles.xml", '<?xml version="1.0" encoding="UTF-8"?>'
+                '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                '<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00 &quot;₽&quot;"/></numFmts>'
+                '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+                '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+                '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+                '<cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="1" applyNumberFormat="1"/><xf numFmtId="164" applyNumberFormat="1"/><xf numFmtId="9" applyNumberFormat="1"/></cellXfs>'
+                '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
     return buffer.getvalue()
 
 

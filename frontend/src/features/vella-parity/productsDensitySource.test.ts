@@ -25,9 +25,14 @@ describe('Products table density styles', () => {
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .price-edit-i')
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .price')
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .metric-stack')
-    expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .bsk-spark')
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .brand-chip')
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .mgr-name')
     expect(styles).toContain('body.density-compact .vella-html-parity-root #tab-products #mainTable .comment-cell')
+  })
+
+  it('hides basket and order mini bars in every density, only in the repricer table', () => {
+    expect(styles).toMatch(
+      /^\s*\.vella-html-parity-root #tab-products #mainTable \.bsk-spark\s*\{\s*display: none;\s*\}/m,
+    )
   })
 })

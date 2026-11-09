@@ -28,6 +28,7 @@ from app.infra.models import Base
 class MarketplaceAccountRow(Base):
     __tablename__ = "marketplace_accounts"
     __table_args__ = (
+        CheckConstraint("ingestion_binding_version > 0", name="ck_marketplace_accounts_ingestion_version"),
         UniqueConstraint(
             "organization_id",
             "marketplace",
@@ -49,6 +50,7 @@ class MarketplaceAccountRow(Base):
     external_account_id: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="disconnected")
     credential_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ingestion_binding_version: Mapped[int] = mapped_column(BigInteger, server_default=text("1"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -163,6 +165,29 @@ class MarketplaceAccountCredentialRow(Base):
 class MarketplaceAccountIngestionTokenRow(Base):
     __tablename__ = "marketplace_account_ingestion_tokens"
     __table_args__ = (
+        CheckConstraint(
+            "organization_id BETWEEN 1 AND 2147483647 AND marketplace_account_id BETWEEN 1 AND 2147483647",
+            name="ck_ingestion_binding_owner",
+        ),
+        CheckConstraint(
+            "isfinite(issued_at) AND isfinite(expires_at) "
+            "AND issued_at >= '0001-01-01 00:00:00+00'::timestamptz "
+            "AND expires_at < '10000-01-01 00:00:00+00'::timestamptz "
+            "AND (revoked_at IS NULL OR (isfinite(revoked_at) AND revoked_at >= issued_at "
+            "AND revoked_at < '10000-01-01 00:00:00+00'::timestamptz)) "
+            "AND (last_used_at IS NULL OR (isfinite(last_used_at) AND last_used_at >= issued_at "
+            "AND last_used_at < '10000-01-01 00:00:00+00'::timestamptz))",
+            name="ck_ingestion_binding_times",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "(binding_schema_version IS NULL AND binding_external_account_id IS NULL "
+            "AND binding_credential_ref IS NULL AND binding_version IS NULL) OR "
+            "(binding_schema_version IS NOT NULL AND binding_schema_version = 1 "
+            "AND binding_external_account_id IS NOT NULL AND length(trim(binding_external_account_id)) > 0 "
+            "AND binding_version IS NOT NULL AND binding_version > 0 "
+            "AND (binding_credential_ref IS NULL OR length(trim(binding_credential_ref)) > 0))",
+            name="ck_ingestion_binding_shape",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "marketplace_account_id", "provider"],
             [
@@ -215,3 +240,9 @@ class MarketplaceAccountIngestionTokenRow(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revocation_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    binding_schema_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # The migration supplies physical C collation; portable ORM bootstrap is not
+    # a substitute for the PostgreSQL triggers/constraints/RLS authorization gate.
+    binding_external_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    binding_credential_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    binding_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

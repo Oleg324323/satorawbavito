@@ -126,7 +126,7 @@ def _has_field_path(item: dict[str, Any], field_path: str) -> bool:
         if raw_part not in current:
             return False
         current = current[raw_part]
-    return True
+    return current is not None
 
 
 def _fields_present(payload: object, required_fields: Sequence[str]) -> List[str]:

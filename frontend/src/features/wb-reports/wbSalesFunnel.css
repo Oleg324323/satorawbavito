@@ -1,0 +1,39 @@
+#tab-digest:has(> .wb-sales-funnel) { min-height: 0; overflow-y: auto; }
+.wb-sales-funnel { min-width: 0; padding: 16px; color: #182233; }
+.wb-sales-funnel .sf-pagination button, .wb-sales-funnel .sf-state button { background: #fff; border: 1px solid #dce2eb; border-radius: 8px; padding: 9px 12px; }
+.wb-sales-funnel button { cursor: pointer; font: inherit; }
+.wb-sales-funnel button:disabled { cursor: default; opacity: .45; }
+.wb-sales-funnel button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.wb-sales-funnel .sf-state { margin: 12px 0; padding: 10px 12px; background: #eef4ff; border-radius: 8px; line-height: 1.5; }
+.wb-sales-funnel .sf-state button { margin-left: 12px; }
+.wb-sales-funnel .sf-funnel { display: flex; flex-direction: column; align-items: center; max-width: 900px; margin: 24px auto 12px; gap: 3px; }
+.wb-sales-funnel .sf-stage { min-height: 80px; display: flex; align-items: center; flex-direction: column; justify-content: center; gap: 5px; color: #fff; padding: 10px 24px; clip-path: polygon(0 0,100% 0,94% 100%,6% 100%); background: #2563eb; }
+.wb-sales-funnel .sf-stage strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+.wb-sales-funnel .sf-stage-value { display: flex; align-items: baseline; justify-content: center; gap: 12px; flex-wrap: wrap; }
+.wb-sales-funnel .sf-stage-rate { font-size: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wb-sales-funnel .sf-stage-rate small { font-size: 11px; }
+.wb-sales-funnel .sf-comparison-period { display: block; margin-top: 5px; color: #64748b; font-size: 12px; }
+.wb-sales-funnel .sf-comparison-period button { border: 0; background: transparent; color: #2457c5; text-decoration: underline; }
+.wb-sales-funnel .sf-change { display: block; margin-top: 5px; font-size: 12px; line-height: 1.3; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wb-sales-funnel .sf-change:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.wb-sales-funnel .sf-change-up { color: #16804a; }
+.wb-sales-funnel .sf-change-down { color: #c52c37; }
+.wb-sales-funnel .sf-change-flat, .wb-sales-funnel .sf-change-unknown { color: #64748b; }
+.wb-sales-funnel .sf-stage-metric { display: inline-block; text-align: center; }
+.wb-sales-funnel .sf-stage .sf-change { background: #fff; border-radius: 4px; padding: 2px 5px; text-align: center; }
+.wb-sales-funnel .sf-stage-1 { background: #345ad1; }.wb-sales-funnel .sf-stage-2 { background: #454fbc; }.wb-sales-funnel .sf-stage-3 { background: #5544a8; }.wb-sales-funnel .sf-stage-4 { background: #653994; }
+.wb-sales-funnel .sf-table-wrap { overflow: auto; max-width: 100%; border: 1px solid #e2e8f0; border-radius: 12px; isolation: isolate; }
+.wb-sales-funnel .sf-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-variant-numeric: tabular-nums; overflow: visible; }
+.wb-sales-funnel .sf-table th, .wb-sales-funnel .sf-table td { padding: 14px 16px; min-width: 150px; text-align: right; border-bottom: 1px solid #e2e8f0; background: #fff; }
+.wb-sales-funnel .sf-table th { background: #f8fafc; white-space: normal; max-width: 200px; font-size: 13px; }
+.wb-sales-funnel .sf-table th.sf-conversion { white-space: nowrap; max-width: none; }
+.wb-sales-funnel .sf-table th button { border: 0; background: transparent; color: inherit; padding: 0; text-align: right; }
+.wb-sales-funnel .sf-table .sf-product { position: sticky; left: 0; min-width: 280px; max-width: 280px; text-align: left; z-index: 2; border-right: 1px solid #dce2eb; }
+.wb-sales-funnel .sf-table th.sf-product { z-index: 3; }
+.wb-sales-funnel .sf-identity { display: flex; gap: 10px; align-items: center; }
+.wb-sales-funnel .sf-identity img { width: 48px; height: 64px; object-fit: contain; border-radius: 6px; }
+.wb-sales-funnel .sf-identity > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.wb-sales-funnel .sf-identity span { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #64748b; }
+.wb-sales-funnel .sf-identity a { color: #2457c5; font-weight: 600; }
+.wb-sales-funnel .sf-pagination { display: flex; gap: 12px; align-items: center; justify-content: flex-end; padding-top: 16px; flex-wrap: wrap; }
+@media(max-width: 640px) { .wb-sales-funnel { padding: 10px; }.wb-sales-funnel .sf-stage { min-height: 75px; font-size: 12px; padding: 8px 14px; text-align: center; }.wb-sales-funnel .sf-stage strong { font-size: 21px; }.wb-sales-funnel .sf-table .sf-product { min-width: 200px; max-width: 200px; }.wb-sales-funnel .sf-identity span { max-width: 125px; }.wb-sales-funnel .sf-identity img { width: 36px; height: 48px; } }

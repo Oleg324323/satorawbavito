@@ -31,7 +31,7 @@ const reportItems: NavItem[] = [
   { label: 'ABC-анализ', path: '/wb/reports/abc', icon: <BarChart3 size={15} /> },
   { label: 'РНП', path: '/wb/reports/rnp', icon: <FileSpreadsheet size={15} /> },
   { label: 'P&L', path: '/wb/reports/pnl', icon: <span className="vella-final-icon-text">$</span> },
-  { label: 'Расходы', path: '/wb/reports/expenses', icon: <FileSpreadsheet size={15} />, count: 'черновик', tone: 'warn' },
+  { label: 'Расходы', path: '/wb/reports/expenses', icon: <FileSpreadsheet size={15} /> },
   { label: 'Реклама', path: '/wb/reports/ads', icon: <Megaphone size={15} /> },
   { label: 'Остатки', path: '/wb/reports/stock', icon: <Package size={15} /> },
   { label: 'Неделя-к-неделе', path: '/wb/reports/week-over-week', icon: <Repeat2 size={15} /> },
@@ -39,7 +39,7 @@ const reportItems: NavItem[] = [
 ]
 
 const repricerItems: NavItem[] = [
-  { label: 'Все товары', path: '/wb/repricer', icon: <Package size={15} />, count: '1 482' },
+  { label: 'Репрайсер', path: '/wb/repricer', icon: <Package size={15} />, count: '1 482' },
   { label: 'Диагностика цен', path: '/wb/repricer/stats', icon: <BarChart3 size={15} />, count: 'черновик', tone: 'warn' },
   { label: 'Стратегии', path: '/wb/templates', icon: <FileSpreadsheet size={15} />, count: 5 },
   { label: 'История', path: '/wb/repricer/changelog', icon: <Repeat2 size={15} /> },
@@ -53,14 +53,14 @@ const reportTabs: NavItem[] = [
   { label: 'ABC', path: '/wb/reports/abc', icon: <BarChart3 size={14} /> },
   { label: 'РНП', path: '/wb/reports/rnp', icon: <FileSpreadsheet size={14} /> },
   { label: 'P&L', path: '/wb/reports/pnl', icon: <span className="vella-final-icon-text">$</span>, count: 'фин.' },
-  { label: 'Расходы', path: '/wb/reports/expenses', icon: <FileSpreadsheet size={14} />, count: 'черновик', tone: 'warn' },
+  { label: 'Расходы', path: '/wb/reports/expenses', icon: <FileSpreadsheet size={14} /> },
   { label: 'Реклама', path: '/wb/reports/ads', icon: <Megaphone size={14} /> },
   { label: 'Остатки', path: '/wb/reports/stock', icon: <Package size={14} /> },
   { label: 'Неделя', path: '/wb/reports/week-over-week', icon: <Repeat2 size={14} /> },
 ]
 
 const repricerTabs: NavItem[] = [
-  { label: 'Все товары', path: '/wb/repricer', icon: <Package size={14} />, count: '1 482' },
+  { label: 'Репрайсер', path: '/wb/repricer', icon: <Package size={14} />, count: '1 482' },
   { label: 'Диагностика цен', path: '/wb/repricer/stats', icon: <BarChart3 size={14} />, count: 'черновик', tone: 'warn' },
   { label: 'Стратегии', path: '/wb/templates', icon: <FileSpreadsheet size={14} />, count: 5 },
   { label: 'История', path: '/wb/repricer/changelog', icon: <Repeat2 size={14} /> },

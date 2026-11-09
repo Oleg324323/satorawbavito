@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Satorna Avito Orders Collector",
+  "version": "0.2.21",
+  "version_name": "0.2.21 — единый код подключения Satorna",
+  "description": "Collects Avito order details from the seller browser page for Satorna picking lists.",
+  "permissions": ["activeTab", "storage", "scripting", "tabs"],
+  "host_permissions": ["https://www.avito.ru/*", "http://localhost:*/*", "http://127.0.0.1:*/*", "https://*/*"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Satorna Avito Orders"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.avito.ru/*"],
+      "js": [
+        "src/item-size.js",
+        "src/item-photo.js",
+        "src/order-chat.js",
+        "src/size-policy.js",
+        "src/page-state.js",
+        "src/shipment-number.js",
+        "src/return-details.js",
+        "src/order-cache.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://app.comcookie.store/*", "https://comcookie.store/*", "https://satorna-wb.vercel.app/*", "http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["src/connection.js", "src/satorna-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

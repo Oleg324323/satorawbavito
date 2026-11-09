@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from typing import Any, Literal
 
 from app.platform.period import Period
-from app.wb_api.ads_runtime import _request_with_retry
+from app.wb_api.ads_runtime import ADS_FULLSTATS_MIN_INTERVAL_S, _request_with_retry
 from app.wb_api.client import (
     RateLimitedWbApiClient,
     WbApiRequest,
@@ -52,7 +52,15 @@ def _execute_plan(
 
     def request(item: WbApiRequest) -> WbApiResponseEnvelope:
         nonlocal expected, completed
-        response = _request_with_retry(client, item)
+        response = _request_with_retry(
+            client,
+            item,
+            min_interval_s=(
+                ADS_FULLSTATS_MIN_INTERVAL_S
+                if item.path == "/adv/v3/fullstats"
+                else 0.0
+            ),
+        )
         expected += 1
         if response.ok:
             completed += 1

@@ -1,5 +1,6 @@
 from datetime import date
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -55,6 +56,7 @@ def test_1c_cash_flow_accepts_payload_and_exposes_logs(tmp_path, monkeypatch):
 
 
 def test_cash_flow_job_queue_roundtrip_and_pnl_attachment(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.routers.wb_reports_bff.legacy_finance_tax_revision", lambda org: "synthetic-confirmation")
     monkeypatch.setattr("app.routers.one_c_cash_flow.LOG_PATH", tmp_path / "1c_logs.json")
     monkeypatch.setattr("app.routers.one_c_cash_flow.JOBS_PATH", tmp_path / "1c_jobs.json")
     report_cache: dict[tuple[int, str], dict] = {}
@@ -134,6 +136,8 @@ def test_cash_flow_job_queue_roundtrip_and_pnl_attachment(tmp_path, monkeypatch)
 
     from app import repricer_tasks
 
+    monkeypatch.setattr(repricer_tasks, "_report_snapshot_sources_ready", lambda *_args, **_kwargs: (True, []))
+    monkeypatch.setattr(repricer_tasks, "refresh_wb_data_sources", lambda **_kwargs: pytest.fail("P&L cache build must not refresh WB"))
     repricer_tasks.build_report_for_org.run(
         1,
         "finance-viewer@vella.local",
@@ -166,7 +170,7 @@ def test_cash_flow_job_queue_roundtrip_and_pnl_attachment(tmp_path, monkeypatch)
     assert expenses_payload["kpis"][0]["value"] == "3"
     assert expenses_payload["rows"] == [
         {
-            "id": "cf_0",
+            "id": "cf_2",
             "category": "Аренда помещений",
             "article": "Аренда помещений",
             "amountKopecks": 120_000,
@@ -181,7 +185,7 @@ def test_cash_flow_job_queue_roundtrip_and_pnl_attachment(tmp_path, monkeypatch)
             "comment": "Операционная статья ДДС из 1С cash-flow.",
         },
         {
-            "id": "cf_1",
+            "id": "cf_3",
             "category": "Заработная плата",
             "article": "Заработная плата",
             "amountKopecks": 34_000,
@@ -196,7 +200,7 @@ def test_cash_flow_job_queue_roundtrip_and_pnl_attachment(tmp_path, monkeypatch)
             "comment": "Операционная статья ДДС из 1С cash-flow.",
         },
         {
-            "id": "cf_6",
+            "id": "cf_8",
             "category": "Оплата поставщикам_расходники",
             "article": "Оплата поставщикам_расходники",
             "amountKopecks": 10_000,

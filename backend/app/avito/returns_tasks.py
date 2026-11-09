@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.avito.auth import resolve_user_avito_access_token
-from app.avito.orders import AvitoOrdersBrowserSnapshot, AvitoOrdersFetchRequest, build_avito_orders_client, merge_browser_snapshot_orders
+from app.avito.orders import build_avito_orders_client
 from app.avito.returns import extract_return_candidates
-from app.avito.returns_store import upsert_return_candidates
 from app.cabinet.store import get_organization_avito_credentials_secret
 from app.config import get_settings
 from app.infra.celery_app import celery_app
@@ -16,7 +15,6 @@ from app.repricer_persistence.store import list_organization_ids
 
 AVITO_RETURNS_SYNC_STATUS_KEY = "avito_returns_sync_status"
 AVITO_RETURNS_SYNC_SETTINGS_KEY = "avito_returns_sync_settings"
-AVITO_ORDERS_BROWSER_SNAPSHOT_KEY = "avito_orders_browser_snapshot"
 AVITO_RETURNS_SCHEDULER_USER_ID = "avito-returns-scheduler"
 AVITO_RETURNS_ALLOWED_INTERVAL_MINUTES = (5, 15, 30, 60, 180, 360)
 
@@ -97,18 +95,49 @@ def _mark_auto_dispatched(organization_id: int, now: datetime) -> None:
     save_source_cache(organization_id, AVITO_RETURNS_SYNC_SETTINGS_KEY, sync_settings)
 
 
-def _browser_snapshot_from_cache(organization_id: int) -> AvitoOrdersBrowserSnapshot | None:
-    cached = get_source_cache(organization_id, AVITO_ORDERS_BROWSER_SNAPSHOT_KEY, slim=False) or None
-    if not isinstance(cached, dict):
-        return None
-    try:
-        return AvitoOrdersBrowserSnapshot.model_validate(cached)
-    except Exception:
-        return None
-
-
 @celery_app.task(name="avito.sync_returns_for_org", bind=True, max_retries=0)
 def sync_returns_for_org(self, organization_id: int, scenario: str = "complete", force: bool = False) -> dict[str, Any]:
+    try:
+        return _sync_returns_for_org(organization_id, scenario, force)
+    except Exception:
+        try:
+            _save_sync_status(organization_id, {
+                "state": "failed", "organizationId": organization_id,
+                "error": "avito_returns_sync_failed", "retryable": True,
+            })
+        except Exception:
+            pass
+    # Outside both exception handlers: Celery receives neither the original
+    # provider/driver exception nor its chained context, even if status save fails.
+    raise RuntimeError("avito_returns_sync_failed") from None
+
+
+def _safe_orders_error(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    codes = {
+        "auth_required": (False, "AVITO_AUTH"),
+        "forbidden_scope": (False, "AVITO_ORDER_MANAGEMENT_SCOPE"),
+        "rate_limited": (True, "AVITO_RATE_LIMIT"),
+        "avito_server_error": (True, "AVITO_ORDERS"),
+        "avito_request_failed": (False, "AVITO_ORDERS"),
+        "transport_error": (True, "AVITO_ORDERS"),
+        "active_orders_unverified": (True, "AVITO_ORDERS"),
+        "refresh_in_progress": (True, "AVITO_ORDERS"),
+        "return_inventory_unavailable": (True, "AVITO_RETURN_INVENTORY"),
+    }
+    code = value.get("code") if isinstance(value, dict) else getattr(value, "code", None)
+    if type(code) is not str or code not in codes:
+        code = "avito_request_failed"
+    retryable, blocker = codes[code]
+    supplied_retryable = value.get("retryable") if isinstance(value, dict) else getattr(value, "retryable", None)
+    if type(supplied_retryable) is bool:
+        retryable = supplied_retryable
+    return {"code": code, "message": "Avito orders source unavailable",
+            "retryable": retryable, "blockerIds": [blocker]}
+
+
+def _sync_returns_for_org(organization_id: int, scenario: str, force: bool) -> dict[str, Any]:
     settings = get_settings()
     sync_settings = get_returns_sync_settings(organization_id)
     if (not settings.avito_returns_sync_enabled or not sync_settings["enabled"]) and not force:
@@ -122,7 +151,6 @@ def sync_returns_for_org(self, organization_id: int, scenario: str = "complete",
         _save_sync_status(organization_id, {"state": "skipped", **result})
         return result
 
-    start = date.today() - timedelta(days=max(1, int(sync_settings["periodDays"])) - 1)
     try:
         access_token = resolve_user_avito_access_token(
             user_id=AVITO_RETURNS_SCHEDULER_USER_ID,
@@ -135,41 +163,25 @@ def sync_returns_for_org(self, organization_id: int, scenario: str = "complete",
             base_url=settings.avito_api_base_url,
             timeout_seconds=settings.avito_api_timeout_seconds,
         )
-        result = client.fetch_orders(AvitoOrdersFetchRequest(dateFrom=start, statuses=["on_return"], limit=20, page=1))
-        if result.status == "blocked":
-            error = result.error.model_dump(mode="json") if hasattr(result.error, "model_dump") else result.error
-            payload = {
-                "state": "blocked",
-                "organizationId": organization_id,
-                "error": error,
-                "diagnostics": result.diagnostics,
-            }
+        from app.routers.avito_orders import _load_orders_queue, _queue_cached_rows
+        queue = _load_orders_queue(organization_id, access_token, client, force=force)
+        if not queue.get("complete"):
+            payload = {"state": "blocked", "organizationId": organization_id, "error": _safe_orders_error(queue.get("error"))}
             _save_sync_status(organization_id, payload)
             return payload
-        snapshot = _browser_snapshot_from_cache(organization_id)
-        merge_browser_snapshot_orders(result.orders, snapshot)
-        candidates = extract_return_candidates(result.orders)
-        upsert_result = upsert_return_candidates(organization_id, candidates)
+        candidates = extract_return_candidates(_queue_cached_rows(queue))
         payload = {
             "state": "completed",
             "organizationId": organization_id,
             "scenario": scenario,
             "syncedCount": len(candidates),
-            "upsert": upsert_result,
-            "dateFrom": start.isoformat(),
-            "statuses": ["on_return"],
-            "diagnostics": result.diagnostics,
+            "dateFrom": None,
+            "statuses": [],
         }
         _save_sync_status(organization_id, payload)
         return payload
-    except Exception as exc:
-        payload = {
-            "state": "failed",
-            "organizationId": organization_id,
-            "error": str(exc)[:500],
-            "retryable": True,
-        }
-        _save_sync_status(organization_id, payload)
+    except Exception:
+        # The task boundary persists a fixed failure and raises outside context.
         raise
 
 

@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { lastClosedWbDay, resolvePresetPeriodRange } from './presetPeriodAnchor'
+import { isSelectableWbDay, lastClosedWbDay, resolvePresetPeriodRange } from './presetPeriodAnchor'
 
 describe('WB report period anchoring', () => {
+  it.each(['2026-10-07', '2026-10-08', '2026-10-09'])('allows uncached past day %s on October 10 in Moscow', iso => {
+    expect(isSelectableWbDay(iso, '2026-07-12', new Date('2026-10-09T21:01:00Z'))).toBe(true)
+  })
+  it.each(['2026-10-11', '2026-11-01', '2026-02-30', 'invalid'])('rejects future/invalid day %s', iso => {
+    expect(isSelectableWbDay(iso, '2026-07-12', new Date('2026-10-10T09:00:00Z'))).toBe(false)
+  })
   it('uses the previous Moscow day after local midnight', () => {
     expect(lastClosedWbDay(new Date('2026-08-23T21:30:00Z'))).toBe('2026-08-23')
   })

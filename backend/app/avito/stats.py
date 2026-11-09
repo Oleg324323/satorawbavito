@@ -17,6 +17,14 @@ except Exception:  # pragma: no cover - live mode dependency
 logger = logging.getLogger(__name__)
 
 
+def _diagnostic_count(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _diagnostic_status(value: Any) -> int | None:
+    return value if type(value) is int and 100 <= value <= 599 else None
+
+
 def _text_or_none(*values: Any) -> str | None:
     for value in values:
         if value is None:
@@ -85,7 +93,7 @@ AVITO_STATS_MAX_WINDOW_DAYS = 30
 AVITO_STATS_PAGE_LIMIT = 1000
 AVITO_ITEM_LIST_STATUSES = "active,removed,old"
 
-AvitoStatsGrouping = Literal["item", "totals"]
+AvitoStatsGrouping = Literal["item", "totals", "day"]
 AvitoStatsSourceStatus = Literal["fresh", "partial", "stale", "blocked"]
 AvitoStatsFetchStatus = Literal["synced", "partial", "blocked"]
 
@@ -273,20 +281,20 @@ class LiveAvitoStatsClient:
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 accounts = self._accounts(client, request.accountIds)
                 daily: list[AvitoStatsDailyPoint] = []
-                if request.grouping == "totals":
+                if request.grouping in {"totals", "day"}:
                     stat_items, daily = self._stats_totals(client, request, accounts)
                 else:
                     items = self._items(client, accounts)
                     stat_items = self._stats_for_items(client, request, accounts, items)
                     if self.diagnostics is not None:
                         self.diagnostics["itemsCount"] = len(items)
-                        self.diagnostics["itemIdsSample"] = [item["itemId"] for item in items[:10]]
+                        self.diagnostics["itemIdsSample"] = None
         except httpx.HTTPStatusError as exc:
             return self._http_error(exc)
-        except Exception as exc:
+        except Exception:
             return AvitoStatsFetchResult(
                 status="blocked",
-                error=AvitoStatsFetchError(code="transport_error", message=str(exc), retryable=True, blockerIds=["AVITO_STATS"]),
+                error=AvitoStatsFetchError(code="transport_error", message="Avito transport error", retryable=True, blockerIds=["AVITO_STATS"]),
             )
         return AvitoStatsFetchResult(status="synced", accounts=accounts, items=stat_items, daily=daily, diagnostics=self.diagnostics)
 
@@ -311,13 +319,19 @@ class LiveAvitoStatsClient:
         per_page = 99
         page = 1
         public_image_fetches = 0
+        seen_pages: set[tuple[str, ...]] = set()
+        seen_items: set[tuple[str, str]] = set()
         while True:
             response = client.get(f"{self.base_url}/core/v1/items", params={"per_page": per_page, "page": page, "status": AVITO_ITEM_LIST_STATUSES}, headers=self._headers())
             response.raise_for_status()
             payload = response.json()
-            rows = payload.get("resources") or payload.get("items") or payload.get("data") if isinstance(payload, dict) else payload
+            rows = next((payload[key] for key in ("resources", "items", "data") if key in payload), None) if isinstance(payload, dict) else payload
             if not isinstance(rows, list):
-                return result
+                raise ValueError("Avito inventory response does not contain a listing array")
+            signature = tuple(str(row.get("id") or row.get("itemId") or row.get("item_id") or "") for row in rows if isinstance(row, dict))
+            if signature and signature in seen_pages:
+                raise ValueError("Avito inventory repeated a page; catalog is incomplete")
+            seen_pages.add(signature)
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -331,7 +345,10 @@ class LiveAvitoStatsClient:
                     image_url = self._public_image_url(client, item_url)
                 item = self._listing_item_payload(row, default_account)
                 item["imageUrl"] = image_url
-                result.append(item)
+                key = (str(item.get("accountId") or ""), str(item["itemId"]))
+                if key not in seen_items:
+                    result.append(item)
+                    seen_items.add(key)
             if len(rows) < per_page:
                 break
             page += 1
@@ -488,9 +505,9 @@ class LiveAvitoStatsClient:
                 "pages": len(diagnostics_pages),
                 "chunks": [
                     {
-                        "dateFrom": str(page.get("requestBody", {}).get("dateFrom")),
-                        "dateTo": str(page.get("requestBody", {}).get("dateTo")),
-                        "grouping": page.get("requestBody", {}).get("grouping"),
+                        "dateFrom": None,
+                        "dateTo": None,
+                        "grouping": "totals",
                         "groupings": page.get("groupings"),
                         "dataTotalCount": page.get("dataTotalCount"),
                     }
@@ -573,8 +590,12 @@ class LiveAvitoStatsClient:
                 self._log_avito_stats_response(diagnostics)
                 page_items = self._v2_item_analytics_by_item(payload)
                 self._merge_v2_item_metrics(result, page_items)
-                groupings_count = int(diagnostics.get("groupings") or 0)
-                total_count_raw = diagnostics.get("dataTotalCount")
+                # Pagination is business control, not sanitized debug metadata.
+                # Retain its existing source interpretation independently.
+                pagination_result = payload.get("result") if isinstance(payload, dict) else None
+                pagination_groups = pagination_result.get("groupings") if isinstance(pagination_result, dict) else None
+                groupings_count = len(pagination_groups) if isinstance(pagination_groups, list) else 0
+                total_count_raw = pagination_result.get("dataTotalCount") if isinstance(pagination_result, dict) else None
                 total_count = int(total_count_raw) if isinstance(total_count_raw, int) else None
                 if groupings_count <= 0:
                     break
@@ -590,9 +611,9 @@ class LiveAvitoStatsClient:
                 "pages": len(diagnostics_pages),
                 "chunks": [
                     {
-                        "dateFrom": str(page.get("requestBody", {}).get("dateFrom")),
-                        "dateTo": str(page.get("requestBody", {}).get("dateTo")),
-                        "offset": page.get("requestBody", {}).get("offset"),
+                        "dateFrom": None,
+                        "dateTo": None,
+                        "offset": None,
                         "groupings": page.get("groupings"),
                         "dataTotalCount": page.get("dataTotalCount"),
                     }
@@ -613,9 +634,9 @@ class LiveAvitoStatsClient:
         body = {
             "dateFrom": request.dateFrom.isoformat(),
             "dateTo": request.dateTo.isoformat(),
-            "grouping": "totals",
+            "grouping": request.grouping,
             "metrics": AVITO_ITEM_ANALYTICS_METRICS,
-            "limit": 1,
+            "limit": 1000 if request.grouping == "day" else 1,
             "offset": 0,
         }
         response = client.post(url, json=body, headers=self._headers())
@@ -732,29 +753,31 @@ class LiveAvitoStatsClient:
 
     @staticmethod
     def _avito_stats_diagnostics(status_code: int, payload: Any, *, request_url: str, request_body: dict[str, Any]) -> dict[str, Any]:
-        result = payload.get("result") if isinstance(payload, dict) else None
-        groupings = result.get("groupings") if isinstance(result, dict) else None
-        data_total_count = result.get("dataTotalCount") if isinstance(result, dict) else None
+        result = payload.get("result") if type(payload) is dict else None
+        groupings = result.get("groupings") if type(result) is dict else None
+        data_total_count = result.get("dataTotalCount") if type(result) is dict else None
         return {
-            "status": status_code,
-            "requestUrl": request_url,
-            "requestBody": request_body,
-            "bodyPreview": payload,
-            "resultKeys": sorted(result.keys()) if isinstance(result, dict) else [],
-            "groupings": len(groupings) if isinstance(groupings, list) else None,
-            "dataTotalCount": data_total_count,
-            "reason": "avito_returned_timestamp_without_groupings" if isinstance(result, dict) and "timestamp" in result and not isinstance(groupings, list) else None,
+            "status": _diagnostic_status(status_code),
+            "requestUrl": None,
+            "requestBody": None,
+            "bodyPreview": None,
+            "resultKeys": None,
+            "groupings": len(groupings) if type(groupings) is list else None,
+            "dataTotalCount": _diagnostic_count(data_total_count),
+            "reason": "avito_returned_timestamp_without_groupings" if type(result) is dict and "timestamp" in result and type(groupings) is not list else None,
         }
 
     @staticmethod
     def _log_avito_stats_response(diagnostics: dict[str, Any]) -> None:
-        logger.warning("[AVITO_STATS_STATUS] %s", diagnostics.get("status"))
-        logger.warning("[AVITO_STATS_REQUEST_URL] %s", diagnostics.get("requestUrl"))
-        logger.warning("[AVITO_STATS_REQUEST_BODY] %s", diagnostics.get("requestBody"))
-        logger.warning("[AVITO_STATS_BODY] %s", str(diagnostics.get("bodyPreview"))[:12000])
-        logger.warning("[AVITO_STATS_GROUPINGS] %s", diagnostics.get("groupings"))
-        logger.warning("[AVITO_STATS_TOTAL] %s", diagnostics.get("dataTotalCount"))
-        logger.warning("[AVITO_STATS_REASON] %s", diagnostics.get("reason"))
+        if type(diagnostics) is not dict:
+            return
+        reason = diagnostics.get("reason")
+        safe_reason = ("avito_returned_timestamp_without_groupings"
+                       if type(reason) is str and reason == "avito_returned_timestamp_without_groupings" else None)
+        logger.warning("[AVITO_STATS_STATUS] %s", _diagnostic_status(diagnostics.get("status")))
+        logger.warning("[AVITO_STATS_GROUPINGS] %s", _diagnostic_count(diagnostics.get("groupings")))
+        logger.warning("[AVITO_STATS_TOTAL] %s", _diagnostic_count(diagnostics.get("dataTotalCount")))
+        logger.warning("[AVITO_STATS_REASON] %s", safe_reason)
 
     def _v2_item_analytics_by_item(self, payload: Any) -> dict[str, dict[str, Any]]:
         groupings = payload.get("result", {}).get("groupings") if isinstance(payload, dict) else None
@@ -832,7 +855,12 @@ class LiveAvitoStatsClient:
 
     @staticmethod
     def _http_error(exc: Any) -> AvitoStatsFetchResult:
-        status_code = exc.response.status_code
+        status_code = _diagnostic_status(exc.response.status_code)
+        if status_code is None:
+            return AvitoStatsFetchResult(
+                status="blocked",
+                error=AvitoStatsFetchError(code="avito_request_failed", message="Avito request failed", retryable=True, blockerIds=["AVITO_STATS"]),
+            )
         if status_code == 401:
             code, retryable, blocker = "auth_required", False, "AVITO_AUTH"
         elif status_code == 403:

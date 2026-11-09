@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -43,7 +43,7 @@ import {
 } from '@/features/notifications/repository'
 import { useNotifications } from '@/features/notifications/notificationContext'
 import type { NotificationEvent, NotificationSeverity } from '@/features/notifications/types'
-import { getCurrentUserProfile } from '@/features/settings/repository'
+import { useAuth } from '@/features/auth/authContext'
 
 type Crumb = { label: string; path?: string; mono?: boolean }
 
@@ -169,9 +169,39 @@ function HeaderNotifications({ items }: { items: NotificationEvent[] }) {
 
 function HeaderProfileMenu() {
   const navigate = useNavigate()
-  const profile = getCurrentUserProfile()
+  const { logout, profile } = useAuth()
+  const [logoutPending, setLogoutPending] = useState(false)
+  const [logoutError, setLogoutError] = useState(false)
+
+  if (!profile) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="ml-1 inline-flex h-8 items-center gap-2 rounded-md px-1.5"
+        aria-label="Профиль загружается"
+        title="Профиль загружается"
+      >
+        <span className="flex size-7 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">···</span>
+      </button>
+    )
+  }
+
   const wbScope = profile.scopes.find((scope) => scope.marketplace === 'wb')
   const avitoScope = profile.scopes.find((scope) => scope.marketplace === 'avito')
+
+  async function handleLogout() {
+    if (logoutPending) return
+    setLogoutPending(true)
+    setLogoutError(false)
+    try {
+      await logout()
+    } catch {
+      setLogoutError(true)
+    } finally {
+      setLogoutPending(false)
+    }
+  }
 
   const menuItems = [
     { label: 'Личный кабинет', path: '/settings/profile', icon: UserCog },
@@ -217,13 +247,9 @@ function HeaderProfileMenu() {
           <div className="flex items-start gap-2 rounded-md bg-muted/50 p-2">
             <Store className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <div className="min-w-0 text-xs">
-              <div className="font-semibold text-foreground">Авито: {avitoScope?.accountIds.length ?? 0} аккаунта · {avitoScope?.status === 'limited' ? 'ограничено' : 'просмотр'}</div>
+              <div className="font-semibold text-foreground">Авито: {avitoScope?.status === 'limited' ? 'ограничено' : 'просмотр'}</div>
               <div className="mt-0.5 truncate text-muted-foreground">{avitoScope?.blockers.join(' · ') || 'Блокеров нет'}</div>
             </div>
-          </div>
-          <div className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-            <span>Approval items</span>
-            <span>{profile.unreadApprovals}</span>
           </div>
         </div>
 
@@ -239,10 +265,23 @@ function HeaderProfileMenu() {
           })}
         </div>
         <DropdownMenuSeparator className="m-0" />
-        <DropdownMenuItem disabled className="gap-2 px-3 py-2 text-destructive">
+        <DropdownMenuItem
+          disabled={logoutPending}
+          className="gap-2 px-3 py-2 text-destructive"
+          onSelect={(event) => {
+            event.preventDefault()
+            void handleLogout()
+          }}
+        >
           <LogOut className="size-4" />
-          <span>Выйти</span>
-          <span className="ml-auto text-xs text-muted-foreground">auth</span>
+          <span>{logoutPending ? 'Выходим...' : 'Выйти'}</span>
+          {logoutError ? (
+            <span role="alert" aria-live="assertive" className="ml-auto text-xs text-muted-foreground">
+              Не удалось выйти. Повторите попытку.
+            </span>
+          ) : (
+            <span className="ml-auto text-xs text-muted-foreground">auth</span>
+          )}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

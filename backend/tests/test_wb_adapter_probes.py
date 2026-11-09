@@ -1,5 +1,14 @@
-from app.discovery.repricer_probes import run_read_prices_probe, run_task_history_probe, run_upload_lifecycle_probe
+import pytest
+
+from app.discovery.repricer_probes import _fields_present, run_read_prices_probe, run_task_history_probe, run_upload_lifecycle_probe
 from app.wb_api.client import WbApiRequest, build_fake_client
+
+
+@pytest.mark.parametrize(("value", "present"), [(None, False), (0, True), (False, True), ("", True)])
+def test_probe_presence_rejects_null_but_preserves_non_null_values(value, present):
+    fields = ["clubDiscount", "sizes[0].clubDiscountedPrice"]
+    payload = {"data": {"listGoods": [{"clubDiscount": value, "sizes": [{"clubDiscountedPrice": value}]}]}}
+    assert _fields_present(payload, fields) == (fields if present else [])
 
 
 def test_read_prices_probe_confirms_price_fields_but_keeps_guard_blocked():

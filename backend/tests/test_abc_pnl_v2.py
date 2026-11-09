@@ -40,8 +40,7 @@ GLOBAL_BLOCKERS = {
 def raw_advertising_bundle() -> dict[str, object]:
     bundle = json.loads(
         (
-            Path(__file__).parent
-            / "fixtures/wb_advertising_raw_sanitized.json"
+            Path(__file__).parent / "fixtures/wb_advertising_raw_sanitized.json"
         ).read_text()
     )
     date_from = PERIOD.date_from.isoformat()
@@ -152,14 +151,17 @@ def api() -> TestClient:
                     organization_id=1,
                     code="FBBT_1133",
                 ),
-                MarketplaceProductRow(
-                    marketplace_product_id=1011,
-                    organization_id=1,
-                    marketplace_account_id=31,
-                    external_product_id="453200669",
-                    seller_article="FBBT_1133",
-                ),
             ]
+        )
+        session.flush()
+        session.add(
+            MarketplaceProductRow(
+                marketplace_product_id=1011,
+                organization_id=1,
+                marketplace_account_id=31,
+                external_product_id="453200669",
+                seller_article="FBBT_1133",
+            )
         )
         session.flush()
         session.add(
@@ -203,13 +205,17 @@ def api() -> TestClient:
                     "nmId": 453200669,
                     "vendorCode": "FBBT_1133",
                     "docTypeName": "Продажа",
+                    "sellerOperName": "Продажа",
                     "quantity": 1,
                     "retailAmount": "1208.00",
+                    "forPay": "1208.00",
                     "cashbackAmount": "10.00",
                     "cashbackDiscount": "3.50",
                     "cashbackCommissionChange": "-1.25",
                     "saleDt": "2026-08-20",
                     "rrDate": "2026-08-23",
+                    "deduction": "123.00",
+                    "bonusTypeName": "WB Продвижение",
                 }
             ],
             observed_at=datetime(2026, 8, 26, 3, 50, tzinfo=timezone.utc),
@@ -279,43 +285,44 @@ def test_abc_pnl_v2_is_cache_only_and_reconciles(
     assert payload["summary"]["cogsKopecks"] == 20_000
     assert payload["summary"]["settlementProfitKopecks"] == 100_800
     assert payload["summary"]["taxKopecks"] == 7_248
-    assert payload["summary"]["otherExpensesKopecks"] == 7_040
-    assert payload["summary"]["profitBeforeAdsAndLoyaltyKopecks"] == 86_512
+    assert payload["summary"]["otherExpensesKopecks"] == 0
+    assert payload["summary"]["profitBeforeAdsAndLoyaltyKopecks"] == 93_552
     assert payload["summary"]["advertisingSpendKopecks"] == 12_300
     assert payload["summary"]["unattributedAdvertisingSpendKopecks"] == 0
-    assert payload["summary"]["profitBeforeLoyaltyKopecks"] == 74_212
+    assert payload["summary"]["profitBeforeLoyaltyKopecks"] == 81_252
     assert payload["summary"]["cashbackAmountKopecks"] == 1_000
     assert payload["summary"]["cashbackDiscountKopecks"] == 350
     assert payload["summary"]["cashbackCommissionChangeKopecks"] == -125
-    assert payload["summary"]["loyaltyNetCostKopecks"] == 525
-    assert payload["summary"]["profitAfterLoyaltyKopecks"] == 73_687
-    assert payload["summary"]["netProfitKopecks"] is None
+    assert payload["summary"]["loyaltyNetCostKopecks"] == 875
+    assert payload["summary"]["profitAfterLoyaltyKopecks"] == 80_377
+    assert payload["summary"]["netProfitKopecks"] == 80_377
+    assert payload["summary"]["profitBeforeInternalExpensesKopecks"] == 80_377
+    assert payload["summary"]["internalExpensesKopecks"] == 0
     assert payload["items"][0]["settlementProfitKopecks"] == 100_800
     assert payload["items"][0]["economicsValueState"] == "configured"
     assert payload["items"][0]["economicsEvidenceStatus"] == "dated"
     assert payload["items"][0]["advertisingSpendKopecks"] == 12_300
-    assert payload["items"][0]["profitBeforeLoyaltyKopecks"] == 74_212
+    assert payload["items"][0]["profitBeforeLoyaltyKopecks"] == 81_252
     assert payload["items"][0]["cashbackAmountKopecks"] == 1_000
     assert payload["items"][0]["cashbackDiscountKopecks"] == 350
     assert payload["items"][0]["cashbackCommissionChangeKopecks"] == -125
-    assert payload["items"][0]["loyaltyNetCostKopecks"] == 525
-    assert payload["items"][0]["profitAfterLoyaltyKopecks"] == 73_687
-    assert payload["items"][0]["netProfitKopecks"] is None
+    assert payload["items"][0]["loyaltyNetCostKopecks"] == 875
+    assert payload["items"][0]["profitAfterLoyaltyKopecks"] == 80_377
+    assert payload["items"][0]["netProfitKopecks"] == 80_377
+    assert payload["items"][0]["profitBeforeInternalExpensesKopecks"] == 80_377
+    assert payload["items"][0]["internalExpensesKopecks"] == 0
     assert payload["items"][0]["profitClass"] is None
     assert payload["items"][0]["abcCode"] is None
     assert payload["meta"]["state"] == "partial"
-    assert (
-        payload["meta"]["formulaVersion"]
-        == "wb-abc-pnl-fullstats-loyalty-v1"
-    )
+    assert payload["meta"]["formulaVersion"] == "wb-abc-pnl-finance-rrdate-v4"
     assert payload["meta"]["costLedgerRevision"] == 1
     assert payload["meta"]["economicsRevision"] == 1
-    assert payload["meta"]["advertisingSource"] == "ads_fullstats"
+    assert payload["meta"]["advertisingSource"] == "finance_promotion"
     assert len(payload["meta"]["advertisingSnapshotChecksum"]) == 64
     assert payload["meta"]["advertisingEvidenceStatus"] == "raw"
     assert payload["meta"]["blockerIds"] == [
-        "WB_PNL_CLASSIFICATION_NOT_CANONICAL"
-    ]
+        "WB_PNL_CLASSIFICATION_NOT_CANONICAL",
+            ]
     assert set(payload["meta"]["blockerIds"]) == GLOBAL_BLOCKERS
     assert payload["meta"]["snapshot"]["operationCount"] == 1
     assert payload["timestamp"].endswith("Z")

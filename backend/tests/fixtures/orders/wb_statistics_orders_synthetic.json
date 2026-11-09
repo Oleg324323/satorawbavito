@@ -27,5 +27,113 @@
       "isCancelled": false,
       "cancelEvidencePresent": false
     }
-  ]
+  ],
+  "stage1": {
+    "schemaVersion": "synthetic-orders-stage1-v1",
+    "scopedOrders": [
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1001,
+        "externalOrderId": "synthetic-wb-order-cross-scope",
+        "stableUnitId": "synthetic-srid-unit-cross-scope",
+        "quantity": 2
+      },
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1002,
+        "externalOrderId": "synthetic-wb-order-cross-scope",
+        "stableUnitId": "synthetic-srid-unit-cross-scope",
+        "quantity": 1
+      },
+      {
+        "organizationId": 202,
+        "marketplaceAccountId": 2002,
+        "externalOrderId": "synthetic-wb-order-cross-scope",
+        "stableUnitId": "synthetic-srid-unit-cross-scope",
+        "quantity": 1
+      },
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1001,
+        "externalOrderId": "000synthetic-wb-order-leading",
+        "stableUnitId": "000synthetic-srid-unit-leading",
+        "quantity": 1
+      }
+    ],
+    "missingStableUnitId": {
+      "organizationId": 101,
+      "marketplaceAccountId": 1001,
+      "externalOrderId": "synthetic-wb-order-missing-stable-unit",
+      "stableUnitId": null
+    },
+    "lifecycleCases": [
+      {
+        "rawStatus": null,
+        "isCancelled": true,
+        "cancelEvidencePresent": false
+      },
+      {
+        "rawStatus": "synthetic_cancel_marker_stage1",
+        "isCancelled": false,
+        "cancelEvidencePresent": true
+      },
+      {
+        "rawStatus": "synthetic_unknown_wb_lifecycle",
+        "isCancelled": false,
+        "cancelEvidencePresent": false
+      }
+    ],
+    "pagination": {
+      "manifestState": "partial",
+      "isComplete": false,
+      "sourceHighWaterMark": "synthetic-high-water-mark-wb-0001",
+      "observedOrderIds": ["synthetic-wb-order-cross-scope"],
+      "absentOrderIds": ["synthetic-order-absent-from-partial-page"],
+      "absenceMeansCancellation": false
+    },
+    "replay": {
+      "originalRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-wb-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-1"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-wb-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        }
+      ],
+      "reorderedRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-wb-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-wb-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-1"
+        }
+      ],
+      "changedRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-wb-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-2"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-wb-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        }
+      ]
+    }
+  }
 }

@@ -18,7 +18,7 @@ def test_resolve_spp_analytics_from_club_discounted_price():
     assert buyer is None
     assert buyer_with_wallet is None
     assert spp is None
-    assert wallet == 4.0
+    assert wallet is None
 
 
 def test_merge_good_spp_fields_fills_club_discounted_price():
@@ -41,18 +41,18 @@ def test_good_missing_spp_fields_ignores_wallet_only_fields():
     assert _good_missing_spp_fields(with_live_buyer) is False
 
 
-def test_resolve_spp_analytics_wallet_only_fallback():
+def test_resolve_spp_analytics_does_not_derive_wallet_from_club_discount():
     good = {"clubDiscount": 4}
     size = {"discountedPrice": 3761}
     buyer, buyer_with_wallet, spp, wallet = _resolve_spp_analytics(good, size, wb_goods_price_to_kopecks(3761))
-    assert wallet == 4.0
+    assert wallet is None
     assert buyer is None
     assert buyer_with_wallet is None
     assert spp is None
 
 
 def test_resolve_spp_analytics_indeepa_formula_from_live_buyer_price():
-    good = {"clubDiscount": 4}
+    good = {"walletPct": 4, "clubDiscount": 9}
     size = {"discountedPrice": 1763, "buyerPriceNoWallet": 1480}
     buyer, buyer_with_wallet, spp, wallet = _resolve_spp_analytics(good, size, wb_goods_price_to_kopecks(1763))
     assert buyer == wb_goods_price_to_kopecks(1480)
@@ -62,7 +62,7 @@ def test_resolve_spp_analytics_indeepa_formula_from_live_buyer_price():
 
 
 def test_resolve_spp_analytics_prefers_explicit_kopecks_over_legacy_alias():
-    good = {"clubDiscount": 4}
+    good = {"walletPct": 4, "clubDiscount": 9}
     size = {"discountedPrice": 1500, "buyerPriceNoWallet": 95_800, "buyerPriceNoWalletKopecks": 95_800}
     buyer, buyer_with_wallet, spp, wallet = _resolve_spp_analytics(good, size, wb_goods_price_to_kopecks(1500))
     assert buyer == 95_800

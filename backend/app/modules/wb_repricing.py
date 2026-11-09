@@ -7,12 +7,12 @@ identity, and transition time; a successful command returns a new snapshot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import datetime
-from enum import Enum
 import hashlib
 import json
 import re
+from dataclasses import dataclass, replace
+from datetime import datetime
+from enum import Enum
 
 
 class ApprovalStatus(str, Enum):
@@ -61,7 +61,14 @@ def _require_nonblank(value: object, field_name: str) -> str:
         raise ApprovalValidationError(f"{field_name} must be non-blank")
     if value != value.strip():
         raise ApprovalValidationError(f"{field_name} must not have surrounding whitespace")
+    _require_postgres_text(value)
     return value
+
+
+def _require_postgres_text(value: str) -> None:
+    """Reject non-scalar/NUL text; never normalize identity or reflect input."""
+    if any(char == "\x00" or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ApprovalValidationError("text is not representable in PostgreSQL UTF-8")
 
 
 def _require_sha256(value: object, field_name: str) -> str:
@@ -202,11 +209,12 @@ class PriceApprovalSnapshot:
             if not has_claim or not has_upload or any((has_decision, has_reason, has_error)):
                 raise ApprovalValidationError("applied approval has inconsistent metadata")
             return
-        if self.status in {ApprovalStatus.failed, ApprovalStatus.ambiguous}:
-            if not has_claim or not has_error or any(
+        if self.status in {ApprovalStatus.failed, ApprovalStatus.ambiguous} and (
+            not has_claim or not has_error or any(
                 (has_decision, has_reason, has_upload, has_result)
-            ):
-                raise ApprovalValidationError("failed approval has inconsistent metadata")
+            )
+        ):
+            raise ApprovalValidationError("failed approval has inconsistent metadata")
 
 
 def _prepare_transition(
@@ -354,11 +362,11 @@ def record_apply_failure(
 
 
 __all__ = (
+    "SAFE_APPLY_ERROR_CODES",
     "ApprovalConflictError",
     "ApprovalStatus",
     "ApprovalValidationError",
     "PriceApprovalSnapshot",
-    "SAFE_APPLY_ERROR_CODES",
     "block_approval",
     "build_action_key",
     "claim_approval",

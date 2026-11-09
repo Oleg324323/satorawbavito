@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1105,6 +1105,39 @@ def test_raw_pnl_source_uses_source_detail_for_tolerated_kopeck(
 
     assert source.total_spend_kopecks == 200
     assert source.spend_by_nm == {2001: 150}
+    assert source.unattributed_spend_kopecks == 50
+    assert "WB_ADS_HIERARCHY_TOLERANCE_APPLIED" in reconciliation.diagnostics
+
+
+def test_raw_pnl_source_preserves_daily_rounding_evidence(session: Session, raw_bundle):
+    _map_nm(session)
+    period = Period(date(2026, 9, 1), date(2026, 9, 5))
+    raw_bundle["period"]["dateTo"] = "2026-09-05"
+    page = raw_bundle["fullstats"][0]
+    page["dateTo"] = "2026-09-05"
+    campaign = page["payload"][0]
+    day = campaign["days"][0]
+    campaign["sum"] = 1.42
+    day["sum"] = 0.36
+    for app, spend in zip(day["apps"], (0.26, 0.10), strict=True):
+        app["sum"] = app["nms"][0]["sum"] = spend
+    campaign["days"] = [copy.deepcopy(day) for _ in range(4)]
+    for index, daily in enumerate(campaign["days"]):
+        daily["date"] = f"{period.date_from + timedelta(days=index)}T00:00:00+03:00"
+    for metric in ("views", "clicks", "atbs", "orders", "sum_price", "canceled"):
+        campaign[metric] *= 4
+    service = AdvertisingService(
+        session, 1, now=lambda: datetime(2026, 9, 6, 12, tzinfo=timezone.utc)
+    )
+
+    snapshot = service.ingest_raw_payload(31, period, raw_bundle, source_reference="wb_api:probe")
+    source = service.get_pnl_source(31, period)
+    reconciliation = service.get_raw_reconciliation(31, period)
+
+    assert source.state == "ready"
+    assert snapshot.source_total_spend_kopecks == 192
+    assert source.total_spend_kopecks == 194
+    assert source.spend_by_nm == {2001: 144}
     assert source.unattributed_spend_kopecks == 50
     assert "WB_ADS_HIERARCHY_TOLERANCE_APPLIED" in reconciliation.diagnostics
 

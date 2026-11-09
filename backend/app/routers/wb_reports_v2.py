@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.control_plane.auth import ActorContext
@@ -14,6 +16,10 @@ from app.modules.wb_reports.schemas import (
     AbcPnlRowView,
     AbcPnlSummaryView,
 )
+from app.modules.wb_reports.table_export import (
+    ReportTableExportRequest,
+    render_report_table_export,
+)
 from app.platform.clock import utc_now
 from app.platform.finance.access import (
     get_finance_actor,
@@ -22,23 +28,53 @@ from app.platform.finance.access import (
 )
 from app.platform.finance.schemas import FinancePeriodView, FinanceSnapshotView
 from app.platform.finance.service import FinanceAccountNotFound
+from app.platform.economics.wb_quarterly_tax import QuarterlyTaxConflict
 from app.platform.period import Period, PeriodValidationError
+from app.wb_reports_sprint_d import abc_spp_by_nm
 
 router = APIRouter(tags=["wb-reports-v2"])
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MAX_TABLE_EXPORT_BODY_BYTES = 5 * 1024 * 1024
+
+
+async def _table_export_request(request: Request) -> ReportTableExportRequest:
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > MAX_TABLE_EXPORT_BODY_BYTES
+    ):
+        raise HTTPException(413, detail={"code": "REPORT_EXPORT_BODY_TOO_LARGE"})
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_TABLE_EXPORT_BODY_BYTES:
+            raise HTTPException(413, detail={"code": "REPORT_EXPORT_BODY_TOO_LARGE"})
+        body.extend(chunk)
+    try:
+        return ReportTableExportRequest.model_validate_json(body)
+    except (ValidationError, ValueError):
+        raise HTTPException(
+            422,
+            detail={"code": "VALIDATION_ERROR", "message": "Request validation failed"},
+        ) from None
 
 
 def _view(
     page: AbcPnlPage,
     marketplace_account_id: int,
     resolved_now: datetime,
+    organization_id: int,
+    include_spp: bool,
 ) -> AbcPnlPageView:
     period = page.period
     snapshot = page.snapshot
+    spp_by_nm = abc_spp_by_nm(organization_id, period.date_from, period.date_to) if include_spp else {}
     return AbcPnlPageView(
         items=[
             AbcPnlRowView(
                 nmId=row.nm_id,
                 sellerArticle=row.seller_article,
+                **spp_by_nm.get(str(row.nm_id), {}),
                 catalogSkuId=row.catalog_sku_id,
                 operationCount=row.operation_count,
                 revenueKopecks=row.revenue_kopecks,
@@ -86,6 +122,10 @@ def _view(
                 profitClass=row.profit_class,
                 abcCode=row.abc_code,
                 netProfitKopecks=row.net_profit_kopecks,
+                profitBeforeInternalExpensesKopecks=(
+                    row.profit_before_internal_expenses_kopecks
+                ),
+                internalExpensesKopecks=row.internal_expenses_kopecks,
                 blockerIds=list(row.blocker_ids),
             )
             for row in page.items
@@ -132,6 +172,10 @@ def _view(
             loyaltyNetCostKopecks=page.summary.loyalty_net_cost_kopecks,
             profitAfterLoyaltyKopecks=page.summary.profit_after_loyalty_kopecks,
             netProfitKopecks=page.summary.net_profit_kopecks,
+            profitBeforeInternalExpensesKopecks=(
+                page.summary.profit_before_internal_expenses_kopecks
+            ),
+            internalExpensesKopecks=page.summary.internal_expenses_kopecks,
         ),
         meta=AbcPnlMetaView(
             state=page.state,
@@ -162,17 +206,17 @@ def _view(
             advertisingSource=(
                 page.advertising_snapshot.source_kind
                 if page.advertising_snapshot
-                else None
+                else "finance_promotion" if snapshot else None
             ),
             advertisingSnapshotChecksum=(
                 page.advertising_snapshot.snapshot_checksum
                 if page.advertising_snapshot
-                else None
+                else snapshot.snapshot_checksum if snapshot else None
             ),
             advertisingEvidenceStatus=(
                 page.advertising_snapshot.evidence_status
                 if page.advertising_snapshot
-                else None
+                else "raw" if snapshot else None
             ),
             blockerIds=list(page.blocker_ids),
         ),
@@ -190,6 +234,8 @@ def get_wb_abc_pnl(
     dateTo: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    includeSpp: bool = Query(default=False),
+    includePnlExpenses: bool = Query(default=False),
 ) -> AbcPnlPageView:
     require_finance_read(actor)
     require_wb_account_scope(session, actor, marketplaceAccountId)
@@ -217,9 +263,68 @@ def get_wb_abc_pnl(
             limit=limit,
             offset=offset,
         )
+    except QuarterlyTaxConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WB_TAX_SETTINGS_CHANGED", "message": str(exc)},
+        ) from exc
     except FinanceAccountNotFound as exc:
         raise HTTPException(
             status_code=404,
             detail={"code": "WB_ACCOUNT_NOT_FOUND", "message": str(exc)},
         ) from exc
-    return _view(page, marketplaceAccountId, resolved_now)
+    view = _view(page, marketplaceAccountId, resolved_now, actor.organization_id, includeSpp)
+    if includePnlExpenses:
+        from app.platform.advertising.raw_backfill import _connected_wb_account_id, RawAdvertisingBackfillError
+        from app.modules.wb_reports.schemas import PnlProductExpensesView, PnlExpenseOnlyView
+        from app.wb_pnl_expenses import load_pnl_finance, product_expenses
+        # The legacy raw cache is connection-scoped, not account-ID scoped.
+        # Never attach it to a different/ambiguous canonical WB account.
+        try:
+            _connected_wb_account_id(session, actor.organization_id, marketplaceAccountId)
+        except RawAdvertisingBackfillError:
+            finance = {}
+        else:
+            finance = load_pnl_finance(actor.organization_id, period.date_from, period.date_to)
+        for item in view.items:
+            item.pnlExpenses = PnlProductExpensesView(**product_expenses(finance, item.nmId))
+        view.meta.pnlExpenseRevision = finance.get("pnlExpenseRevision")
+        # Carry fee-only products and unallocated charges independently of
+        # canonical pagination. The client merges these AFTER all pages, never
+        # inventing revenue/profit for a row not yet in the canonical snapshot.
+        fee_ids = set(finance.get("pnlExpenseAmounts", {})) | set(finance.get("pnlExpenseUnknown", {}))
+        view.meta.pnlExpenseRows = [PnlExpenseOnlyView(nmId=int(nm) or None,
+            **product_expenses(finance, int(nm))) for nm in sorted(fee_ids)
+            if any(finance.get("pnlExpenseAmounts", {}).get(nm, {}).values())
+            or finance.get("pnlExpenseUnknown", {}).get(nm)]
+    return view
+
+
+@router.post("/api/v2/wb/reports/table.xlsx")
+def export_wb_report_table(
+    payload: Annotated[ReportTableExportRequest, Depends(_table_export_request)],
+    actor: Annotated[ActorContext, Depends(get_finance_actor)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> Response:
+    require_finance_read(actor)
+    require_wb_account_scope(session, actor, payload.marketplaceAccountId)
+    try:
+        Period(payload.dateFrom, payload.dateTo)
+    except PeriodValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_PERIOD", "message": str(exc)},
+        ) from exc
+    content = render_report_table_export(
+        payload,
+        organization_id=actor.organization_id,
+    )
+    filename = f"wb-{payload.reportKind}-{payload.dateFrom}-{payload.dateTo}.xlsx"
+    return Response(
+        content,
+        media_type=XLSX_MIME,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )

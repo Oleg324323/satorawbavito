@@ -1,0 +1,30 @@
+{
+  "fixtureVersion": "t4-review-storage-golden-v1",
+  "policy": {
+    "canonicalUtf8Json": "{\"approvalMode\":\"manual\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"modelVersion\":\"fake-v1\",\"organizationId\":1,\"policyId\":\"00000000-0000-4000-8000-000000000001\",\"schemaVersion\":\"review-policy-v1\",\"templateVersion\":\"template-v1\",\"version\":9223372036854775808}",
+    "sha256": "2386bae222146603c867cc83eab85556d161c41f305600491ee0673aa612e1f1"
+  },
+  "fakeGeneration": {
+    "canonicalUtf8Json": "{\"actorMembershipId\":7,\"completedAt\":\"2026-09-09T00:00:01.654321Z\",\"generationId\":\"00000000-0000-4000-8000-000000000002\",\"mode\":\"fake\",\"modelVersion\":\"fake-v1\",\"policyChecksum\":\"2386bae222146603c867cc83eab85556d161c41f305600491ee0673aa612e1f1\",\"policyId\":\"00000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"schemaVersion\":\"review-generation-v1\",\"sourceChecksum\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourceObservationId\":\"00000000-0000-4000-8000-000000000003\",\"startedAt\":\"2026-09-09T00:00:00.123456Z\",\"templateVersion\":\"template-v1\"}",
+    "sha256": "7332873379ab77056118cf2ca527b37ee2aef4724717cc846ab2f1bce75930e6"
+  },
+  "manualGeneration": {
+    "canonicalUtf8Json": "{\"actorMembershipId\":7,\"completedAt\":\"2026-09-09T00:00:01.654321Z\",\"generationId\":\"00000000-0000-4000-8000-000000000002\",\"mode\":\"manual_edit\",\"modelVersion\":\"fake-v1\",\"policyChecksum\":\"2386bae222146603c867cc83eab85556d161c41f305600491ee0673aa612e1f1\",\"policyId\":\"00000000-0000-4000-8000-000000000001\",\"policyVersion\":9223372036854775808,\"previousDraftId\":\"00000000-0000-4000-8000-000000000004\",\"schemaVersion\":\"review-generation-v1\",\"sourceChecksum\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourceObservationId\":\"00000000-0000-4000-8000-000000000003\",\"startedAt\":\"2026-09-09T00:00:00.123456Z\",\"templateVersion\":\"template-v1\"}",
+    "sha256": "6c176e3e60ef4a090678b2711bd544c6a9cd925e56ee6a88dacf231fa6c277b0"
+  },
+  "decisionBinding": {
+    "text": "Synthetic caf\u00e9 e\u0301 \ud83d\ude00 \"quoted\"\n\t\u0000end",
+    "textUtf8Hex": "53796e74686574696320636166c3a92065cc8120f09f9880202271756f746564220a0900656e64",
+    "textSha256": "4eb62d13f88b68587801620189af50fb2369965a3455589bd6b6a992f319875c",
+    "createdAt": "2026-09-09T00:00:00.000000Z",
+    "canonicalUtf8Json": "{\"contract\":\"review-decision-v1\",\"draft\":[\"00000000-0000-4000-8000-000000000005\",9223372036854775808,\"4eb62d13f88b68587801620189af50fb2369965a3455589bd6b6a992f319875c\"],\"owner\":[1,11,\"wb\",\"000-review-e\u0301-\ud83d\ude00\"],\"policy\":[\"00000000-0000-4000-8000-000000000001\",9223372036854775808,\"2386bae222146603c867cc83eab85556d161c41f305600491ee0673aa612e1f1\",\"template-v1\",\"fake-v1\"],\"source\":[\"00000000-0000-4000-8000-000000000003\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}",
+    "sha256": "fa26ffce2d849d1ac9ccc772049e03072c5dc76e677e88e58c401a2242211c04"
+  },
+  "negativeGenerationCases": [
+    { "base": "fakeGeneration", "changes": { "previousDraftId": null } },
+    { "base": "manualGeneration", "changes": { "previousDraftId": null } },
+    { "base": "manualGeneration", "omit": "previousDraftId" },
+    { "base": "fakeGeneration", "changes": { "startedAt": "2026-09-09T00:00:00Z" } }
+  ],
+  "localAudit": { "status": "not_implemented", "note": "Exact envelope is a domain proposal in b17638f; no existing serializer golden bytes are claimed." }
+}

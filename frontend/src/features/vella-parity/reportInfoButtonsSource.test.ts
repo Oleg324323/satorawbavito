@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { ExpensesTableShellIsland } from './VellaHtmlParityPage'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const sourcePath = resolve(__dirname, 'VellaHtmlParityPage.tsx')
@@ -23,7 +26,18 @@ describe('report info buttons source coverage', () => {
   })
 
   it('adds human help to report table headers with formulas', () => {
-    expect(functionSource('ExpensesTableShellIsland')).toContain('<ReportHeaderCell label="Статья ДДС"')
+    const rendered = renderToStaticMarkup(createElement(ExpensesTableShellIsland, {
+      replacementKey: 'expense-help',
+      state: { status: 'ready', report: { rows: [{ article: 'Synthetic expense', amountKopecks: 12500 }] } },
+    }))
+    const headers = [...rendered.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)].map(match => match[1])
+    expect(headers).toHaveLength(9)
+    expect(headers[0]).toContain('Статья расходов')
+    for (const header of headers) {
+      expect(header).toContain('report-help-tip')
+      expect(header).toMatch(/data-tip="[^"]+"/)
+    }
+    expect(rendered).toContain('Synthetic expense')
     expect(functionSource('StockTableShellIsland')).toContain('Дней до OOS = доступный остаток / средние заказы в день')
     expect(functionSource('AdsTableShellIsland')).toContain('ДРР = расход рекламы / сумму заказов или продаж')
     expect(functionSource('PnlLiveTableShellIsland')).toContain('Прибыль = выручка - себестоимость - комиссия')

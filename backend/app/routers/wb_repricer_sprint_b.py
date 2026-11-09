@@ -81,6 +81,7 @@ def post_create_price_draft(request: Request, payload: PriceDraftCreateRequest) 
         client=client,
         payload=payload,
         orders_client=orders_client,
+        organization_id=actor.organization_id,
     )
     record_audit_event(
         actor=actor,
@@ -107,7 +108,7 @@ def get_price_draft(request: Request, draftId: str) -> DataEnvelope[PriceDraftVi
         object_id=draftId,
         reason="actor cannot read price draft",
     )
-    return DataEnvelope(data=get_draft_or_404(draftId))
+    return DataEnvelope(data=get_draft_or_404(draftId, actor.organization_id))
 
 
 @router.post("/api/v1/wb-repricer/drafts/{draftId}/approve", response_model=DataEnvelope[PriceDraftView])
@@ -121,7 +122,7 @@ def post_approve_price_draft(request: Request, draftId: str, payload: ApproveDra
         object_id=draftId,
         reason="actor cannot approve price draft",
     )
-    before = get_draft_or_404(draftId)
+    before = get_draft_or_404(draftId, actor.organization_id)
     approved = approve_draft(draft_id=draftId, actor_id=actor.actor_id, request=payload)
     record_audit_event(
         actor=actor,
@@ -150,7 +151,7 @@ def post_apply_price_draft(request: Request, draftId: str, payload: ApplyDraftRe
     )
     settings = get_settings()
     client = _build_price_client(payload.scenario, _actor_wb_token(request))
-    before = get_draft_or_404(draftId)
+    before = get_draft_or_404(draftId, actor.organization_id)
     job = apply_approved_draft(
         draft_id=draftId,
         client=client,
@@ -187,7 +188,7 @@ def get_price_apply_job(request: Request, jobId: str) -> DataEnvelope[ApplyJobVi
         object_id=jobId,
         reason="actor cannot read price apply job",
     )
-    return DataEnvelope(data=get_apply_job_or_404(jobId))
+    return DataEnvelope(data=get_apply_job_or_404(jobId, actor.organization_id))
 
 
 @router.post("/api/v1/wb-repricer/jobs/{jobId}/retry", response_model=DataEnvelope[ApplyJobView])
@@ -203,7 +204,7 @@ def post_retry_price_apply_job(request: Request, jobId: str, payload: RetryApply
     )
     settings = get_settings()
     client = _build_price_client(payload.scenario, _actor_wb_token(request))
-    before = get_apply_job_or_404(jobId)
+    before = get_apply_job_or_404(jobId, actor.organization_id)
     retried = retry_apply_job(
         job_id=jobId,
         client=client,

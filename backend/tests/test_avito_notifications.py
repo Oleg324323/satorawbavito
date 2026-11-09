@@ -143,4 +143,4 @@ def test_avito_notifications_endpoint_aggregates_live_sources_and_caches(monkeyp
     assert payload["rulesRows"]
     assert chats_client.requests[0].includeMessages is False
     assert orders_client.requests[0].dateFrom == date(2026, 7, 1)
-    assert saved[-1][1] == "avito_notifications:2026-07-01:l20:all"
+    assert saved[-1][1].startswith("avito_notifications:2026-07-01:l20:all:")

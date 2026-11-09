@@ -131,6 +131,7 @@ services:
     container_name: vella-worker
     restart: unless-stopped
     environment:
+      VELLA_1C_ENABLED: ${VELLA_1C_ENABLED:-false}
       VELLA_DATABASE_URL: ${VELLA_DATABASE_URL:-postgresql+psycopg://${VELLA_POSTGRES_USER:-postgres}:${VELLA_POSTGRES_PASSWORD:-postgres}@postgres:5432/${VELLA_POSTGRES_DB:-vella_backend}}
       VELLA_REDIS_URL: redis://redis:6379/0
       VELLA_CELERY_BROKER_URL: redis://redis:6379/0
@@ -201,6 +202,7 @@ services:
     container_name: vella-beat
     restart: unless-stopped
     environment:
+      VELLA_1C_ENABLED: ${VELLA_1C_ENABLED:-false}
       VELLA_DATABASE_URL: ${VELLA_DATABASE_URL:-postgresql+psycopg://${VELLA_POSTGRES_USER:-postgres}:${VELLA_POSTGRES_PASSWORD:-postgres}@postgres:5432/${VELLA_POSTGRES_DB:-vella_backend}}
       VELLA_REDIS_URL: redis://redis:6379/0
       VELLA_CELERY_BROKER_URL: redis://redis:6379/0

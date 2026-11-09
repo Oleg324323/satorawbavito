@@ -42,5 +42,137 @@
     {"rawStatus": "on_return", "canonicalStatus": "returning"},
     {"rawStatus": "in_dispute", "canonicalStatus": "disputed"},
     {"rawStatus": "synthetic_unknown_status", "canonicalStatus": null}
-  ]
+  ],
+  "stage1": {
+    "schemaVersion": "synthetic-orders-stage1-v1",
+    "scopedOrders": [
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1001,
+        "externalOrderId": "synthetic-order-cross-scope",
+        "items": [
+          {
+            "externalItemId": "synthetic-listing-repeated-stage1",
+            "occurrenceIndex": 0,
+            "quantity": 2,
+            "stableOrderLineId": null
+          },
+          {
+            "externalItemId": "synthetic-listing-repeated-stage1",
+            "occurrenceIndex": 1,
+            "quantity": 1,
+            "stableOrderLineId": null
+          },
+          {
+            "externalItemId": "synthetic-listing-distinct-stage1",
+            "occurrenceIndex": 0,
+            "quantity": 3,
+            "stableOrderLineId": "synthetic-stable-order-line-stage1"
+          }
+        ]
+      },
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1002,
+        "externalOrderId": "synthetic-order-cross-scope",
+        "items": [
+          {
+            "externalItemId": "synthetic-listing-repeated-stage1",
+            "occurrenceIndex": 0,
+            "quantity": 1,
+            "stableOrderLineId": null
+          }
+        ]
+      },
+      {
+        "organizationId": 202,
+        "marketplaceAccountId": 2002,
+        "externalOrderId": "synthetic-order-cross-scope",
+        "items": [
+          {
+            "externalItemId": "synthetic-listing-repeated-stage1",
+            "occurrenceIndex": 0,
+            "quantity": 1,
+            "stableOrderLineId": null
+          }
+        ]
+      },
+      {
+        "organizationId": 101,
+        "marketplaceAccountId": 1001,
+        "externalOrderId": "000synthetic-order-leading",
+        "items": [
+          {
+            "externalItemId": "000synthetic-listing-leading",
+            "occurrenceIndex": 0,
+            "quantity": 1,
+            "stableOrderLineId": null
+          }
+        ]
+      }
+    ],
+    "missingStableLineId": {
+      "externalOrderId": "synthetic-order-missing-stable-line",
+      "externalItemId": "synthetic-listing-missing-stable-line",
+      "occurrenceIndex": 2,
+      "stableOrderLineId": null
+    },
+    "lifecycleCases": [
+      {"rawStatus": "synthetic_unknown_lifecycle"},
+      {"rawStatus": "on_return"},
+      {"rawStatus": "canceled"}
+    ],
+    "pagination": {
+      "manifestState": "partial",
+      "isComplete": false,
+      "sourceHighWaterMark": "synthetic-high-water-mark-avito-0001",
+      "observedOrderIds": ["synthetic-order-cross-scope"],
+      "absentOrderIds": ["synthetic-order-absent-from-partial-page"],
+      "absenceMeansCancellation": false
+    },
+    "replay": {
+      "originalRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-1"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        }
+      ],
+      "reorderedRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-1"
+        }
+      ],
+      "changedRows": [
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1001,
+          "externalOrderId": "synthetic-order-replay-a",
+          "sourceRevision": "synthetic-revision-a-2"
+        },
+        {
+          "organizationId": 101,
+          "marketplaceAccountId": 1002,
+          "externalOrderId": "synthetic-order-replay-b",
+          "sourceRevision": "synthetic-revision-b-1"
+        }
+      ]
+    }
+  }
 }

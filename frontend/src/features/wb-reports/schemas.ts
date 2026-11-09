@@ -30,7 +30,7 @@ export const PnlFieldMappingSchema = z.object({
 })
 export type PnlFieldMapping = z.infer<typeof PnlFieldMappingSchema>
 
-export const ManualCostSchema = z.object({
+const NonNegativeManualCostSchema = z.object({
   costId: z.string().min(1),
   label: z.string().min(1),
   amountKopecks: OptionalNonNegativeMoneyKopecksSchema,
@@ -38,6 +38,10 @@ export const ManualCostSchema = z.object({
   sourceStatus: SourceStatusSchema,
   blockerIds: z.array(z.string().min(1)),
 })
+export const ManualCostSchema = z.union([
+  NonNegativeManualCostSchema,
+  NonNegativeManualCostSchema.extend({ costId: z.enum(['tax', 'storage', 'overhead']), amountKopecks: OptionalMoneyKopecksSchema }),
+])
 export type ManualCost = z.infer<typeof ManualCostSchema>
 
 export const ExpenseAllocationBaseSchema = z.enum(['sku', 'brand', 'manager', 'marketplace', 'revenue', 'orders', 'units', 'stock_days', 'production_units', 'manual', 'unallocated', 'unknown'])
@@ -232,14 +236,14 @@ export const PnlRowSchema = z.object({
   brandId: z.string().nullable(),
   managerId: z.string().nullable(),
   skuId: z.string().nullable(),
-  revenueKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  cogsKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  commissionKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  logisticsKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  storageKopecks: OptionalNonNegativeMoneyKopecksSchema,
+  revenueKopecks: OptionalMoneyKopecksSchema,
+  cogsKopecks: OptionalMoneyKopecksSchema,
+  commissionKopecks: OptionalMoneyKopecksSchema,
+  logisticsKopecks: OptionalMoneyKopecksSchema,
+  storageKopecks: OptionalMoneyKopecksSchema,
   adSpendKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  taxKopecks: OptionalNonNegativeMoneyKopecksSchema,
-  overheadKopecks: OptionalNonNegativeMoneyKopecksSchema,
+  taxKopecks: OptionalMoneyKopecksSchema,
+  overheadKopecks: OptionalMoneyKopecksSchema,
   netProfitKopecks: OptionalMoneyKopecksSchema,
   marginPct: OptionalPctSchema,
   sourceStatus: SourceStatusSchema,
@@ -248,7 +252,7 @@ export const PnlRowSchema = z.object({
 export type PnlRow = z.infer<typeof PnlRowSchema>
 
 export const PnlTotalsSchema = z.object({
-  revenueKopecks: OptionalNonNegativeMoneyKopecksSchema,
+  revenueKopecks: OptionalMoneyKopecksSchema,
   netProfitKopecks: OptionalMoneyKopecksSchema,
   marginPct: OptionalPctSchema,
   sourceStatus: SourceStatusSchema,

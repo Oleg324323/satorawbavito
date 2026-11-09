@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 from cryptography.exceptions import InvalidTag
@@ -77,11 +77,32 @@ class EncryptedCredential:
 class DecryptedCredential:
     """Explicitly revealable secret payload with non-disclosing string forms."""
 
+    __slots__ = ("__payload",)
+
     def __init__(self, payload: Mapping[str, str]) -> None:
-        self._payload = dict(payload)
+        self.__payload = dict(payload)
 
     def reveal(self) -> dict[str, str]:
-        return dict(self._payload)
+        return dict(self.__payload)
+
+    @staticmethod
+    def _refuse_serialization() -> NoReturn:
+        raise CredentialCryptoError("credential_contract_invalid")
+
+    def __iter__(self) -> NoReturn:
+        self._refuse_serialization()
+
+    def __copy__(self) -> NoReturn:
+        self._refuse_serialization()
+
+    def __deepcopy__(self, memo: object) -> NoReturn:
+        self._refuse_serialization()
+
+    def __reduce__(self) -> NoReturn:
+        self._refuse_serialization()
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        self._refuse_serialization()
 
     def __repr__(self) -> str:
         return "<DecryptedCredential redacted>"

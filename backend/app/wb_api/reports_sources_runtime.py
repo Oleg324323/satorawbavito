@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+import hashlib
+import json
 import threading
 import time
 from typing import Any, Callable
+
+from fastapi import HTTPException
 
 from vella_wb_19_05.models import Confidence, SourceEvidence, SourceStatus, utc_now
 
 from app.config import get_settings
 from app.wb_api.client import (
     RateLimitedWbApiClient,
+    WbApiError,
     WbApiRequest,
     WbApiResponseEnvelope,
     build_wb_analytics_client,
@@ -19,7 +24,7 @@ from app.wb_api.client import (
 )
 
 
-# WB Statistics applies one seller-wide quota to orders, sales and realization.
+# WB Statistics applies one seller-wide quota to orders and sales.
 # Digest runs in Celery, so it is safe and necessary to serialize these calls.
 STATISTICS_REPORT_MIN_INTERVAL_SECONDS = 60.0
 STOCK_REPORT_PAGE_DELAY_SECONDS = 20.0
@@ -39,6 +44,9 @@ def _request_statistics_report(
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> WbApiResponseEnvelope:
+    from app.wb_api.report_reads import active_report_read
+    if active_report_read.get() is not None:
+        return client.request(request)
     global _statistics_report_last_request_at
     is_real = get_settings().wb_api_mode == "real"
     for attempt in range(3):
@@ -82,6 +90,9 @@ class WbFinancialRow:
     commission_percent: float | None
     commission_kopecks: int
     logistics_kopecks: int
+    storage_kopecks: int | None = None
+    acceptance_kopecks: int | None = None
+    penalty_kopecks: int | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +104,8 @@ class WbFinanceReconciliation:
     paid_storage_kopecks: int
     paid_acceptance_kopecks: int
     penalty_kopecks: int
+    report_ids: tuple[int, ...] = ()
+    currency: str = "RUB"
 
 
 @dataclass(frozen=True)
@@ -333,9 +346,12 @@ def _load_stock_report_wb_warehouses(
     sleeper: Callable[[float], None] | None = None,
 ) -> tuple[WbApiResponseEnvelope, list[dict[str, Any]]]:
     global _stock_report_last_request_at
-    page_limit = limit or STOCK_REPORT_PAGE_LIMIT
+    page_limit = STOCK_REPORT_PAGE_LIMIT if limit is None else limit
+    if type(page_limit) is not int or page_limit <= 0:
+        raise ValueError("stock report page limit must be a positive integer")
     offset = 0
     rows: list[dict[str, Any]] = []
+    accepted_full_pages: set[bytes] = set()
     final_envelope: WbApiResponseEnvelope | None = None
     sleep_fn = sleeper or time.sleep
 
@@ -371,10 +387,56 @@ def _load_stock_report_wb_warehouses(
         if not envelope.ok:
             return envelope, rows
 
-        page = _extract_items(_payload(envelope.data))
-        for item in page:
-            item.setdefault("stockType", stock_type)
-        rows.extend(page)
+        node = _payload(envelope.data)
+        if envelope.statusCode == 204 and node is None:
+            node = []
+        if isinstance(node, dict):
+            for key in ("items", "data", "rows", "report"):
+                if key in node:
+                    node = node[key]
+                    break
+            else:
+                node = [node] if "nmId" in node or "nmID" in node else None
+        # Filtering malformed elements would shorten a full page and falsely
+        # satisfy the terminal-page condition. Reject the whole page instead.
+        if (not isinstance(node, list) or len(node) > page_limit
+                or any(not isinstance(item, dict) for item in node)):
+            return envelope.model_copy(update={
+                "ok": False,
+                "error": WbApiError(
+                    statusCode=envelope.statusCode,
+                    code="STOCK_REPORT_INVALID_PAGE",
+                    message="Stock report page has an invalid response shape",
+                    retryable=False,
+                ),
+            }), rows
+        page = node
+        if len(page) == page_limit:
+            # An offset endpoint repeating a full page has not demonstrated
+            # progress. Compare row multisets, retaining duplicate multiplicity
+            # and ignoring only ordering/key ordering. Never double-count it.
+            try:
+                row_hashes = sorted(hashlib.sha256(json.dumps(
+                    item, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                ).encode("utf-8")).digest() for item in page)
+            except (TypeError, ValueError):
+                return envelope.model_copy(update={
+                    "ok": False,
+                    "error": WbApiError(statusCode=envelope.statusCode,
+                        code="STOCK_REPORT_INVALID_PAGE",
+                        message="Stock report page is not valid JSON data", retryable=False),
+                }), rows
+            signature = hashlib.sha256(b"".join(row_hashes)).digest()
+            if signature in accepted_full_pages:
+                return envelope.model_copy(update={
+                    "ok": False,
+                    "error": WbApiError(statusCode=envelope.statusCode,
+                        code="STOCK_REPORT_PAGINATION_STALLED",
+                        message="Stock report repeated an accepted full page", retryable=False),
+                }), rows
+            accepted_full_pages.add(signature)
+        # Preserve raw provider payload for checksums/provenance.
+        rows.extend({"stockType": stock_type, **item} for item in page)
         if len(page) < page_limit:
             break
         offset += page_limit
@@ -383,78 +445,63 @@ def _load_stock_report_wb_warehouses(
 
 
 def _load_realization_rows(
-    statistics_client: RateLimitedWbApiClient,
+    finance_client: RateLimitedWbApiClient,
     *,
     date_from: date,
     date_to: date,
-    request_statistics: Callable[[WbApiRequest], WbApiResponseEnvelope] | None = None,
+    request_finance: Callable[[WbApiRequest], WbApiResponseEnvelope] | None = None,
 ) -> tuple[WbApiResponseEnvelope, list[WbFinancialRow]]:
-    limit = 100_000
-    rrdid = 0
-    rows: list[WbFinancialRow] = []
+    from app.repricer_bff import fetch_finance_report_aggregates
+    from app.wb_api.financial_reports import DETAIL_PATH, is_merchandise, money_kopecks
+
     final_envelope: WbApiResponseEnvelope | None = None
+    class Capture:
+        inner = getattr(finance_client, "inner", None)
 
-    for _ in range(10):
-        request_fn = request_statistics or statistics_client.request
-        envelope = request_fn(
-            WbApiRequest(
-                method="GET",
-                path="/api/v5/supplier/reportDetailByPeriod",
-                query={
-                    "dateFrom": date_from.isoformat(),
-                    "dateTo": date_to.isoformat(),
-                    "limit": limit,
-                    "rrdid": rrdid,
-                },
-            )
-        )
-        final_envelope = envelope
-        if not envelope.ok:
-            return envelope, rows
+        def request(self, request):
+            nonlocal final_envelope
+            final_envelope = (request_finance or finance_client.request)(request)
+            return final_envelope
 
-        items = _extract_items(_payload(envelope.data))
-        if not items:
-            break
+    try:
+        payload = fetch_finance_report_aggregates(
+            "complete", date_from=datetime.combine(date_from, datetime.min.time()),
+            date_to=datetime.combine(date_to, datetime.min.time()), _client=Capture())
+    except HTTPException as exc:
+        if final_envelope is not None and not final_envelope.ok:
+            return final_envelope, []
+        return WbApiResponseEnvelope(request=WbApiRequest(method="POST", path=DETAIL_PATH),
+            statusCode=exc.status_code, ok=False, error=WbApiError(
+                statusCode=exc.status_code, code="WB_FINANCE_INVALID_RESPONSE",
+                message="Financial report is unavailable or incomplete", retryable=False)), []
 
-        max_rrd_id = rrdid
-        for item in items:
-            current_rrd_id = _as_int(item.get("rrd_id")) or 0
-            nm_id = _as_int(item.get("nm_id"))
-            if nm_id is None or current_rrd_id <= 0:
-                continue
-            retail_kopecks = _rub_to_kopecks(item.get("retail_amount"))
-            seller_payout_kopecks = _rub_to_kopecks(item.get("ppvz_for_pay"))
-            commission_percent = _as_float(item.get("sale_percent"))
-            commission_kopecks = 0
-            if commission_percent is not None:
-                commission_kopecks = int(round(retail_kopecks * commission_percent / 100))
-            logistics_kopecks = _finance_logistics_kopecks(item)
-            rows.append(
-                WbFinancialRow(
-                    rrd_id=current_rrd_id,
-                    nm_id=nm_id,
-                    srid=str(item.get("srid")) if item.get("srid") is not None else None,
-                    retail_amount_kopecks=retail_kopecks,
-                    seller_payout_kopecks=seller_payout_kopecks,
-                    commission_percent=commission_percent,
-                    commission_kopecks=commission_kopecks,
-                    logistics_kopecks=logistics_kopecks,
-                )
-            )
-            if current_rrd_id > max_rrd_id:
-                max_rrd_id = current_rrd_id
-
-        if len(items) < limit or max_rrd_id <= rrdid:
-            break
-        rrdid = max_rrd_id
-
-    if final_envelope is None:
-        final_envelope = WbApiResponseEnvelope(
-            request=WbApiRequest(method="GET", path="/api/v5/supplier/reportDetailByPeriod"),
-            statusCode=200,
-            ok=True,
-            data={"data": []},
-        )
+    rows = []
+    for item in payload["rows"]:
+        nm_id = _as_int(item.get("nmId"))
+        nm_id = nm_id if nm_id and nm_id > 0 else 0
+        if str(item.get("currency") or "").upper() not in {"RUB", "RUR", "643"}:
+            return WbApiResponseEnvelope(request=final_envelope.request, statusCode=502, ok=False,
+                error=WbApiError(statusCode=502, code="WB_FINANCE_CURRENCY_UNAVAILABLE",
+                    message="Financial currency cannot be represented as RUB", retryable=False)), []
+        doc = str(item.get("docTypeName") or "").strip().casefold()
+        sign = -1 if doc == "возврат" else 1
+        trade = is_merchandise(item)
+        amounts = [money_kopecks(item.get(key)) for key in ("retailAmount", "forPay", "ppvzSalesCommission", "deliveryService")]
+        if any(value is None for value in amounts):
+            return WbApiResponseEnvelope(request=final_envelope.request, statusCode=502, ok=False,
+                error=WbApiError(statusCode=502, code="WB_FINANCE_FIELDS_INCOMPLETE",
+                    message="Required financial amounts are unavailable", retryable=False)), []
+        revenue, payable, commission, logistics = amounts
+        rows.append(WbFinancialRow(
+            rrd_id=int(item["rrdId"]), nm_id=nm_id, srid=item.get("srid"),
+            retail_amount_kopecks=sign * revenue if trade else 0,
+            seller_payout_kopecks=sign * payable,
+            commission_percent=_as_float(item.get("commissionPercent")),
+            commission_kopecks=sign * (revenue - payable - (money_kopecks(item.get("acquiringFee")) or 0)) if trade else 0,
+            logistics_kopecks=logistics,
+            storage_kopecks=money_kopecks(item.get("paidStorage")),
+            acceptance_kopecks=money_kopecks(item.get("paidAcceptance")),
+            penalty_kopecks=money_kopecks(item.get("penalty"))))
     return final_envelope, rows
 
 
@@ -479,208 +526,9 @@ def _evidence(source_id: str, source_name: str, fields: list[str]) -> SourceEvid
     )
 
 
-def build_wb_reports_sources_snapshot(
-    *,
-    date_from: date,
-    date_to: date,
-    scenario: str = "complete",
-    wb_token: str | None = None,
-    progress_callback: Any | None = None,
-) -> WbReportsSourcesSnapshot:
-    def progress(stage: str, label: str, percent: int) -> None:
-        if progress_callback:
-            progress_callback(stage, label, percent)
-    if get_settings().wb_api_mode == "real" and not wb_token:
-        return WbReportsSourcesSnapshot(
-            source_status="blocked",
-            confidence="blocked",
-            blocker_ids=["WB_TOKEN_REQUIRED"],
-            source_evidence=[
-                _evidence(
-                    "wb-reports-runtime-token",
-                    "WB reports runtime requires the current cabinet WB token",
-                    ["orders", "sales", "stocks", "finance_reports"],
-                )
-            ],
-            orders=[],
-            sales=[],
-            stocks=[],
-            financial_rows=[],
-            finance_reconciliation=None,
-            revenue_by_nm_kopecks={},
-            seller_payout_by_nm_kopecks={},
-            commission_cost_by_nm_kopecks={},
-            logistics_cost_by_nm_kopecks={},
-            penalties_cost_by_nm_kopecks={},
-            acceptance_cost_by_nm_kopecks={},
-            storage_cost_by_nm_kopecks={},
-        )
-
-    statistics_client = RateLimitedWbApiClient(inner=build_wb_statistics_client(scenario=scenario, token_override=wb_token))
-    finance_client = RateLimitedWbApiClient(inner=build_wb_finance_client(scenario=scenario, token_override=wb_token))
-    analytics_client = RateLimitedWbApiClient(inner=build_wb_analytics_client(scenario=scenario, token_override=wb_token))
-
-    blocker_ids: list[str] = []
-    source_evidence: list[SourceEvidence] = []
-
-    progress("orders", "Загружаем заказы и продажи WB", 15)
-    orders_envelope = _request_statistics_report(
-        statistics_client,
-        WbApiRequest(
-            method="GET",
-            path="/api/v1/supplier/orders",
-            query={"dateFrom": f"{date_from.isoformat()}T00:00:00"},
-        )
-    )
-    _append_result_failure(orders_envelope, blocker_ids)
-    orders = _extract_items(_payload(orders_envelope.data))
-    if orders_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-statistics-orders",
-                "WB Statistics /api/v1/supplier/orders",
-                ["nmId", "warehouseName", "regionName", "finishedPrice", "spp", "srid", "lastChangeDate"],
-            )
-        )
-
-    progress("sales", "Загружаем продажи WB: соблюдаем лимит WB", 22)
-    sales_envelope = _request_statistics_report(
-        statistics_client,
-        WbApiRequest(
-            method="GET",
-            path="/api/v1/supplier/sales",
-            query={"dateFrom": f"{date_from.isoformat()}T00:00:00"},
-        )
-    )
-    _append_result_failure(sales_envelope, blocker_ids)
-    sales = _extract_items(_payload(sales_envelope.data))
-    if sales_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-statistics-sales",
-                "WB Statistics /api/v1/supplier/sales",
-                ["nmId", "finishedPrice", "forPay", "srid", "saleID", "lastChangeDate", "isReturn"],
-            )
-        )
-
-    progress("finance", "Сверяем финансовые отчёты WB", 30)
-    realization_envelope, financial_rows = _load_realization_rows(
-        statistics_client,
-        date_from=date_from,
-        date_to=date_to,
-        request_statistics=lambda request: _request_statistics_report(statistics_client, request),
-    )
-    _append_result_failure(realization_envelope, blocker_ids)
-    revenue_by_nm_kopecks: dict[int, int] = {}
-    seller_payout_by_nm_kopecks: dict[int, int] = {}
-    commission_cost_by_nm_kopecks: dict[int, int] = {}
-    logistics_cost_by_nm_kopecks: dict[int, int] = {}
-    for row in financial_rows:
-        revenue_by_nm_kopecks[row.nm_id] = revenue_by_nm_kopecks.get(row.nm_id, 0) + row.retail_amount_kopecks
-        seller_payout_by_nm_kopecks[row.nm_id] = seller_payout_by_nm_kopecks.get(row.nm_id, 0) + row.seller_payout_kopecks
-        commission_cost_by_nm_kopecks[row.nm_id] = commission_cost_by_nm_kopecks.get(row.nm_id, 0) + row.commission_kopecks
-        logistics_cost_by_nm_kopecks[row.nm_id] = logistics_cost_by_nm_kopecks.get(row.nm_id, 0) + row.logistics_kopecks
-    if realization_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-statistics-realization-details",
-                "WB Statistics /api/v5/supplier/reportDetailByPeriod",
-                ["rrd_id", "nm_id", "srid", "retail_amount", "sale_percent", "ppvz_for_pay", "delivery_rub"],
-            )
-        )
-
-    finance_reconciliation: WbFinanceReconciliation | None = None
-    finance_reports_envelope = finance_client.request(
-        WbApiRequest(
-            method="POST",
-            path="/api/finance/v1/sales-reports/list",
-            jsonBody={
-                "dateFrom": date_from.isoformat(),
-                "dateTo": date_to.isoformat(),
-                "limit": 100,
-                "offset": 0,
-                "period": "daily",
-            },
-        )
-    )
-    _append_result_failure(finance_reports_envelope, blocker_ids)
-    finance_report_items = _extract_items(_payload(finance_reports_envelope.data))
-    if finance_report_items:
-        finance_row = finance_report_items[0]
-        finance_reconciliation = WbFinanceReconciliation(
-            report_id=_as_int(finance_row.get("reportId")),
-            retail_amount_kopecks=_rub_to_kopecks(finance_row.get("retailAmountSum")),
-            for_pay_kopecks=_rub_to_kopecks(finance_row.get("forPaySum")),
-            delivery_service_kopecks=_rub_to_kopecks(finance_row.get("deliveryServiceSum")),
-            paid_storage_kopecks=_rub_to_kopecks(finance_row.get("paidStorageSum")),
-            paid_acceptance_kopecks=_rub_to_kopecks(finance_row.get("paidAcceptanceSum")),
-            penalty_kopecks=_rub_to_kopecks(finance_row.get("penaltySum")),
-        )
-    if finance_reports_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-finance-sales-reports-list",
-                "WB Finance /api/finance/v1/sales-reports/list",
-                ["reportId", "retailAmountSum", "forPaySum", "deliveryServiceSum", "paidStorageSum", "paidAcceptanceSum", "penaltySum"],
-            )
-        )
-
-    progress("stocks", "Загружаем остатки и склады WB", 55)
-    fallback_stocks_envelope, fallback_stock_items = _load_stock_report_wb_warehouses(analytics_client, stock_type="wb")
-    _append_result_failure(fallback_stocks_envelope, blocker_ids)
-
-    warehouse_remains_envelope, warehouse_remains_items, _warehouse_task_id = _request_async_report_rows(
-        analytics_client,
-        create_path="/api/v1/warehouse_remains",
-        status_path_template="/api/v1/warehouse_remains/tasks/{task_id}/status",
-        download_path_template="/api/v1/warehouse_remains/tasks/{task_id}/download",
-    )
-    _append_result_failure(warehouse_remains_envelope, blocker_ids)
-    stocks = _warehouse_remains_to_stock_rows(
-        warehouse_remains_items,
-        fallback_rows=fallback_stock_items,
-    )
-    if not stocks and fallback_stock_items:
-        for item in fallback_stock_items:
-            nm_id = _as_int(item.get("nmId"))
-            if nm_id is None:
-                continue
-            quantity = _as_int(item.get("quantity")) or 0
-            in_way_from_client = _as_int(item.get("inWayFromClient")) or 0
-            in_way_to_client = _as_int(item.get("inWayToClient")) or 0
-            available = quantity + in_way_from_client
-            stocks.append(
-                WbStockRow(
-                    nm_id=nm_id,
-                    chrt_id=_as_int(item.get("chrtId")),
-                    warehouse_id=_as_int(item.get("warehouseId")),
-                    warehouse_name=str(item.get("warehouseName")) if item.get("warehouseName") is not None else None,
-                    region_name=str(item.get("regionName")) if item.get("regionName") is not None else None,
-                    quantity=quantity,
-                    in_way_to_client=in_way_to_client,
-                    in_way_from_client=in_way_from_client,
-                    available_units=available,
-                    was_out_of_stock=available <= 0,
-                    stock_type=str(item.get("stockType") or "wb"),
-                )
-            )
-    if warehouse_remains_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-analytics-warehouse-remains",
-                "WB Analytics /api/v1/warehouse_remains",
-                ["nmId", "warehouses[].warehouseName", "warehouses[].quantity"],
-            )
-        )
-    if fallback_stocks_envelope.ok:
-        source_evidence.append(
-            _evidence(
-                "wb-analytics-stocks-report",
-                "WB Analytics /api/analytics/v1/stocks-report/wb-warehouses",
-                ["nmId", "chrtId", "warehouseId", "warehouseName", "regionName", "quantity", "inWayToClient", "inWayFromClient"],
-            )
-        )
-    progress("costs", "Загружаем хранение и штрафы WB", 70)
+def load_operational_expense_drilldowns(analytics_client, date_from, date_to):
+    """Optional Analytics drill-down, never a settlement P&L source."""
+    blocker_ids, source_evidence = [], []
     penalties_envelope = analytics_client.request(
         WbApiRequest(
             method="GET",
@@ -789,6 +637,218 @@ def build_wb_reports_sources_snapshot(
                 ["nmId", "warehousePrice", "taskId", "status"],
             )
         )
+    return dict(penalties=penalties_cost_by_nm_kopecks,
+                acceptance=acceptance_cost_by_nm_kopecks,
+                storage=storage_cost_by_nm_kopecks,
+                blockerIds=blocker_ids, sourceEvidence=source_evidence)
+
+
+def build_wb_reports_sources_snapshot(
+    *,
+    date_from: date,
+    date_to: date,
+    scenario: str = "complete",
+    wb_token: str | None = None,
+    progress_callback: Any | None = None,
+) -> WbReportsSourcesSnapshot:
+    def progress(stage: str, label: str, percent: int) -> None:
+        if progress_callback:
+            progress_callback(stage, label, percent)
+    if get_settings().wb_api_mode == "real" and not wb_token:
+        return WbReportsSourcesSnapshot(
+            source_status="blocked",
+            confidence="blocked",
+            blocker_ids=["WB_TOKEN_REQUIRED"],
+            source_evidence=[
+                _evidence(
+                    "wb-reports-runtime-token",
+                    "WB reports runtime requires the current cabinet WB token",
+                    ["orders", "sales", "stocks", "finance_reports"],
+                )
+            ],
+            orders=[],
+            sales=[],
+            stocks=[],
+            financial_rows=[],
+            finance_reconciliation=None,
+            revenue_by_nm_kopecks={},
+            seller_payout_by_nm_kopecks={},
+            commission_cost_by_nm_kopecks={},
+            logistics_cost_by_nm_kopecks={},
+            penalties_cost_by_nm_kopecks={},
+            acceptance_cost_by_nm_kopecks={},
+            storage_cost_by_nm_kopecks={},
+        )
+
+    statistics_client = RateLimitedWbApiClient(inner=build_wb_statistics_client(scenario=scenario, token_override=wb_token))
+    finance_client = RateLimitedWbApiClient(inner=build_wb_finance_client(scenario=scenario, token_override=wb_token))
+    analytics_client = RateLimitedWbApiClient(inner=build_wb_analytics_client(scenario=scenario, token_override=wb_token))
+
+    blocker_ids: list[str] = []
+    source_evidence: list[SourceEvidence] = []
+
+    progress("orders", "Загружаем заказы и продажи WB", 15)
+    orders_envelope = _request_statistics_report(
+        statistics_client,
+        WbApiRequest(
+            method="GET",
+            path="/api/v1/supplier/orders",
+            query={"dateFrom": f"{date_from.isoformat()}T00:00:00"},
+        )
+    )
+    _append_result_failure(orders_envelope, blocker_ids)
+    orders = _extract_items(_payload(orders_envelope.data))
+    if orders_envelope.ok:
+        source_evidence.append(
+            _evidence(
+                "wb-statistics-orders",
+                "WB Statistics /api/v1/supplier/orders",
+                ["nmId", "warehouseName", "regionName", "finishedPrice", "spp", "srid", "lastChangeDate"],
+            )
+        )
+
+    progress("sales", "Загружаем продажи WB: соблюдаем лимит WB", 22)
+    sales_envelope = _request_statistics_report(
+        statistics_client,
+        WbApiRequest(
+            method="GET",
+            path="/api/v1/supplier/sales",
+            query={"dateFrom": f"{date_from.isoformat()}T00:00:00"},
+        )
+    )
+    _append_result_failure(sales_envelope, blocker_ids)
+    sales = _extract_items(_payload(sales_envelope.data))
+    if sales_envelope.ok:
+        source_evidence.append(
+            _evidence(
+                "wb-statistics-sales",
+                "WB Statistics /api/v1/supplier/sales",
+                ["nmId", "finishedPrice", "forPay", "srid", "saleID", "lastChangeDate", "isReturn"],
+            )
+        )
+
+    progress("finance", "Сверяем финансовые отчёты WB", 30)
+    realization_envelope, financial_rows = _load_realization_rows(
+        finance_client,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    _append_result_failure(realization_envelope, blocker_ids)
+    revenue_by_nm_kopecks: dict[int, int] = {}
+    seller_payout_by_nm_kopecks: dict[int, int] = {}
+    commission_cost_by_nm_kopecks: dict[int, int] = {}
+    logistics_cost_by_nm_kopecks: dict[int, int] = {}
+    for row in financial_rows:
+        revenue_by_nm_kopecks[row.nm_id] = revenue_by_nm_kopecks.get(row.nm_id, 0) + row.retail_amount_kopecks
+        seller_payout_by_nm_kopecks[row.nm_id] = seller_payout_by_nm_kopecks.get(row.nm_id, 0) + row.seller_payout_kopecks
+        commission_cost_by_nm_kopecks[row.nm_id] = commission_cost_by_nm_kopecks.get(row.nm_id, 0) + row.commission_kopecks
+        logistics_cost_by_nm_kopecks[row.nm_id] = logistics_cost_by_nm_kopecks.get(row.nm_id, 0) + row.logistics_kopecks
+    if realization_envelope.ok:
+        source_evidence.append(
+            _evidence(
+                "wb-finance-realization-details",
+                "WB Finance /api/finance/v1/sales-reports/detailed",
+                ["rrdId", "nmId", "srid", "rrDate", "retailAmount", "commissionPercent", "ppvzSalesCommission", "forPay", "deliveryService", "paidStorage", "paidAcceptance", "penalty"],
+            )
+        )
+
+    finance_reconciliation: WbFinanceReconciliation | None = None
+    from app.wb_api.financial_reports import fetch_report_list, summarize_reports
+    try:
+        finance_report_items = fetch_report_list(finance_client, date_from, date_to, period="daily")
+        groups = summarize_reports(finance_report_items)
+        finance_row = groups.get("RUB")
+        keys = ("retailAmountSum", "forPaySum", "deliveryServiceSum", "paidStorageSum", "paidAcceptanceSum", "penaltySum")
+        if finance_row and len(groups) == 1 and all(finance_row["totals"][key] is not None for key in keys):
+            ids = tuple(finance_row["reportIds"])
+            totals = finance_row["totals"]
+            finance_reconciliation = WbFinanceReconciliation(
+                report_id=ids[0] if len(ids) == 1 else None, report_ids=ids,
+                retail_amount_kopecks=totals["retailAmountSum"], for_pay_kopecks=totals["forPaySum"],
+                delivery_service_kopecks=totals["deliveryServiceSum"], paid_storage_kopecks=totals["paidStorageSum"],
+                paid_acceptance_kopecks=totals["paidAcceptanceSum"], penalty_kopecks=totals["penaltySum"])
+        elif groups:
+            blocker_ids.append("WB_FINANCE_RECONCILIATION_INCOMPLETE")
+        source_evidence.append(
+            _evidence(
+                "wb-finance-sales-reports-list",
+                "WB Finance /api/finance/v1/sales-reports/list",
+                ["reportId", "retailAmountSum", "forPaySum", "deliveryServiceSum", "paidStorageSum", "paidAcceptanceSum", "penaltySum"],
+            )
+        )
+    except HTTPException as exc:
+        blocker_ids.append(f"WB_FINANCE_REPORT_LIST_{exc.status_code}")
+
+    progress("stocks", "Загружаем остатки и склады WB", 55)
+    fallback_stocks_envelope, fallback_stock_items = _load_stock_report_wb_warehouses(analytics_client, stock_type="wb")
+    _append_result_failure(fallback_stocks_envelope, blocker_ids)
+
+    warehouse_remains_envelope, warehouse_remains_items, _warehouse_task_id = _request_async_report_rows(
+        analytics_client,
+        create_path="/api/v1/warehouse_remains",
+        status_path_template="/api/v1/warehouse_remains/tasks/{task_id}/status",
+        download_path_template="/api/v1/warehouse_remains/tasks/{task_id}/download",
+    )
+    _append_result_failure(warehouse_remains_envelope, blocker_ids)
+    stocks = _warehouse_remains_to_stock_rows(
+        warehouse_remains_items,
+        fallback_rows=fallback_stock_items,
+    )
+    if not stocks and fallback_stock_items:
+        for item in fallback_stock_items:
+            nm_id = _as_int(item.get("nmId"))
+            if nm_id is None:
+                continue
+            quantity = _as_int(item.get("quantity")) or 0
+            in_way_from_client = _as_int(item.get("inWayFromClient")) or 0
+            in_way_to_client = _as_int(item.get("inWayToClient")) or 0
+            available = quantity + in_way_from_client
+            stocks.append(
+                WbStockRow(
+                    nm_id=nm_id,
+                    chrt_id=_as_int(item.get("chrtId")),
+                    warehouse_id=_as_int(item.get("warehouseId")),
+                    warehouse_name=str(item.get("warehouseName")) if item.get("warehouseName") is not None else None,
+                    region_name=str(item.get("regionName")) if item.get("regionName") is not None else None,
+                    quantity=quantity,
+                    in_way_to_client=in_way_to_client,
+                    in_way_from_client=in_way_from_client,
+                    available_units=available,
+                    was_out_of_stock=available <= 0,
+                    stock_type=str(item.get("stockType") or "wb"),
+                )
+            )
+    if warehouse_remains_envelope.ok:
+        source_evidence.append(
+            _evidence(
+                "wb-analytics-warehouse-remains",
+                "WB Analytics /api/v1/warehouse_remains",
+                ["nmId", "warehouses[].warehouseName", "warehouses[].quantity"],
+            )
+        )
+    if fallback_stocks_envelope.ok:
+        source_evidence.append(
+            _evidence(
+                "wb-analytics-stocks-report",
+                "WB Analytics /api/analytics/v1/stocks-report/wb-warehouses",
+                ["nmId", "chrtId", "warehouseId", "warehouseName", "regionName", "quantity", "inWayToClient", "inWayFromClient"],
+            )
+        )
+    progress("costs", "Читаем расходы из финансовых операций WB", 70)
+    def financial_costs(field):
+        totals, unknown = {}, set()
+        for row in financial_rows:
+            value = getattr(row, field)
+            if value is None:
+                unknown.add(row.nm_id)
+            else:
+                totals[row.nm_id] = totals.get(row.nm_id, 0) + value
+        if unknown:
+            blocker_ids.append("WB_FINANCE_EXPENSE_FIELDS_INCOMPLETE")
+        return {nm: amount for nm, amount in totals.items() if nm not in unknown}
+    penalties_cost_by_nm_kopecks = financial_costs("penalty_kopecks")
+    acceptance_cost_by_nm_kopecks = financial_costs("acceptance_kopecks")
+    storage_cost_by_nm_kopecks = financial_costs("storage_kopecks")
 
     if not source_evidence and blocker_ids:
         source_status = "blocked"

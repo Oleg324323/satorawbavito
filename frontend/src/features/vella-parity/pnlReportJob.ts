@@ -8,6 +8,7 @@ export type PnlReportJobPayload = {
   percent?: number | null
   queuedAt?: string | null
   error?: string | null
+  retryAfterSeconds?: number | null
 }
 
 export type PnlReportJobStep = {
@@ -18,7 +19,7 @@ export type PnlReportJobStep = {
 }
 
 export type PnlReportJobView = {
-  state: 'idle' | 'queued' | 'running' | 'waiting_1c' | 'completed' | 'failed'
+  state: 'idle' | 'queued' | 'running' | 'waiting_1c' | 'completed' | 'failed' | 'paused'
   stage: string | null
   label: string
   percent: number | null
@@ -86,9 +87,9 @@ function fallbackPnlPercent(state: PnlReportJobView['state'], activeStepId: PnlR
 }
 
 export function describePnlReportJob(job: PnlReportJobPayload | null | undefined, nowMs = Date.now()): PnlReportJobView {
-  const state = job?.state === 'queued' || job?.state === 'running' || job?.state === 'waiting_1c' || job?.state === 'completed' || job?.state === 'failed'
+  const state = job?.state === 'queued' || job?.state === 'running' || job?.state === 'waiting_1c' || job?.state === 'completed' || job?.state === 'failed' || job?.state === 'paused'
     ? job.state
-    : 'idle'
+    : job?.state === 'stale' ? 'paused' : 'idle'
   const stage = job?.stage?.trim() || null
   const queuedAtMs = job?.queuedAt ? Date.parse(job.queuedAt) : Number.NaN
   const workerDelayed = state === 'queued'
@@ -104,6 +105,7 @@ export function describePnlReportJob(job: PnlReportJobPayload | null | undefined
     waiting_1c: 'Ждём операционные расходы от 1С',
     completed: 'P&L готов',
     failed: 'Сборка P&L завершилась с ошибкой',
+    paused: 'Сбор остановлен; полученная часть сохранена',
   }[state]
   const activeStepId = activePnlStepId(state, stage)
   const steps = buildPnlSteps(state, activeStepId)
@@ -118,6 +120,6 @@ export function describePnlReportJob(job: PnlReportJobPayload | null | undefined
     steps,
     workerDelayed,
     error: job?.error?.trim() || null,
-    terminal: state === 'completed' || state === 'failed',
+    terminal: state === 'completed' || state === 'failed' || state === 'paused',
   }
 }

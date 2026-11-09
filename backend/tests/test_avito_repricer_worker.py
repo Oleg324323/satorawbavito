@@ -99,8 +99,15 @@ def test_avito_scheduler_execute_creates_pending_approval_when_real_apply_disabl
         },
     )
     monkeypatch.setattr("app.repricer_tasks.get_source_cache", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("app.repricer_tasks.load_avito_repricer_strategy_assignments", lambda _organization_id: {})
+    monkeypatch.setattr(
+        "app.repricer_tasks.load_avito_repricer_strategy_assignments",
+        lambda _organization_id: {"8098482225": "chat_demand_balanced"},
+    )
     monkeypatch.setattr("app.repricer_tasks.save_source_cache", lambda organization_id, source_key, payload: saved.append((organization_id, source_key, payload)) or payload)
+    # The worker also writes history through router helpers. Keep that boundary
+    # in memory, just like pending approvals; this test must never reach Redis/DB.
+    monkeypatch.setattr("app.routers.avito_repricer.get_source_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.routers.avito_repricer.save_source_cache", lambda organization_id, source_key, payload: saved.append((organization_id, source_key, payload)) or payload)
     monkeypatch.setattr(
         "app.repricer_tasks.get_organization_avito_credentials_secret",
         lambda _organization_id: AvitoCredentialsSecret(client_id="client", client_secret="secret", cached_access_token="token", access_token_expires_at=None),

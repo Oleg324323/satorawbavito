@@ -1,0 +1,68 @@
+.vella-html-parity-root #tab-avito-stats { --analytics-blue: #2563eb; }
+.vella-html-parity-root #tab-avito-stats > .toolbar { margin: 8px 20px 18px; padding: 16px; width: auto; border: 1px solid var(--gray-100); border-radius: 12px; background: var(--white); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.vella-html-parity-root #tab-avito-stats .avito-period-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.vella-html-parity-root #tab-avito-stats .avito-period-presets button { border: 1px solid var(--gray-100); border-radius: 8px; padding: 9px 13px; color: var(--gray-600); background: var(--white); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+.vella-html-parity-root #tab-avito-stats .avito-period-presets button[aria-pressed="true"] { color: var(--analytics-blue); border-color: var(--analytics-blue); background: var(--brand-light); }
+.vella-html-parity-root #tab-avito-stats .toolbar-right { margin-left: auto; flex-wrap: wrap; }
+.vella-html-parity-root .avito-analytics { margin: 0 20px 24px; display: grid; gap: 18px; color: var(--gray-900); }
+.vella-html-parity-root .avito-analytics-panel { padding: 24px; background: var(--white); border: 1px solid var(--gray-100); border-radius: 14px; min-width: 0; }
+.vella-html-parity-root .avito-analytics-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+.vella-html-parity-root .avito-analytics h2 { font-size: 19px; font-weight: 750; margin: 0; display: flex; gap: 10px; align-items: center; text-transform: none; letter-spacing: -.3px; color: var(--gray-900); }
+.vella-html-parity-root .avito-analytics h2 svg { color: var(--analytics-blue); flex-shrink: 0; }
+.vella-html-parity-root .avito-analytics p { margin: 7px 0 0; font-size: 12px; color: var(--gray-500); line-height: 1.5; }
+.vella-html-parity-root .avito-analytics-modes { display: flex; padding: 4px; border-radius: 9px; background: var(--gray-50); gap: 3px; }
+.vella-html-parity-root .avito-analytics-modes button { padding: 8px 13px; font: inherit; font-size: 12px; font-weight: 650; border: 0; border-radius: 6px; color: var(--gray-500); background: transparent; cursor: pointer; }
+.vella-html-parity-root .avito-analytics-modes button[aria-pressed="true"] { background: var(--analytics-blue); color: #fff; }
+.vella-html-parity-root .avito-analytics-cards { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
+.vella-html-parity-root .avito-metric-card { display: flex; flex-direction: column; align-items: stretch; gap: 12px; min-width: 0; border: 1px solid var(--gray-100); border-radius: 11px; background: var(--white); padding: 16px 14px 10px; text-align: left; font: inherit; cursor: pointer; color: var(--gray-900); }
+.vella-html-parity-root .avito-metric-card:hover { border-color: #93b4fc; }
+.vella-html-parity-root .avito-metric-card[aria-pressed="true"] { border-color: var(--analytics-blue); box-shadow: 0 0 0 1px var(--analytics-blue); background: var(--brand-light); }
+.vella-html-parity-root .avito-metric-label { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.2; font-weight: 650; color: var(--gray-600); min-height: 29px; }
+.vella-html-parity-root .avito-metric-icon { display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-radius: 7px; color: var(--analytics-blue); background: var(--brand-light); }
+.vella-html-parity-root .avito-metric-check { margin-left: auto; color: var(--analytics-blue); flex-shrink: 0; }
+.vella-html-parity-root .avito-metric-card strong { font-size: clamp(21px, 1.7vw, 31px); font-weight: 750; line-height: 1.2; letter-spacing: -.8px; white-space: nowrap; }
+.vella-html-parity-root .avito-metric-trend { display: flex; gap: 4px; align-items: center; font-size: 12px; font-weight: 650; min-height: 18px; }
+.vella-html-parity-root .avito-metric-trend.up { color: #15803d; }
+.vella-html-parity-root .avito-metric-trend.down { color: #dc2626; }
+.vella-html-parity-root .avito-metric-trend.flat,.vella-html-parity-root .avito-metric-trend.missing { color: var(--gray-500); }
+.vella-html-parity-root .avito-metric-spark { display: block; position: relative; height: 45px; min-height: 45px; width: 100%; }
+.vella-html-parity-root .avito-metric-spark > span { font-size: 11px; color: var(--gray-400); }
+.vella-html-parity-root .avito-analytics .avito-trend-explanation { margin-top: 14px; font-size: 11px; }
+.vella-html-parity-root .avito-analytics-chart-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin: 30px 0 18px; }
+.vella-html-parity-root .avito-analytics h3 { margin: 0; text-transform: none; font-size: 15px; font-weight: 700; letter-spacing: 0; color: var(--gray-900); }
+.vella-html-parity-root .avito-analytics-legend { display: flex; flex-wrap: wrap; gap: 14px; }
+.vella-html-parity-root .avito-analytics-legend button { display: flex; align-items: center; gap: 7px; padding: 4px 0; background: none; border: 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--gray-600); cursor: pointer; }
+.vella-html-parity-root .avito-analytics-legend button:disabled { opacity: 1; cursor: default; }
+.vella-html-parity-root .avito-analytics-legend span { display: block; width: 22px; border-top-width: 3px; }
+.vella-html-parity-root .avito-analytics-chart { height: 340px; position: relative; }
+.vella-html-parity-root .avito-analytics-chart-note { font-size: 11px; color: var(--gray-500); margin-top: 12px; }
+.vella-html-parity-root .avito-analytics-no-data { min-height: 180px; display: grid; place-items: center; color: var(--gray-500); font-size: 13px; text-align: center; }
+.vella-html-parity-root .avito-analytics-data { margin-top: 16px; font-size: 12px; }
+.vella-html-parity-root .avito-analytics-data summary { cursor: pointer; color: var(--analytics-blue); font-weight: 650; padding: 5px 0; }
+.vella-html-parity-root .avito-analytics-data > div { overflow: auto; max-height: 300px; margin-top: 10px; }
+.vella-html-parity-root .avito-analytics-data table { width: 100%; border-collapse: collapse; }
+.vella-html-parity-root .avito-analytics-data td,.vella-html-parity-root .avito-analytics-data th { padding: 8px 12px; border-bottom: 1px solid var(--gray-100); text-align: right; }
+.vella-html-parity-root .avito-analytics-data td:first-child,.vella-html-parity-root .avito-analytics-data th:first-child { text-align: left; }
+.vella-html-parity-root .avito-funnel-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; }
+.vella-html-parity-root .avito-funnel-card { position: relative; display: grid; gap: 9px; padding: 16px; border: 1px solid var(--gray-100); border-radius: 10px; }
+.vella-html-parity-root .avito-funnel-card strong { font-size: 24px; line-height: 1.15; }
+.vella-html-parity-root .avito-funnel-card .avito-metric-label svg { color: var(--analytics-blue); }
+.vella-html-parity-root .avito-funnel-rate { font-size: 11px; color: var(--analytics-blue); }
+.vella-html-parity-root .avito-funnel-next { position: absolute; right: -20px; top: calc(50% - 9px); color: var(--gray-400); }
+.vella-html-parity-root .avito-analytics button:focus-visible,.vella-html-parity-root .avito-period-presets button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+@media (max-width: 1500px) { .vella-html-parity-root .avito-analytics-cards { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+@media (max-width: 850px) {
+  .vella-html-parity-root .avito-analytics { margin: 0 12px 20px; }
+  .vella-html-parity-root .avito-analytics-panel { padding: 16px; }
+  .vella-html-parity-root .avito-analytics-heading { flex-wrap: wrap; }
+  .vella-html-parity-root .avito-funnel-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .vella-html-parity-root .avito-funnel-next { display: none; }
+  .vella-html-parity-root #tab-avito-stats > .toolbar { margin: 8px 12px 14px; }
+  .vella-html-parity-root #tab-avito-stats .toolbar-right { margin-left: 0; width: 100%; }
+}
+@media (max-width: 520px) {
+  .vella-html-parity-root .avito-analytics-cards { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+  .vella-html-parity-root .avito-metric-card { padding: 12px; }
+  .vella-html-parity-root .avito-analytics-chart { height: 260px; }
+  .vella-html-parity-root .avito-analytics h2 { font-size: 17px; }
+}

@@ -12,16 +12,25 @@ class AvitoReturnCandidate(BaseModel):
     accountId: str | None = None
     accountName: str | None = None
     itemId: str | None = None
+    lineIndex: int | None = None
     title: str = Field(min_length=1)
     sellerArticle: str | None = None
     size: str | None = None
     color: str | None = None
     imageUrl: str | None = None
+    sources: dict[str, str | None] = Field(default_factory=dict)
     quantity: int = Field(default=1, ge=0)
     status: str = "on_return"
     returnStatus: str | None = None
     sourceUpdatedAt: str | None = None
     lastSeenAt: str | None = None
+    returnItemId: int | None = None
+    receivedQuantity: int = 0
+    inspectedQuantity: int = 0
+    reservedQuantity: int = 0
+    sentQuantity: int = 0
+    writtenOffQuantity: int = 0
+    availableQuantity: int = 0
 
 
 _COLOR_ALIASES = {
@@ -76,11 +85,13 @@ def _return_candidate(row: AvitoOrderRow, item: AvitoOrderItem) -> AvitoReturnCa
         accountId=row.accountId,
         accountName=row.accountName,
         itemId=item.itemId,
+        lineIndex=item.lineIndex,
         title=item.title,
         sellerArticle=item.sellerArticle,
         size=item.size,
         color=item.color,
         imageUrl=item.imageUrl,
+        sources=item.sources,
         quantity=item.quantity,
         status=row.status,
         returnStatus=row.returnStatus,
@@ -149,6 +160,10 @@ def _match_payload(candidate: AvitoReturnCandidate, *, score: int, reason: Retur
         status=candidate.status,
         returnStatus=candidate.returnStatus,
         lastSeenAt=candidate.lastSeenAt,
+        returnItemId=candidate.returnItemId,
+        availableQuantity=candidate.availableQuantity,
+        receivedQuantity=candidate.receivedQuantity,
+        inspectedQuantity=candidate.inspectedQuantity,
     )
 
 
@@ -161,6 +176,8 @@ def match_return_candidates(
 ) -> list[AvitoReturnMatch]:
     matches: list[AvitoReturnMatch] = []
     for candidate in candidates:
+        if candidate.availableQuantity <= 0:
+            continue
         if _same_order(candidate, order):
             continue
         scored = _score_match(item, candidate)

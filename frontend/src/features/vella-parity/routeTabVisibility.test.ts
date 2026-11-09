@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { enforceRouteTabVisibility } from './VellaHtmlParityPage'
+import { routeStateFromPath } from '../vella-static/VellaStaticPage'
 
 describe('enforceRouteTabVisibility', () => {
   it('hides WB tabs and keeps the Avito orders tab visible on /avito/orders', () => {
@@ -22,6 +23,22 @@ describe('enforceRouteTabVisibility', () => {
     expect(elements.get('tab-work-status')?.hidden).toBe(true)
     expect(elements.get('tab-orders-print')?.hidden).toBe(false)
     expect(elements.get('tab-orders-print')?.classList.contains('active')).toBe(true)
+  })
+
+  it('keeps Avito privacy inside the platform route', () => {
+    const privacy = fakeTabElement('tab-avito-privacy', false)
+    const overview = fakeTabElement('tab-avito-overview', true)
+    const root = {
+      dataset: {} as Record<string, string>,
+      querySelectorAll: () => [overview, privacy],
+    } as unknown as HTMLElement
+
+    const tab = routeStateFromPath('/avito/privacy', '')
+    expect(tab).toBe('avito-privacy')
+    if (typeof tab !== 'string') throw new Error('Expected a platform tab')
+    enforceRouteTabVisibility(root, tab)
+    expect(privacy.hidden).toBe(false)
+    expect(overview.hidden).toBe(true)
   })
 })
 

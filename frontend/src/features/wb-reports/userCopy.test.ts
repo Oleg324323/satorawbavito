@@ -24,6 +24,6 @@ describe('WB reports user-facing copy', () => {
 
   it('keeps RNP and P&L loading states user-facing', () => {
     expect(parityPageSource).not.toMatch(/Загружаем РНП с бэкенда|Backend вернул пустой РНП|Загружаем P&L с бэкенда|Бэк вернул пустой P&L/i)
-    expect(parityPageSource).not.toMatch(/Нет access token для запроса РНП API|Нет access token для запроса P&L API|Точечно обновить WB-источники|Запросить 1С ДДС|финансовый отчёт/i)
+    expect(parityPageSource).not.toMatch(/Нет access token для запроса РНП API|Нет access token для запроса P&L API|Точечно обновить WB-источники|Запросить 1С ДДС/i)
   })
 })

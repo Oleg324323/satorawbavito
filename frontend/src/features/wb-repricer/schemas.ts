@@ -16,7 +16,7 @@ export type BasketNormSource = z.infer<typeof BasketNormSource>
 export const AbcCode = z.enum(['AA', 'AB', 'AC', 'BA', 'BB', 'BC', 'CA', 'CB', 'CC'])
 export type AbcCode = z.infer<typeof AbcCode>
 
-export const PromotionStatus = z.enum(['yes', 'no'])
+export const PromotionStatus = z.enum(['yes', 'no', 'unknown'])
 export type PromotionStatus = z.infer<typeof PromotionStatus>
 
 export const ManagerAssignmentSource = z.enum(['manual', 'xlsx', 'none'])
@@ -141,6 +141,11 @@ export const SkuAnalyticsSummarySchema = z.object({
   promotionStatusText: z.string().nullable().optional(),
   promotionName: z.string().nullable().optional(),
   promotionId: z.union([z.string(), z.number()]).nullable().optional(),
+  promotionStatusScope: z.literal('regular').nullable().optional(),
+  promotionStatusSource: z.string().nullable().optional(),
+  promotionStatusReason: z.string().nullable().optional(),
+  promotionStatusObservedAt: z.string().nullable().optional(),
+  promotionStatusExpiresAt: z.string().nullable().optional(),
   wbStockUnits: z.number().int().nonnegative(),
   buyoutPct: z.number().nonnegative(),
   baskets: z.number().int().nonnegative(),

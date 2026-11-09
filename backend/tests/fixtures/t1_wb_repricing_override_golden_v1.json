@@ -1,0 +1,186 @@
+{
+  "schema": "wb-repricing-overrides-golden/v1",
+  "max_bytes": 8192,
+  "vectors": [
+    {
+      "name": "all_null",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "catalog_sku_id": 99,
+        "actor_membership_id": 77,
+        "command_id": "12345678-1234-4234-8234-123456789abc",
+        "expected_version": 0,
+        "values": {
+          "automation_enabled": null,
+          "allow_negative_margin": null,
+          "night_median_enabled": null,
+          "p_min_kopecks": null,
+          "p_max_kopecks": null,
+          "rrp_kopecks": null,
+          "min_margin_kopecks": null,
+          "max_margin_kopecks": null,
+          "min_margin_pct": null,
+          "max_margin_pct": null,
+          "price_step_pct": null,
+          "price_step_minutes": null,
+          "basket_norm_manual": null,
+          "basket_norm_mode": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":77,\"catalogSkuId\":99,\"commandId\":\"12345678-1234-4234-8234-123456789abc\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"0\",\"marketplaceAccountId\":42,\"organizationId\":7,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":null,\"automation_enabled\":null,\"basket_norm_manual\":null,\"basket_norm_mode\":null,\"max_margin_kopecks\":null,\"max_margin_pct\":null,\"min_margin_kopecks\":null,\"min_margin_pct\":null,\"night_median_enabled\":null,\"p_max_kopecks\":null,\"p_min_kopecks\":null,\"price_step_minutes\":null,\"price_step_pct\":null,\"rrp_kopecks\":null}}",
+      "byte_count": 584,
+      "sha256": "b1f127a99e8a23a223df1ad78fa9f20d9411a3627021c030c3521837cb8eb253"
+    },
+    {
+      "name": "explicit_zero_false",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "catalog_sku_id": 99,
+        "actor_membership_id": 77,
+        "command_id": "12345678-1234-4234-8234-123456789abc",
+        "expected_version": 0,
+        "values": {
+          "automation_enabled": false,
+          "allow_negative_margin": false,
+          "night_median_enabled": false,
+          "p_min_kopecks": 0,
+          "p_max_kopecks": 0,
+          "rrp_kopecks": 0,
+          "min_margin_kopecks": 0,
+          "max_margin_kopecks": 0,
+          "min_margin_pct": "-0.00",
+          "max_margin_pct": "0",
+          "price_step_pct": "0E+9",
+          "price_step_minutes": null,
+          "basket_norm_manual": 0,
+          "basket_norm_mode": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":77,\"catalogSkuId\":99,\"commandId\":\"12345678-1234-4234-8234-123456789abc\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"0\",\"marketplaceAccountId\":42,\"organizationId\":7,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":false,\"automation_enabled\":false,\"basket_norm_manual\":0,\"basket_norm_mode\":null,\"max_margin_kopecks\":\"0\",\"max_margin_pct\":\"0\",\"min_margin_kopecks\":\"0\",\"min_margin_pct\":\"0\",\"night_median_enabled\":false,\"p_max_kopecks\":\"0\",\"p_min_kopecks\":\"0\",\"price_step_minutes\":null,\"price_step_pct\":\"0\",\"rrp_kopecks\":\"0\"}}",
+      "byte_count": 576,
+      "sha256": "41973f65ff8327fa641bba8c9aaa4e232bc24eeadfcbe5b2f81309412beda744"
+    },
+    {
+      "name": "all_fields",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "catalog_sku_id": 99,
+        "actor_membership_id": 77,
+        "command_id": "12345678-1234-4234-8234-123456789abc",
+        "expected_version": 0,
+        "values": {
+          "automation_enabled": true,
+          "allow_negative_margin": true,
+          "night_median_enabled": true,
+          "p_min_kopecks": 100,
+          "p_max_kopecks": 200,
+          "rrp_kopecks": 150,
+          "min_margin_kopecks": 1,
+          "max_margin_kopecks": 2,
+          "min_margin_pct": "-1.2300",
+          "max_margin_pct": "123.4500",
+          "price_step_pct": "1E+1",
+          "price_step_minutes": 15,
+          "basket_norm_manual": 3,
+          "basket_norm_mode": "manual"
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":77,\"catalogSkuId\":99,\"commandId\":\"12345678-1234-4234-8234-123456789abc\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"0\",\"marketplaceAccountId\":42,\"organizationId\":7,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":true,\"automation_enabled\":true,\"basket_norm_manual\":3,\"basket_norm_mode\":\"manual\",\"max_margin_kopecks\":\"2\",\"max_margin_pct\":\"123.45\",\"min_margin_kopecks\":\"1\",\"min_margin_pct\":\"-1.23\",\"night_median_enabled\":true,\"p_max_kopecks\":\"200\",\"p_min_kopecks\":\"100\",\"price_step_minutes\":15,\"price_step_pct\":\"10\",\"rrp_kopecks\":\"150\"}}",
+      "byte_count": 591,
+      "sha256": "753ee9d5085612608adff90b4d411f2f38886bea01aab60f0690d6d342c7a301"
+    },
+    {
+      "name": "above_bigint",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "catalog_sku_id": 99,
+        "actor_membership_id": 77,
+        "command_id": "12345678-1234-4234-8234-123456789abc",
+        "expected_version": 1208925819614629174706176,
+        "values": {
+          "automation_enabled": null,
+          "allow_negative_margin": null,
+          "night_median_enabled": null,
+          "p_min_kopecks": 1208925819614629174706176,
+          "p_max_kopecks": null,
+          "rrp_kopecks": null,
+          "min_margin_kopecks": null,
+          "max_margin_kopecks": null,
+          "min_margin_pct": null,
+          "max_margin_pct": null,
+          "price_step_pct": null,
+          "price_step_minutes": null,
+          "basket_norm_manual": null,
+          "basket_norm_mode": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":77,\"catalogSkuId\":99,\"commandId\":\"12345678-1234-4234-8234-123456789abc\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"1208925819614629174706176\",\"marketplaceAccountId\":42,\"organizationId\":7,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":null,\"automation_enabled\":null,\"basket_norm_manual\":null,\"basket_norm_mode\":null,\"max_margin_kopecks\":null,\"max_margin_pct\":null,\"min_margin_kopecks\":null,\"min_margin_pct\":null,\"night_median_enabled\":null,\"p_max_kopecks\":null,\"p_min_kopecks\":\"1208925819614629174706176\",\"price_step_minutes\":null,\"price_step_pct\":null,\"rrp_kopecks\":null}}",
+      "byte_count": 631,
+      "sha256": "05239b8306cee4e02134458724b8e7d50efd9ab81730bc11a8e5f3b640f58508"
+    },
+    {
+      "name": "exact_precision",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "catalog_sku_id": 99,
+        "actor_membership_id": 77,
+        "command_id": "12345678-1234-4234-8234-123456789abc",
+        "expected_version": 0,
+        "values": {
+          "automation_enabled": null,
+          "allow_negative_margin": null,
+          "night_median_enabled": null,
+          "p_min_kopecks": null,
+          "p_max_kopecks": null,
+          "rrp_kopecks": null,
+          "min_margin_kopecks": null,
+          "max_margin_kopecks": null,
+          "min_margin_pct": "1E-20",
+          "max_margin_pct": "1E+20",
+          "price_step_pct": "0.12345678901234567890123456789",
+          "price_step_minutes": null,
+          "basket_norm_manual": null,
+          "basket_norm_mode": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":77,\"catalogSkuId\":99,\"commandId\":\"12345678-1234-4234-8234-123456789abc\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"0\",\"marketplaceAccountId\":42,\"organizationId\":7,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":null,\"automation_enabled\":null,\"basket_norm_manual\":null,\"basket_norm_mode\":null,\"max_margin_kopecks\":null,\"max_margin_pct\":\"100000000000000000000\",\"min_margin_kopecks\":null,\"min_margin_pct\":\"0.00000000000000000001\",\"night_median_enabled\":null,\"p_max_kopecks\":null,\"p_min_kopecks\":null,\"price_step_minutes\":null,\"price_step_pct\":\"0.12345678901234567890123456789\",\"rrp_kopecks\":null}}",
+      "byte_count": 652,
+      "sha256": "60c2c3b3642dd1d36b17908f4bec33a88b6bfc601ade1cdbae63745438d98d7b"
+    },
+    {
+      "name": "scope_and_fallback",
+      "inputs": {
+        "organization_id": 8,
+        "marketplace_account_id": 43,
+        "catalog_sku_id": 100,
+        "actor_membership_id": 78,
+        "command_id": "12345678-1234-4234-8234-123456789abd",
+        "expected_version": 2,
+        "values": {
+          "automation_enabled": null,
+          "allow_negative_margin": null,
+          "night_median_enabled": null,
+          "p_min_kopecks": null,
+          "p_max_kopecks": null,
+          "rrp_kopecks": null,
+          "min_margin_kopecks": null,
+          "max_margin_kopecks": null,
+          "min_margin_pct": null,
+          "max_margin_pct": null,
+          "price_step_pct": null,
+          "price_step_minutes": 2147483647,
+          "basket_norm_manual": 2147483647,
+          "basket_norm_mode": "fallback_by_type"
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":78,\"catalogSkuId\":100,\"commandId\":\"12345678-1234-4234-8234-123456789abd\",\"commandKind\":\"replace_overrides\",\"expectedVersion\":\"2\",\"marketplaceAccountId\":43,\"organizationId\":8,\"schema\":\"wb-repricing-sku-overrides/v1\",\"values\":{\"allow_negative_margin\":null,\"automation_enabled\":null,\"basket_norm_manual\":2147483647,\"basket_norm_mode\":\"fallback_by_type\",\"max_margin_kopecks\":null,\"max_margin_pct\":null,\"min_margin_kopecks\":null,\"min_margin_pct\":null,\"night_median_enabled\":null,\"p_max_kopecks\":null,\"p_min_kopecks\":null,\"price_step_minutes\":2147483647,\"price_step_pct\":null,\"rrp_kopecks\":null}}",
+      "byte_count": 611,
+      "sha256": "d75fd86da3310d968c909190b1057e564cddcd6bbc76660702d11f6d9521617a"
+    }
+  ]
+}

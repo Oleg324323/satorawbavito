@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.infra.db import get_engine
+from app.infra.heartbeat import read_process_freshness
 from app.infra.redis_client import get_redis_client
 
 Check = Callable[[], None]
@@ -16,7 +17,8 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="health")
 
 def _database() -> None:
     with get_engine().begin() as connection:
-        connection.execute(text("SET LOCAL statement_timeout = 1000"))
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("SET LOCAL statement_timeout = 1000"))
         if connection.execute(text("SELECT 1")).scalar_one() != 1:
             raise RuntimeError("Database check failed")
 
@@ -62,4 +64,13 @@ def readiness_status(
 
     ready = all(state == "ok" for state in results.values())
     results.update(worker="not_monitored", beat="not_monitored")
-    return {"status": "ready" if ready else "not_ready", "checks": results}
+    payload = {"status": "ready" if ready else "not_ready", "checks": results}
+    freshness = read_process_freshness(get_settings())
+    if freshness["status"] != "disabled":
+        payload["freshness"] = freshness
+        for kind in ("worker", "beat"):
+            counts = freshness.get(kind)
+            results[kind] = (
+                "fresh" if counts["fresh"] == counts["expected"] else "degraded"
+            ) if counts is not None else freshness["status"]
+    return payload

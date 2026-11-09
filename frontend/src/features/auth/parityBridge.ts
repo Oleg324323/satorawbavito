@@ -86,6 +86,10 @@ function renderProfileTags(
   const tags = [`<span class="profile-tag">${escapeHtml(profile.workspace)}</span>`]
 
   for (const marketplace of ['wb', 'avito'] as const) {
+    if (marketplace === 'wb' && import.meta.env.VITE_WB_LIVE_ENABLED === 'true') {
+      tags.push('<span class="profile-tag">WB: по выбранному аккаунту</span>')
+      continue
+    }
     const scope = owner.scopes.find((item) => item.marketplace === marketplace)
     if (!scope) continue
     const label = `${marketplaceName(marketplace)}: ${scopeStatusLabel(scope.status)}`
@@ -129,6 +133,7 @@ function applyProfileAccessPanel(
 
   const cards = queryShellNodes<HTMLElement>(root, '.profile-access-card')
   const wbCard = cards[0]
+  const wbLiveEnabled = import.meta.env.VITE_WB_LIVE_ENABLED === 'true'
   if (wbCard) {
     const title = settingsLoading && !snapshot
       ? 'WB'
@@ -140,7 +145,9 @@ function applyProfileAccessPanel(
       : wbHasToken
         ? scopeDescription(wbScope, 'WB token подключён. Доступы загружены из backend.')
         : 'WB token не подключён. Товары, репрайсер и отправка цен закрыты до сохранения и проверки token.'
-    wbCard.innerHTML = `<b>${escapeHtml(title)}</b><span>${escapeHtml(description)}</span>`
+    wbCard.innerHTML = wbLiveEnabled
+      ? '<b>WB: подключение аккаунта</b><span>Состояние ключа и загрузки показано для выбранного аккаунта в блоке WB token.</span>'
+      : `<b>${escapeHtml(title)}</b><span>${escapeHtml(description)}</span>`
   }
 
   const avitoCard = cards[1]
@@ -158,12 +165,12 @@ function applyProfileAccessPanel(
   const healthRows = [
     {
       title: 'WB token',
-      value: settingsLoading && !snapshot
+      value: wbLiveEnabled ? 'по выбранному аккаунту' : settingsLoading && !snapshot
         ? 'загрузка'
         : wbHasToken
           ? `подключён${wbUpdated ? ` · ${wbUpdated}` : ''}`
           : 'не подключён',
-      warn: !settingsLoading && !wbHasToken,
+      warn: !wbLiveEnabled && !settingsLoading && !wbHasToken,
     },
     {
       title: 'Авито',

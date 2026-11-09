@@ -270,11 +270,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout: async () => {
       if (AUTH_BYPASS_ENABLED) return
       const token = accessToken
-      try {
-        if (token) await logoutCurrentSession(token)
-      } finally {
-        clearAuthState()
-      }
+      if (token) await logoutCurrentSession(token)
+      clearAuthState()
     },
     refreshProfile: async () => {
       if (!accessToken || AUTH_BYPASS_ENABLED) return

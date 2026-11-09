@@ -1,0 +1,12 @@
+[data-wb-sticky-headers="true"] table > thead[data-wb-sticky-head] {
+  position: relative !important;
+  z-index: 40 !important;
+  background: var(--gray-50, #f8fafc);
+}
+[data-wb-sticky-headers="true"] table > thead[data-wb-sticky-head] > tr > :is(th, td) {
+  /* Only vertical pinning is owned here. Preserve left/right offsets and
+     existing horizontal sticky-column positions and backgrounds. */
+  top: auto !important;
+  bottom: auto !important;
+  box-shadow: inset 0 -1px 0 var(--gray-200, #e2e8f0);
+}

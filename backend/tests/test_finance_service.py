@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -69,11 +69,12 @@ def source_row(
         "nmId": nm_id,
         "vendorCode": "FBBT_1133",
         "docTypeName": "Продажа",
-        "sellerOperName": "Корректировка продаж" if correction else "Продажа",
+        "sellerOperName": "Продажа",
+        "isLateCorrection": correction,
         "quantity": 1,
         "retailAmount": f"{amount_kopecks / 100:.2f}",
         "saleDt": "2026-08-20",
-        "rrDate": "2026-08-26" if correction else "2026-08-23",
+        "rrDate": "2026-08-23",
     }
 
 
@@ -381,3 +382,31 @@ def test_account_scope_and_explicit_source_states(session: Session) -> None:
     current = Period(date(2026, 9, 1), date(2026, 9, 1))
     service.ingest_snapshot(31, current, [], observed_at=NOW)
     assert service.get_page(31, current, limit=100, offset=0).state == "partial"
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("exact", [False, True])
+def test_finance_is_not_complete_until_the_source_window_was_observed_after_close(
+    session: Session, empty: bool, exact: bool
+) -> None:
+    _, rows = frozen_rows()
+    rows = [] if empty else rows[:1]
+    requested = PERIOD if exact else Period(PERIOD.date_from, date(2026, 8, 22))
+    for row in rows:
+        row["rrDate"] = str(requested.date_to)
+    service = FinanceService(session, organization_id=1, now=lambda: NOW)
+    before_close = PERIOD.end_exclusive_at - timedelta(seconds=1)
+    first = service.ingest_snapshot(31, PERIOD, rows, observed_at=before_close)
+
+    page = service.get_page(31, requested, limit=100, offset=0)
+    source = service.get_pnl_source(31, requested)
+    assert page.state == source.state == "partial"
+    assert page.summary.operation_count == sum(fact.operation_count for fact in source.facts)
+    assert page.summary.operation_count == len(rows)
+
+    replay = service.ingest_snapshot(31, PERIOD, rows, observed_at=PERIOD.end_exclusive_at)
+    assert replay.sync_run_id == first.sync_run_id
+    page = service.get_page(31, requested, limit=100, offset=0)
+    source = service.get_pnl_source(31, requested)
+    assert page.state == source.state == ("empty" if empty else "ready")
+    assert page.snapshot == source.snapshot == replay

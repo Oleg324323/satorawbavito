@@ -8,6 +8,7 @@ export function routeStateFromPath(pathname: string, search: string) {
   if (pathname.endsWith('/settings/access')) return 'settings-access'
   if (pathname.endsWith('/settings/imports')) return 'settings-imports'
   if (pathname.endsWith('/avito/notifications')) return 'avito-notifications'
+  if (pathname.endsWith('/avito/privacy')) return 'avito-privacy'
   if (pathname.endsWith('/avito/reviews')) return 'avito-reviews'
   if (pathname.endsWith('/notifications')) return 'notifications'
   if (pathname === '/avito' || pathname.endsWith('/avito/overview')) return 'avito-overview'
@@ -46,7 +47,8 @@ export function routeStateFromPath(pathname: string, search: string) {
 }
 
 export function vellaTitleFromPath(pathname: string) {
-  return pathname.includes('/notifications')
+  return pathname.endsWith('/avito/privacy') ? 'Satorna — Конфиденциальность'
+    : pathname.includes('/notifications')
     ? 'Satorna — Уведомления'
     : pathname.endsWith('/avito/orders/archive') ? 'Satorna — Архив заказов Авито'
     : pathname.endsWith('/avito/orders') ? 'Satorna — Заказы Авито'

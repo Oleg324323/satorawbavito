@@ -15,16 +15,18 @@ function AuthScreenLoader() {
 export function RequireAuth() {
   const location = useLocation()
   const { isAuthenticated, status } = useAuth()
-  const showWorkerOverlay = location.pathname.startsWith('/wb/repricer')
+  // Manual approvals belong to the legacy repricer, not the account-scoped WB loader.
+  const showWorkerApprovals = import.meta.env.VITE_WB_LIVE_ENABLED !== 'true'
+    && location.pathname.startsWith('/wb/repricer')
 
   if (status === 'loading') return <AuthScreenLoader />
   if (isAuthenticated) {
-    return (
+    return showWorkerApprovals ? (
       <>
-        {showWorkerOverlay && <WorkerOverlay />}
+        <WorkerOverlay />
         <Outlet />
       </>
-    )
+    ) : <Outlet />
   }
   if (!isAuthenticated) {
     return <Navigate to="/auth/login" replace state={{ from: `${location.pathname}${location.search}` }} />

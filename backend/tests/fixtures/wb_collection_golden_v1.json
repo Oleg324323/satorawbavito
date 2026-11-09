@@ -1,0 +1,661 @@
+{
+  "schema": "synthetic-wb-collection-vectors/v1",
+  "vectors": [
+    {
+      "name": "prices-empty",
+      "kind": "prices",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_goods_prices_v1",
+        "parser_version": "wb-goods-prices/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-goods-prices/v1\",\"path\":\"/api/v2/list/goods/filter\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_goods_prices_v1\"}",
+      "request_sha256": "90abcd465ca6ad00c8f3f809010f114abc93159fd5e96e5ef506e6dd9a9320ca",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[]}}",
+          "raw_byte_count": 25,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-goods-prices/v1\",[1,2,2,\"90abcd465ca6ad00c8f3f809010f114abc93159fd5e96e5ef506e6dd9a9320ca\"],[[0,2,\"a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9\"]]]",
+      "manifest_byte_count": 172,
+      "manifest_sha256": "737907c9c0f7de2984032fe11ecf6b2e7867f1eed2e984fdd8859b8590e7083e",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "prices-short-presence",
+      "kind": "prices",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_goods_prices_v1",
+        "parser_version": "wb-goods-prices/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-goods-prices/v1\",\"path\":\"/api/v2/list/goods/filter\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_goods_prices_v1\"}",
+      "request_sha256": "90abcd465ca6ad00c8f3f809010f114abc93159fd5e96e5ef506e6dd9a9320ca",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[{\"nmID\":9007199254740993,\"discount\":0,\"clubDiscount\":null,\"sizes\":[{\"sizeID\":1001,\"price\":123.45,\"discountedPrice\":0},{\"price\":null}]}]},\"note\":\"\u0441\u0438\u043d\u0442\u0435\u0442\u0438\u043a\u0430\"}",
+          "raw_byte_count": 187,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 9007199254740993,
+              "discount": {
+                "presence": "value",
+                "value": 0
+              },
+              "club_discount": {
+                "presence": "null",
+                "value": null
+              },
+              "sizes": [
+                {
+                  "source_size_id": 1001,
+                  "list_price": {
+                    "presence": "value",
+                    "value": 12345
+                  },
+                  "discounted_price": {
+                    "presence": "value",
+                    "value": 0
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                },
+                {
+                  "source_size_id": null,
+                  "list_price": {
+                    "presence": "null",
+                    "value": null
+                  },
+                  "discounted_price": {
+                    "presence": "missing",
+                    "value": null
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-goods-prices/v1\",[1,2,2,\"90abcd465ca6ad00c8f3f809010f114abc93159fd5e96e5ef506e6dd9a9320ca\"],[[0,2,\"e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb\"]]]",
+      "manifest_byte_count": 172,
+      "manifest_sha256": "54343edaaa772c0355521eb710511e5bf605758efc3f06cdbc84dbfc94ca7263",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "prices-prefix-incomplete",
+      "kind": "prices",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_goods_prices_v1",
+        "parser_version": "wb-goods-prices/v1",
+        "page_limit": 1
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":1,\"parserVersion\":\"wb-goods-prices/v1\",\"path\":\"/api/v2/list/goods/filter\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_goods_prices_v1\"}",
+      "request_sha256": "324c35c553986d13ed353ce7fa52d08d2062c87a887820f5db81822c983197e5",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[{\"nmID\":9007199254740993,\"discount\":0,\"clubDiscount\":null,\"sizes\":[{\"sizeID\":1001,\"price\":123.45,\"discountedPrice\":0},{\"price\":null}]}]},\"note\":\"\u0441\u0438\u043d\u0442\u0435\u0442\u0438\u043a\u0430\"}",
+          "raw_byte_count": 187,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 9007199254740993,
+              "discount": {
+                "presence": "value",
+                "value": 0
+              },
+              "club_discount": {
+                "presence": "null",
+                "value": null
+              },
+              "sizes": [
+                {
+                  "source_size_id": 1001,
+                  "list_price": {
+                    "presence": "value",
+                    "value": 12345
+                  },
+                  "discounted_price": {
+                    "presence": "value",
+                    "value": 0
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                },
+                {
+                  "source_size_id": null,
+                  "list_price": {
+                    "presence": "null",
+                    "value": null
+                  },
+                  "discounted_price": {
+                    "presence": "missing",
+                    "value": null
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "complete": false,
+      "manifest_canonical_ascii": "[\"wb-goods-prices/v1\",[1,2,1,\"324c35c553986d13ed353ce7fa52d08d2062c87a887820f5db81822c983197e5\"],[[0,1,\"e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb\"]]]",
+      "manifest_byte_count": 172,
+      "manifest_sha256": "6418ef7e4549b4c5484cbec65f09693eb9a927d7e3568f9abcaef505dfbe4f14",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "prices-empty-terminal",
+      "kind": "prices",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_goods_prices_v1",
+        "parser_version": "wb-goods-prices/v1",
+        "page_limit": 1
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":1,\"parserVersion\":\"wb-goods-prices/v1\",\"path\":\"/api/v2/list/goods/filter\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_goods_prices_v1\"}",
+      "request_sha256": "324c35c553986d13ed353ce7fa52d08d2062c87a887820f5db81822c983197e5",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[{\"nmID\":9007199254740993,\"discount\":0,\"clubDiscount\":null,\"sizes\":[{\"sizeID\":1001,\"price\":123.45,\"discountedPrice\":0},{\"price\":null}]}]},\"note\":\"\u0441\u0438\u043d\u0442\u0435\u0442\u0438\u043a\u0430\"}",
+          "raw_byte_count": 187,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 9007199254740993,
+              "discount": {
+                "presence": "value",
+                "value": 0
+              },
+              "club_discount": {
+                "presence": "null",
+                "value": null
+              },
+              "sizes": [
+                {
+                  "source_size_id": 1001,
+                  "list_price": {
+                    "presence": "value",
+                    "value": 12345
+                  },
+                  "discounted_price": {
+                    "presence": "value",
+                    "value": 0
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                },
+                {
+                  "source_size_id": null,
+                  "list_price": {
+                    "presence": "null",
+                    "value": null
+                  },
+                  "discounted_price": {
+                    "presence": "missing",
+                    "value": null
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[]}}",
+          "raw_byte_count": 25,
+          "offset": 1,
+          "received_at": "2026-06-01T12:00:01+00:00",
+          "raw_sha256": "a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-goods-prices/v1\",[1,2,1,\"324c35c553986d13ed353ce7fa52d08d2062c87a887820f5db81822c983197e5\"],[[0,1,\"e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb\"],[1,1,\"a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9\"]]]",
+      "manifest_byte_count": 245,
+      "manifest_sha256": "c7680204be5c7e3342ca1893ad61ee5f2d511306815be9a92e2792fb8bb392cf",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "prices-other-account",
+      "kind": "prices",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 3,
+        "source_kind": "wb_goods_prices_v1",
+        "parser_version": "wb-goods-prices/v1",
+        "page_limit": 1
+      },
+      "request_canonical_ascii": "{\"accountId\":3,\"body\":{},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":1,\"parserVersion\":\"wb-goods-prices/v1\",\"path\":\"/api/v2/list/goods/filter\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_goods_prices_v1\"}",
+      "request_sha256": "ddb0353ce0139dff7dfd93014d29cfe4c324592af39b4bb90dcdc92f89e5106f",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[{\"nmID\":9007199254740993,\"discount\":0,\"clubDiscount\":null,\"sizes\":[{\"sizeID\":1001,\"price\":123.45,\"discountedPrice\":0},{\"price\":null}]}]},\"note\":\"\u0441\u0438\u043d\u0442\u0435\u0442\u0438\u043a\u0430\"}",
+          "raw_byte_count": 187,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 9007199254740993,
+              "discount": {
+                "presence": "value",
+                "value": 0
+              },
+              "club_discount": {
+                "presence": "null",
+                "value": null
+              },
+              "sizes": [
+                {
+                  "source_size_id": 1001,
+                  "list_price": {
+                    "presence": "value",
+                    "value": 12345
+                  },
+                  "discounted_price": {
+                    "presence": "value",
+                    "value": 0
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                },
+                {
+                  "source_size_id": null,
+                  "list_price": {
+                    "presence": "null",
+                    "value": null
+                  },
+                  "discounted_price": {
+                    "presence": "missing",
+                    "value": null
+                  },
+                  "club_price": {
+                    "presence": "missing",
+                    "value": null
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "raw_utf8_text": "{\"data\":{\"listGoods\":[]}}",
+          "raw_byte_count": 25,
+          "offset": 1,
+          "received_at": "2026-06-01T12:00:01+00:00",
+          "raw_sha256": "a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-goods-prices/v1\",[1,3,1,\"ddb0353ce0139dff7dfd93014d29cfe4c324592af39b4bb90dcdc92f89e5106f\"],[[0,1,\"e42235dabb03e6800b07c2977ab0682d501bf111121c4a7189e76899b8d27bdb\"],[1,1,\"a6a82ae90c5002aa7fc4c31f4ee0a8de1d84e76c49c6d02a01c9bb8bd17eb9d9\"]]]",
+      "manifest_byte_count": 245,
+      "manifest_sha256": "eb73335304fe030a7ea0378178eacd815990a4319804a6413f9fe18086c49c1e",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "stock-empty",
+      "kind": "stock",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_warehouse_v1",
+        "parser_version": "wb-warehouse-stocks/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{\"stockType\":\"wb\"},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-warehouse-stocks/v1\",\"path\":\"/api/analytics/v1/stocks-report/wb-warehouses\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_warehouse_v1\"}",
+      "request_sha256": "b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":[]}",
+          "raw_byte_count": 11,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-warehouse-stocks/v1\",\"b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b\",[[0,2,\"8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0\"]]]",
+      "manifest_byte_count": 168,
+      "manifest_sha256": "5f652c2d4575e4973269977d3386aa3e7fdf1b62e020a68891b4fab783c02bcf",
+      "received_business_date_msk": "2026-06-01"
+    },
+    {
+      "name": "stock-short-presence",
+      "kind": "stock",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_warehouse_v1",
+        "parser_version": "wb-warehouse-stocks/v1",
+        "page_limit": 3
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{\"stockType\":\"wb\"},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":3,\"parserVersion\":\"wb-warehouse-stocks/v1\",\"path\":\"/api/analytics/v1/stocks-report/wb-warehouses\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_warehouse_v1\"}",
+      "request_sha256": "977a89242ff298ea08d519e95d3a428c7ff1e6f4c53986c35d73bb911b24d048",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":[{\"nmId\":101,\"chrtId\":1001,\"warehouseId\":5,\"quantity\":0,\"inWayToClient\":null},{\"nmId\":101,\"warehouseId\":6,\"quantity\":9007199254740993,\"inWayFromClient\":1}]}",
+          "raw_byte_count": 164,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 101,
+              "chrt_id": 1001,
+              "warehouse_id": 5,
+              "quantity": {
+                "presence": "value",
+                "value": 0
+              },
+              "in_way_to_client": {
+                "presence": "null",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "missing",
+                "value": null
+              }
+            },
+            {
+              "nm_id": 101,
+              "chrt_id": null,
+              "warehouse_id": 6,
+              "quantity": {
+                "presence": "value",
+                "value": 9007199254740993
+              },
+              "in_way_to_client": {
+                "presence": "missing",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "value",
+                "value": 1
+              }
+            }
+          ]
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-warehouse-stocks/v1\",\"977a89242ff298ea08d519e95d3a428c7ff1e6f4c53986c35d73bb911b24d048\",[[0,3,\"96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167\"]]]",
+      "manifest_byte_count": 168,
+      "manifest_sha256": "11daeef12c1425db57d286b8033a6fba9a0623315e76245a4dfde1272ea575a0",
+      "received_business_date_msk": "2026-06-01"
+    },
+    {
+      "name": "stock-prefix-incomplete",
+      "kind": "stock",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_warehouse_v1",
+        "parser_version": "wb-warehouse-stocks/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{\"stockType\":\"wb\"},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-warehouse-stocks/v1\",\"path\":\"/api/analytics/v1/stocks-report/wb-warehouses\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_warehouse_v1\"}",
+      "request_sha256": "b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":[{\"nmId\":101,\"chrtId\":1001,\"warehouseId\":5,\"quantity\":0,\"inWayToClient\":null},{\"nmId\":101,\"warehouseId\":6,\"quantity\":9007199254740993,\"inWayFromClient\":1}]}",
+          "raw_byte_count": 164,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 101,
+              "chrt_id": 1001,
+              "warehouse_id": 5,
+              "quantity": {
+                "presence": "value",
+                "value": 0
+              },
+              "in_way_to_client": {
+                "presence": "null",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "missing",
+                "value": null
+              }
+            },
+            {
+              "nm_id": 101,
+              "chrt_id": null,
+              "warehouse_id": 6,
+              "quantity": {
+                "presence": "value",
+                "value": 9007199254740993
+              },
+              "in_way_to_client": {
+                "presence": "missing",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "value",
+                "value": 1
+              }
+            }
+          ]
+        }
+      ],
+      "complete": false,
+      "manifest_canonical_ascii": "[\"wb-warehouse-stocks/v1\",\"b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b\",[[0,2,\"96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167\"]]]",
+      "manifest_byte_count": 168,
+      "manifest_sha256": "eb0d291056af928f5a08e2e1a6a4889f04aec2cc2ec50deefd2b82c165a35e45",
+      "received_business_date_msk": null
+    },
+    {
+      "name": "stock-empty-terminal",
+      "kind": "stock",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_warehouse_v1",
+        "parser_version": "wb-warehouse-stocks/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{\"stockType\":\"wb\"},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-warehouse-stocks/v1\",\"path\":\"/api/analytics/v1/stocks-report/wb-warehouses\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_warehouse_v1\"}",
+      "request_sha256": "b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":[{\"nmId\":101,\"chrtId\":1001,\"warehouseId\":5,\"quantity\":0,\"inWayToClient\":null},{\"nmId\":101,\"warehouseId\":6,\"quantity\":9007199254740993,\"inWayFromClient\":1}]}",
+          "raw_byte_count": 164,
+          "offset": 0,
+          "received_at": "2026-06-01T12:00:00+00:00",
+          "raw_sha256": "96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 101,
+              "chrt_id": 1001,
+              "warehouse_id": 5,
+              "quantity": {
+                "presence": "value",
+                "value": 0
+              },
+              "in_way_to_client": {
+                "presence": "null",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "missing",
+                "value": null
+              }
+            },
+            {
+              "nm_id": 101,
+              "chrt_id": null,
+              "warehouse_id": 6,
+              "quantity": {
+                "presence": "value",
+                "value": 9007199254740993
+              },
+              "in_way_to_client": {
+                "presence": "missing",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "value",
+                "value": 1
+              }
+            }
+          ]
+        },
+        {
+          "raw_utf8_text": "{\"data\":[]}",
+          "raw_byte_count": 11,
+          "offset": 2,
+          "received_at": "2026-06-01T12:00:01+00:00",
+          "raw_sha256": "8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-warehouse-stocks/v1\",\"b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b\",[[0,2,\"96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167\"],[2,2,\"8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0\"]]]",
+      "manifest_byte_count": 241,
+      "manifest_sha256": "f564d41b0e2bb6d232f634bb2ee533fe2b4d22c819baee765c635f6083088cb1",
+      "received_business_date_msk": "2026-06-01"
+    },
+    {
+      "name": "stock-cross-business-day",
+      "kind": "stock",
+      "request": {
+        "organization_id": 1,
+        "marketplace_account_id": 2,
+        "source_kind": "wb_warehouse_v1",
+        "parser_version": "wb-warehouse-stocks/v1",
+        "page_limit": 2
+      },
+      "request_canonical_ascii": "{\"accountId\":2,\"body\":{\"stockType\":\"wb\"},\"method\":\"POST\",\"organizationId\":1,\"pageLimit\":2,\"parserVersion\":\"wb-warehouse-stocks/v1\",\"path\":\"/api/analytics/v1/stocks-report/wb-warehouses\",\"query\":{},\"schema\":\"wb-source-collection/v1\",\"sourceKind\":\"wb_warehouse_v1\"}",
+      "request_sha256": "b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b",
+      "pages": [
+        {
+          "raw_utf8_text": "{\"data\":[{\"nmId\":101,\"chrtId\":1001,\"warehouseId\":5,\"quantity\":0,\"inWayToClient\":null},{\"nmId\":101,\"warehouseId\":6,\"quantity\":9007199254740993,\"inWayFromClient\":1}]}",
+          "raw_byte_count": 164,
+          "offset": 0,
+          "received_at": "2026-06-01T20:59:00+00:00",
+          "raw_sha256": "96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167",
+          "terminal": false,
+          "source_observed_at": null,
+          "observations": [
+            {
+              "nm_id": 101,
+              "chrt_id": 1001,
+              "warehouse_id": 5,
+              "quantity": {
+                "presence": "value",
+                "value": 0
+              },
+              "in_way_to_client": {
+                "presence": "null",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "missing",
+                "value": null
+              }
+            },
+            {
+              "nm_id": 101,
+              "chrt_id": null,
+              "warehouse_id": 6,
+              "quantity": {
+                "presence": "value",
+                "value": 9007199254740993
+              },
+              "in_way_to_client": {
+                "presence": "missing",
+                "value": null
+              },
+              "in_way_from_client": {
+                "presence": "value",
+                "value": 1
+              }
+            }
+          ]
+        },
+        {
+          "raw_utf8_text": "{\"data\":[]}",
+          "raw_byte_count": 11,
+          "offset": 2,
+          "received_at": "2026-06-01T21:01:00+00:00",
+          "raw_sha256": "8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0",
+          "terminal": true,
+          "source_observed_at": null,
+          "observations": []
+        }
+      ],
+      "complete": true,
+      "manifest_canonical_ascii": "[\"wb-warehouse-stocks/v1\",\"b581d04cb0733e869515e2efa3394f11818e4964d2f74d522edd0c1e59b1d91b\",[[0,2,\"96226deba84c19d597a0c161504282fa9566fa65b895d47b61710cac33c2b167\"],[2,2,\"8fe32e407a1038ee38753b70e5374b3a46d6ae9d5f16cd5b73c53abaca8f5ed0\"]]]",
+      "manifest_byte_count": 241,
+      "manifest_sha256": "f564d41b0e2bb6d232f634bb2ee533fe2b4d22c819baee765c635f6083088cb1",
+      "received_business_date_msk": null
+    }
+  ]
+}

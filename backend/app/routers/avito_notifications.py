@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.avito.auth import resolve_user_avito_access_token
+from app.avito.auth import resolve_user_avito_access_token, scoped_avito_cache_key
 from app.avito.chats import AvitoChatsFetchRequest, build_avito_chats_client
 from app.avito.listings import AvitoListingsFetchRequest, build_avito_listings_client
 from app.avito.notifications import AvitoNotificationsResult, build_avito_notifications_result
@@ -35,23 +35,19 @@ def _cache_key(start: date, limit: int, account_ids: list[str]) -> str:
     return f"avito_notifications:{start.isoformat()}:l{limit}:{account_part}"
 
 
-def _read_cache_key() -> str:
-    return "avito_notifications:read_marks"
-
-
-def _read_marks(organization_id: int) -> dict[str, str]:
-    cached = get_source_cache(organization_id, _read_cache_key(), slim=False) or {}
+def _read_marks(organization_id: int, read_key: str) -> dict[str, str]:
+    cached = get_source_cache(organization_id, read_key, slim=False) or {}
     marks = cached.get("marks") if isinstance(cached, dict) else {}
     return {str(key): str(value) for key, value in marks.items()} if isinstance(marks, dict) else {}
 
 
-def _save_read_state(organization_id: int, *, marks: dict[str, str], visible_ids: list[str] | None = None) -> None:
-    cached = get_source_cache(organization_id, _read_cache_key(), slim=False) or {}
+def _save_read_state(organization_id: int, read_key: str, *, marks: dict[str, str], visible_ids: list[str] | None = None) -> None:
+    cached = get_source_cache(organization_id, read_key, slim=False) or {}
     payload = dict(cached) if isinstance(cached, dict) else {}
     payload["marks"] = marks
     if visible_ids is not None:
         payload["visibleIds"] = visible_ids
-    save_source_cache(organization_id, _read_cache_key(), payload)
+    save_source_cache(organization_id, read_key, payload)
 
 
 def _cache_hit_payload(cached: dict[str, Any], read_marks: dict[str, str]) -> dict[str, Any]:
@@ -98,7 +94,8 @@ def _credentials_or_error(request: Request) -> tuple[Any, Any, str]:
         )
     except Exception as exc:
         raise HTTPException(status_code=409, detail="AVITO_OAUTH_FAILED") from exc
-    return actor, settings, access_token
+    read_key = scoped_avito_cache_key("avito_notifications:read_marks", f"{credentials.client_id}\0{credentials.client_secret}")
+    return actor, settings, access_token, read_key
 
 
 @router.get("/api/v1/avito/notifications")
@@ -110,17 +107,14 @@ def get_avito_notifications(
     account_id: list[str] = Query(default_factory=list, alias="accountId"),
     force_refresh: bool = Query(default=False, alias="forceRefresh"),
 ) -> dict[str, Any]:
-    actor = actor_from_request(request)
-    if not has_permission(actor, "cabinet:read"):
-        raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
+    actor, settings, access_token, read_key = _credentials_or_error(request)
     start, days = _date_from(date_from, period_days)
-    source_key = _cache_key(start, limit, account_id)
-    read_marks = _read_marks(actor.organization_id)
+    source_key = scoped_avito_cache_key(_cache_key(start, limit, account_id), access_token)
+    read_marks = _read_marks(actor.organization_id, read_key)
     cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
     if not force_refresh and isinstance(cached, dict) and cached.get("status") != "blocked" and isinstance(cached.get("items"), list):
         return _cache_hit_payload(cached, read_marks)
 
-    _actor, settings, access_token = _credentials_or_error(request)
     errors: dict[str, Any] = {}
     chats = None
     orders = None
@@ -183,7 +177,7 @@ def get_avito_notifications(
     payload = result.model_dump(mode="json")
     payload["period"] = {"dateFrom": start.isoformat(), "days": days}
     payload["source"]["cache"]["status"] = "fresh"
-    _save_read_state(actor.organization_id, marks=read_marks, visible_ids=[item["id"] for item in payload["items"] if item.get("id")])
+    _save_read_state(actor.organization_id, read_key, marks=read_marks, visible_ids=[item["id"] for item in payload["items"] if item.get("id")])
     if result.status != "blocked":
         save_source_cache(actor.organization_id, source_key, payload)
     return payload
@@ -191,29 +185,25 @@ def get_avito_notifications(
 
 @router.post("/api/v1/avito/notifications/{notification_id}/read")
 def mark_avito_notification_read(notification_id: str, request: Request) -> dict[str, Any]:
-    actor = actor_from_request(request)
-    if not has_permission(actor, "cabinet:read"):
-        raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
-    marks = _read_marks(actor.organization_id)
+    actor, _settings, _access_token, read_key = _credentials_or_error(request)
+    marks = _read_marks(actor.organization_id, read_key)
     marks[notification_id] = datetime.now(timezone.utc).isoformat()
-    _save_read_state(actor.organization_id, marks=marks)
+    _save_read_state(actor.organization_id, read_key, marks=marks)
     return {"ok": True, "id": notification_id, "readAt": marks[notification_id]}
 
 
 @router.post("/api/v1/avito/notifications/read-all")
 def mark_all_avito_notifications_read(request: Request) -> dict[str, Any]:
-    actor = actor_from_request(request)
-    if not has_permission(actor, "cabinet:read"):
-        raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
-    marks = _read_marks(actor.organization_id)
+    actor, _settings, _access_token, read_key = _credentials_or_error(request)
+    marks = _read_marks(actor.organization_id, read_key)
     cached_rows = []
     # Mark visible cached notifications; freshly fetched ids will be added one-by-one if new events arrive later.
-    cached = get_source_cache(actor.organization_id, _read_cache_key(), slim=False) or {}
+    cached = get_source_cache(actor.organization_id, read_key, slim=False) or {}
     visible = cached.get("visibleIds") if isinstance(cached, dict) else None
     now = datetime.now(timezone.utc).isoformat()
     if isinstance(visible, list):
         cached_rows = [str(item) for item in visible if item]
     for item_id in cached_rows:
         marks[item_id] = now
-    _save_read_state(actor.organization_id, marks=marks)
+    _save_read_state(actor.organization_id, read_key, marks=marks)
     return {"ok": True, "readAt": now, "count": len(cached_rows)}

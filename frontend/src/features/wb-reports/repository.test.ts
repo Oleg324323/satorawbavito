@@ -1,8 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import digestApiHandler from '../../../api/wb/reports/digest'
-import pnlApiHandler from '../../../api/wb/reports/pnl'
-import reportApiHandler from '../../../api/wb/reports/[reportId]'
-import reportExportApiHandler from '../../../api/wb/reports/export/[reportId]'
 import { buildReportContractSidecar } from './reportContracts'
 import { AdsPerformanceResponseSchema, ExpenseImportCommitResponseSchema, ExpenseImportPreviewResponseSchema, ExpensesReportResponseSchema, PnlReportResponseSchema, RnpReportResponseSchema, SourceStatusResponseSchema } from './schemas'
 import {
@@ -23,23 +19,6 @@ import {
   localizationCoefficients,
   normalizeDateRange,
 } from './repository'
-
-function createJsonResponse() {
-  const result: { statusCode?: number; body?: unknown } = {}
-  return {
-    result,
-    response: {
-      status: (code: number) => {
-        result.statusCode = code
-        return {
-          json: (data: unknown) => {
-            result.body = data
-          },
-        }
-      },
-    },
-  }
-}
 
 describe('wb reports repository', () => {
   it('builds digest from ABC, P&L, RNP, ads and stock metrics', () => {
@@ -279,18 +258,22 @@ describe('wb reports repository', () => {
 
   it('prorates monthly manager plans for a custom period', () => {
     const digest = getDigestReport({ preset: 'custom', from: '2026-05-01', to: '2026-05-03' })
+    expect(digest.dateRange).toEqual({ preset: 'custom', from: '2026-05-01', to: '2026-05-03' })
     const row = digest.planFactRows.find((item) => item.ownerId === 'manager-kotelnikova')
     expect(row?.planKopecks).toBe(Math.round(24000000 * 3 / 31))
     expect(row?.needPerDayKopecks).toEqual(expect.any(Number))
   })
 
   it('treats promo exclusion Excel as an empty/non-useful source note', () => {
-    const exportInfo = getExport('abc')
+    const exportInfo = getExportForRole('abc', 'admin')
+    expect(exportInfo).toMatchObject({ fileName: expect.stringContaining('wb-abc'), rows: expect.any(Number), exportAllowed: true })
     expect(exportInfo.emptySourceNote).toContain('Товар уже участвует в акции')
   })
 
   it('marks financial P&L as pending until WB final report arrives', () => {
-    const report = getPnlReport(normalizeDateRange({ preset: '7d' }), 'financial')
+    const report = getPnlReport(normalizeDateRange({ preset: 'custom', from: '2026-05-01', to: '2026-05-03' }), 'financial')
+    expect(report.meta.id).toBe('pnl')
+    expect(report.filters.dateRange).toEqual({ preset: 'custom', from: '2026-05-01', to: '2026-05-03' })
     expect(report.meta.sourceType).toBe('financial')
     expect(report.meta.freshnessState).toBe('pending_financial')
     expect(report.financialConfirmationStatus).toBe('pending_financial')
@@ -389,65 +372,5 @@ describe('wb reports repository', () => {
     expect(analytics?.abcCode).toBe('AA')
     expect(analytics?.promotionStatus).toBe('yes')
     expect(analytics?.ordersUnits).toBeGreaterThan(0)
-  })
-
-  it('serves report API JSON for real report ids and JSON errors for unknown ids', () => {
-    for (const reportId of ['abc', 'ads', 'expenses', 'stock', 'week-over-week']) {
-      const { response, result } = createJsonResponse()
-      reportApiHandler({ query: { reportId } }, response)
-      expect(result.statusCode).toBe(200)
-      expect(result.body).toMatchObject({ meta: { id: reportId } })
-      expect(JSON.stringify(result.body)).not.toContain('<!DOCTYPE html>')
-    }
-
-    const { response, result } = createJsonResponse()
-    reportApiHandler({ query: { reportId: 'unknown' } }, response)
-    expect(result.statusCode).toBe(404)
-    expect(result.body).toMatchObject({ error: { code: 'REPORT_NOT_FOUND' } })
-  })
-
-  it('serves digest API for the requested date range', () => {
-    const { response, result } = createJsonResponse()
-
-    digestApiHandler({ query: { preset: 'custom', from: '2026-05-01', to: '2026-05-03' } }, response)
-
-    expect(result.statusCode).toBe(200)
-    expect(result.body).toMatchObject({
-      dateRange: { preset: 'custom', from: '2026-05-01', to: '2026-05-03' },
-    })
-  })
-
-  it('serves P&L API for the requested date range from frontend query params', () => {
-    const { response, result } = createJsonResponse()
-
-    pnlApiHandler({ query: { preset: 'custom', from: '2026-05-01', to: '2026-05-03', source: 'financial' } }, response)
-
-    expect(result.statusCode).toBe(200)
-    expect(result.body).toMatchObject({
-      meta: { id: 'pnl' },
-      filters: { dateRange: { preset: 'custom', from: '2026-05-01', to: '2026-05-03' } },
-      financialConfirmationStatus: 'pending_financial',
-    })
-  })
-
-  it('serves report export API JSON and rejects unsupported exports without HTML fallthrough', () => {
-    const ok = createJsonResponse()
-    reportExportApiHandler({ query: { reportId: 'abc' } }, ok.response)
-    expect(ok.result.statusCode).toBe(200)
-    expect(ok.result.body).toMatchObject({ fileName: expect.stringContaining('wb-abc'), rows: expect.any(Number), exportAllowed: true })
-    expect(JSON.stringify(ok.result.body)).not.toContain('<!DOCTYPE html>')
-
-    const unsupported = createJsonResponse()
-    reportExportApiHandler({ query: { reportId: 'unknown' } }, unsupported.response)
-    expect(unsupported.result.statusCode).toBe(501)
-    expect(unsupported.result.body).toMatchObject({ error: { code: 'REPORT_EXPORT_UNSUPPORTED' } })
-
-    const forbidden = createJsonResponse()
-    reportExportApiHandler({ query: { reportId: 'expenses', role: 'manager' } }, forbidden.response)
-    expect(forbidden.result.statusCode).toBe(403)
-    expect(forbidden.result.body).toMatchObject({
-      error: { code: 'REPORT_EXPORT_FORBIDDEN' },
-      export: { exportAllowed: false, blockedReason: expect.stringContaining('финансы или администратор') },
-    })
   })
 })

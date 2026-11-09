@@ -1,7 +1,11 @@
 import { ApiError, apiRequest, buildApiUrl } from '@/lib/api'
 import { authorizationHeaders } from '@/features/auth/authApi'
+import { reportRequest } from '@/features/wb-reports/reportRequest'
 import { sharedStatusRequest } from './sharedStatusRequest'
+import { createReadCache } from './readCache'
 import { resolvePresetPeriodRange } from './presetPeriodAnchor'
+import { readWithCatalogRecovery } from './catalogRecovery'
+import { assignmentGeneration, assignmentsPending, orderedStrategyAssignment, rememberAssignmentRevisions } from './strategyAssignmentOrdering'
 
 function wbBasketNumber(volume: number) {
   const ranges = [
@@ -35,6 +39,7 @@ export type LiveRepricerSkuRow = {
     managerId?: string | null
     managerName?: string
     assignmentSource?: 'manual' | 'xlsx' | 'none'
+    assignmentRevision?: string
     subject?: string
     brand?: string | null
     imageUrl?: string | null
@@ -63,6 +68,7 @@ export type LiveRepricerSkuRow = {
     minMarginKopecks?: number | null
     minMarginPct: number
     cogsKopecks: number
+    savedCogsKopecks?: number | null
     logisticsKopecks: number
     otherExpensePerSaleKopecks?: number | null
     otherExpensePricePct?: number | null
@@ -70,6 +76,8 @@ export type LiveRepricerSkuRow = {
     maxMarginKopecks?: number | null
     maxMarginPct?: number | null
     pMinKopecks?: number | null
+    effectivePMinKopecks?: number
+    effectivePMinSource?: 'explicit' | 'calculated'
     pMaxKopecks?: number | null
     priceStepPct?: number | null
     priceStepMinutes?: number | null
@@ -114,17 +122,45 @@ export type LiveRepricerSkuRow = {
     stockFbm?: number | null
   }
   analytics?: {
+    financialTradeState?: 'ok' | 'partial' | 'no_data'
     abcCode?: string
-    promotionStatus?: 'yes' | 'no'
+    abcPolicyVersion?: string
+    abcReason?: string | null
+    settlementFormulaVersion?: string
+    settlementAttributedProfitKopecks?: number | null
+    campaignAdvertisingVersion?: string
+    repricerEconomicsVersion?: string
+    campaignBlockers?: string[]
+    campaignProfitKopecks?: number | null
+    campaignAttributedProfitKopecks?: number | null
+    adSpendState?: 'ok' | 'partial' | 'no_data'
+    settlementProfitKopecks?: number | null
+    settlementBlockers?: string[]
+    settlementCogsState?: 'configured' | 'assumed' | 'missing'
+    promotionStatus?: 'yes' | 'no' | 'unknown'
+    promotionStatusScope?: 'regular' | null
+    promotionStatusReason?: string | null
+    promotionStatusObservedAt?: string | null
+    promotionStatusExpiresAt?: string | null
     promotionStatusText?: string | null
     promotionName?: string | null
     promotionId?: string | number | null
     wbStockUnits?: number | null
+    circulationStockUnits?: number | null
+    stockInWayToClient?: number | null
+    stockInWayFromClient?: number | null
     stockState?: 'ok' | 'fallback' | 'no_data'
-    buyoutPct?: number
+    buyoutPct?: number | null
     baskets?: number | null
-    basketsState?: 'ok' | 'fallback' | 'no_data'
-    ordersUnits?: number
+    basketsState?: 'ok' | 'fallback' | 'partial' | 'no_data'
+    basketsReason?: string | null
+    ordersUnits?: number | null
+    periodDays?: number | null
+    ordersSource?: string | null
+    reportOrdersUnits?: number | null
+    ordersAmountKopecks?: number | null
+    grossSalesUnits?: number | null
+    grossSalesAmountKopecks?: number | null
     cancelledOrdersUnits?: number | null
     previousPeriod?: {
       baskets?: number | null
@@ -136,6 +172,7 @@ export type LiveRepricerSkuRow = {
     returnsUnits?: number | null
     revenueKopecks?: number | null
     basePriceKopecks?: number
+    browserOriginalPriceKopecks?: number | null
     sellerDiscountedPriceKopecks?: number
     buyerPriceNoWalletKopecks?: number | null
     buyerPriceWithWalletKopecks?: number | null
@@ -186,6 +223,8 @@ export type LiveRepricerSkuRow = {
     acquiringKopecks?: number | null
     plannedMarginKopecks?: number | null
     plannedPeriodMarginKopecks?: number | null
+    factTaxState?: 'configured' | 'missing'
+    factTaxReason?: string | null
     factNetProfitKopecks?: number | null
     netProfitKopecks?: number | null
     cogsTotalKopecks?: number | null
@@ -207,11 +246,18 @@ export type LiveRepricerSkuListResponse = {
   periodDays?: number
   summary?: LiveRepricerSkuListSummary
   cache?: {
+    periodCoverage?: Record<string, { state: string; coveredDays: number; requestedDays: number; missingDates: string[] }>
+    requiredPeriodSources?: string[]
+    summaryScope?: 'filtered_skus' | 'catalog'
+    serverFiltersApplied?: boolean
     pagesCached: number
     totalCached: number
     nextOffset: number
     pageLimit: number
     latestFetchedAt?: string | null
+    promotionsFetchedAt?: string | null
+    promotionsRefreshRequired?: boolean
+    promotionsRefreshAt?: string | null
     stocksFetchedAt?: string | null
     periodStatsFetchedAt?: string | null
     financeFetchedAt?: string | null
@@ -223,6 +269,8 @@ export type LiveRepricerSkuListResponse = {
     adsDateFrom?: string | null
     adsDateTo?: string | null
     adsSource?: string | null
+    adsCoverageState?: 'ok' | 'partial' | 'no_data'
+    adsFreshnessState?: 'fresh' | 'stale'
     adsSpendKopecks?: number | null
     adsImpressions?: number | null
     adsClicks?: number | null
@@ -233,6 +281,10 @@ export type LiveRepricerSkuListResponse = {
     adsLastError?: string | null
     adsLastFinishedAt?: string | null
     basketsFetchedAt?: string | null
+    periodStatsFreshnessState?: 'fresh' | 'stale'
+    financeFreshnessState?: 'fresh' | 'stale'
+    basketsFreshnessState?: 'fresh' | 'stale'
+    basketsPeriodConversionState?: 'ok' | 'no_data'
     basketsRequestedNmIds?: number | null
     basketsMatchedNmIds?: number | null
     periodDays?: number
@@ -263,10 +315,26 @@ export type LiveRepricerLoadTrace = {
 }
 
 export type LiveRepricerSkuListSummary = {
-  revenueKopecks?: number
-  marginKopecks?: number
-  cogsKopecks?: number
-  expensesKopecks?: number
+  campaignAdvertisingVersion?: string
+  campaignProfitKopecks?: number | null
+  adSpendState?: 'ok' | 'partial' | 'no_data'
+  financialCoverageState?: string
+  buyoutComparison?: { state: string; currentState: string; freshnessState?: string; dateFrom: string; dateTo: string; units: number | null; amountKopecks: number | null; source: string }
+  buyoutUnits?: number | null
+  buyoutAmountKopecks?: number | null
+  buyoutSource?: string
+  settlementFormulaVersion?: string
+  settlementProfitKopecks?: number | null
+  settlementCogsKopecks?: number | null
+  finalPayoutKopecks?: number | null
+  settlementBlockers?: string[]
+  revenueKopecks?: number | null
+  marginKopecks?: number | null
+  taxKopecks?: number | null
+  factTaxState?: 'configured' | 'missing'
+  factTaxReason?: string | null
+  cogsKopecks?: number | null
+  expensesKopecks?: number | null
   storageKopecks?: number
   acceptanceKopecks?: number
   unassignedStorageKopecks?: number
@@ -274,23 +342,27 @@ export type LiveRepricerSkuListSummary = {
   unassignedExpensesKopecks?: number
   ordersUnits?: number
   cancelledOrdersUnits?: number
-  salesUnits?: number
-  returnsUnits?: number
-  adSpendKopecks?: number
+  salesUnits?: number | null
+  returnsUnits?: number | null
+  adSpendKopecks?: number | null
+  adSpendSource?: 'finance_deduction_wb_promotion' | 'wb_ads_fullstats' | null
   adImpressions?: number
   adClicks?: number
   adCartAdds?: number
   adOrders?: number
   adRevenueKopecks?: number
   adSkuCount?: number
-  avgMarginPct?: number
-  totalBaskets?: number
+  avgMarginPct?: number | null
+  totalBaskets?: number | null
+  totalBasketsState?: 'ok' | 'partial' | 'no_data'
   inSale?: number
   promoSharePct?: number
   skuCount?: number
 }
 
 export type LiveRepricerStatsMetricPayload = {
+  totalImpressions?: number | null
+  totalClicks?: number | null
   impressions?: number | null
   clicks?: number | null
   ctrPct?: number | null
@@ -308,6 +380,8 @@ export type LiveRepricerStatsMetricPayload = {
   stockUnits?: number | null
   currentPriceKopecks?: number | null
   avgPriceWithSppKopecks?: number | null
+  averagePriceKopecks?: number | null
+  averagePriceOrderCount?: number | null
   medianPriceKopecks?: number | null
   sppPct?: number | null
   commissionPct?: number | null
@@ -317,6 +391,7 @@ export type LiveRepricerStatsItem = {
   articleId: string
   nmId?: number | null
   name?: string | null
+  subject?: string | null
   brand?: string | null
   imageUrl?: string | null
   photoUrl?: string | null
@@ -337,6 +412,9 @@ export type LiveRepricerStatsItem = {
   metrics?: LiveRepricerStatsMetricPayload
   priceProtection?: {
     status?: string | null
+    skipReason?: 'no_strategy' | 'no_nm_id' | 'manual_mode' | 'automation_disabled' | 'warmup' | null
+    effectivePMinKopecks?: number | null
+    effectivePMinSource?: 'explicit' | 'calculated' | null
     blockerIds?: string[]
     message?: string | null
   }
@@ -358,12 +436,13 @@ export type LiveRepricerStatsSummary = {
   impressions?: number
   clicks?: number
   adCtrPct?: number | null
-  baskets?: number
+  baskets?: number | null
   orders?: number
   cartToOrderCrPct?: number | null
   adSpendKopecks?: number
   revenueKopecks?: number
   drrPct?: number | null
+  metricTotals?: Record<string, { value: number | null; coveredSku: number; partialSku: number; scope?: string; partialPeriod?: boolean }>
 }
 
 export type LiveRepricerStatsResponse = {
@@ -385,6 +464,7 @@ export type LiveRepricerStatsResponse = {
 }
 
 export type LiveRepricerProductsQuery = {
+  filters?: Record<string, unknown>
   periodDays?: number
   dateFrom?: string
   dateTo?: string
@@ -434,6 +514,7 @@ type LiveRepricerSkuGroupsResponse = {
 }
 
 export type LiveRepricerProductsPayload = {
+  superseded?: boolean
   total: number
   products: ReturnType<typeof mapLiveRepricerRowToParityProduct>[]
   summary?: LiveRepricerSkuListSummary
@@ -584,19 +665,23 @@ export type LiveRepricerCacheCoverage = {
 
 let liveProductsInFlight: Promise<LiveRepricerProductsPayload> | null = null
 let liveProductsInFlightKey = ''
+const liveProductsRequests = new Map<string, { request: Promise<LiveRepricerProductsPayload>; signal?: AbortSignal }>()
 let liveProductsCachedAt = 0
 let liveProductsCache: LiveRepricerProductsPayload | null = null
 let liveProductsCachePeriodDays = 7
 let liveProductsCacheKey = ''
 let liveStrategiesInFlight: Promise<LiveRepricerStrategySnapshotItem[]> | null = null
+let liveStrategiesInFlightKey = ''
+let liveStrategiesInFlightSignal: AbortSignal | undefined
 let liveStrategiesCachedAt = 0
 let liveStrategiesCache: LiveRepricerStrategySnapshotItem[] | null = null
+let liveStrategiesCacheKey = ''
 const LIVE_PRODUCTS_CACHE_TTL_MS = 30_000
 const DEFAULT_REPRICER_PERIOD_DAYS = 7
 
-function sourcePriority(state: 'ok' | 'fallback' | 'no_data' | null | undefined) {
+function sourcePriority(state: 'ok' | 'partial' | 'fallback' | 'no_data' | null | undefined) {
   if (state === 'ok') return 2
-  if (state === 'fallback') return 1
+  if (state === 'fallback' || state === 'partial') return 1
   return 0
 }
 
@@ -661,10 +746,11 @@ function normalizeSppPct(value: number | null | undefined) {
   return Number(numeric.toFixed(2))
 }
 
-function deriveSppPct(sellerKopecks: number | null | undefined, buyerKopecks: number | null | undefined) {
+function deriveSppPct(sellerKopecks: number | null | undefined, buyerKopecks: number | null | undefined, digits = 2) {
   const seller = Number(sellerKopecks ?? 0)
   const buyer = Number(buyerKopecks ?? 0)
   if (!Number.isFinite(seller) || !Number.isFinite(buyer) || seller <= 0 || buyer <= 0 || buyer > seller) return null
+  if (digits === 1) return Math.round((seller - buyer) * 1000 / seller) / 10
   return Number((((seller - buyer) / seller) * 100).toFixed(2))
 }
 
@@ -690,7 +776,7 @@ function inferParityProductType(row: LiveRepricerSkuRow) {
   if (/худи|hoodie|толстов/.test(haystack)) return 'hoodie'
   if (/шорт|short/.test(haystack)) return 'shorts'
   if (/балак|balaclava/.test(haystack)) return 'balaclava'
-  return 'shirt'
+  return /футбол|\b(?:t-?shirt|shirt)\b|\bf[bc]/.test(haystack) ? 'shirt' : ''
 }
 
 function inferParityProductColor(row: LiveRepricerSkuRow) {
@@ -723,6 +809,7 @@ function periodTrend(current: number | null | undefined, previous: number | null
 }
 
 function parityStatus(row: LiveRepricerSkuRow) {
+  if (row.settings.automationEnabled === false) return 'manual'
   if (row.meta.status === 'liquidation') return 'illiquid'
   if (row.meta.status === 'manual') return 'manual'
   if (row.meta.status === 'warmup') return 'new'
@@ -759,7 +846,7 @@ function parityPMinRub(row: LiveRepricerSkuRow) {
   return Math.round(numerator / denominator / 100)
 }
 
-export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index: number) {
+export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, _index: number) {
   const basketsState = row.analytics?.basketsState ?? 'no_data'
   const periodStatsState = row.analytics?.periodStatsState ?? 'no_data'
   const stockState = row.analytics?.stockState ?? 'no_data'
@@ -780,15 +867,23 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
   const buyerPriceWithWalletRub = buyerPriceWithWalletKopecks != null
     ? kopecksToRub(buyerPriceWithWalletKopecks)
     : null
-  const priceWithWallet = accountedBuyerPriceRub ?? buyerPriceWithWalletRub
+  const priceWithWallet = buyerPriceWithWalletRub
   const directSppPrice = priceWithSpp
+  // Reporting column uses the original base price, not the seller-discounted
+  // current price. Keep the existing pricing/strategy SPP calculation intact.
+  const tableSppPct = deriveSppPct(row.analytics?.basePriceKopecks, row.analytics?.buyerPriceNoWalletKopecks, 1)
+  const rawBuyer = row.analytics?.buyerPriceNoWalletKopecks
+  const tableBuyerPrice = rawBuyer != null && Number.isSafeInteger(rawBuyer) && rawBuyer > 0
+    && rawBuyer <= (row.analytics?.basePriceKopecks ?? row.meta.currentPriceKopecks) ? rawBuyer / 100 : null
   const financeState = row.analytics?.financeState ?? 'no_data'
   const hasFinance = financeState === 'ok' || financeState === 'fallback'
-  const stock = stockState === 'no_data' ? 0 : row.analytics?.wbStockUnits ?? Math.max(0, baskets * 2)
-  const ordersPeriod = periodStatsState === 'no_data' ? 0 : row.analytics?.ordersUnits ?? Math.max(0, baskets - 2)
+  const stock = ['ok', 'fresh'].includes(stockState) && row.analytics?.wbStockUnits != null
+    ? row.analytics.wbStockUnits : null
+  const ordersPeriod = row.analytics && 'reportOrdersUnits' in row.analytics
+    ? row.analytics.reportOrdersUnits ?? null
+    : row.analytics?.ordersSource === 'finance_sales_fallback' ? null : row.analytics?.ordersUnits ?? null
   const previousBaskets = row.analytics?.previousPeriod?.baskets
   const previousOrders = row.analytics?.previousPeriod?.ordersUnits ?? row.analytics?.previousPeriod?.funnelOrderCount
-  const marginRub = row.analytics?.marginKopecks != null ? kopecksToRub(row.analytics.marginKopecks) : null
   const managerName = row.meta.managerName || 'Без ответственного'
   const commissionSource = row.analytics?.commissionSource ?? null
   const commissionIsFallbackSource = !commissionSource
@@ -822,27 +917,75 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
   const expensesRub = hasFinance && row.analytics?.expensesKopecks != null
     ? kopecksToRub(row.analytics.expensesKopecks)
     : null
-  const financeNetProfitRub = hasFinance && row.analytics?.netProfitKopecks != null
-    ? kopecksToRub(row.analytics.netProfitKopecks)
+  const factTaxState = row.analytics?.factTaxState
+  const hasSettlementProfit = row.analytics?.settlementFormulaVersion === 'wb-final-payout-cogs-tax-v1'
+  const campaignAdvertising = row.analytics?.campaignAdvertisingVersion === 'wb-repricer-campaign-advertising-v1'
+  const financeNetProfitKopecks = campaignAdvertising
+    ? row.analytics?.campaignProfitKopecks ?? null
+    : hasSettlementProfit
+    ? row.analytics?.settlementProfitKopecks ?? null
+    : factTaxState && row.analytics?.factNetProfitKopecks !== undefined
+    ? row.analytics.factNetProfitKopecks
+    : row.analytics?.netProfitKopecks
+  const financeNetProfitRub = hasFinance && financeNetProfitKopecks != null
+    ? kopecksToRub(financeNetProfitKopecks)
     : null
-  const plannedPeriodMarginRub = row.analytics?.plannedPeriodMarginKopecks != null
-    ? kopecksToRub(row.analytics.plannedPeriodMarginKopecks)
-    : null
-  const financeRevenueRub = kopecksToRub(row.analytics?.revenueKopecks ?? 0)
+  const financeRevenueRub = (row.analytics?.revenueKopecks ?? 0) / 100
   const revenue7d = hasFinance ? financeRevenueRub : 0
   const storagePerSku = storageRub
+  // The products column is realised profit, never the current-price plan.
+  // A tariff/buyout forecast must not gate (or replace) actual settlement data.
+  const actualProfit = hasSettlementProfit ? financeNetProfitRub : null
+  const netSoldUnits = row.analytics?.salesUnits != null && row.analytics?.returnsUnits != null
+    ? row.analytics.salesUnits - row.analytics.returnsUnits : null
+  const attributedKopecks = campaignAdvertising
+    ? row.analytics?.campaignAttributedProfitKopecks : row.analytics?.settlementAttributedProfitKopecks
+  const attributedProfit = hasFinance && hasSettlementProfit
+    && row.analytics?.settlementBlockers?.length === 1
+    && row.analytics.settlementBlockers[0] === 'settlement_account_expenses_unreconciled'
+    && Number.isSafeInteger(attributedKopecks)
+    ? attributedKopecks! / 100 : null
+  const marginBeforeAllocationRub = attributedProfit != null && netSoldUnits != null && netSoldUnits > 0
+    ? attributedProfit / netSoldUnits : null
+  const displayedProfit = actualProfit ?? (campaignAdvertising ? attributedProfit : null)
+  const marginRub = displayedProfit != null && netSoldUnits != null && netSoldUnits > 0
+    ? displayedProfit / netSoldUnits : null
+  const actualMarginPct = displayedProfit != null && row.analytics?.revenueKopecks != null && financeRevenueRub > 0
+    ? displayedProfit / financeRevenueRub * 100 : null
+  const marginBlockerLabels: Record<string, string> = {
+    settlement_payable_unconfirmed: 'Нет подтверждённой выплаты WB',
+    settlement_components_missing: 'Не все расходы WB загружены',
+    settlement_account_expenses_unreconciled: 'Расходы аккаунта ещё не распределены по товарам',
+    settlement_dated_cogs_missing: 'Нет сохранённой себестоимости',
+    settlement_tax_missing: 'Нет налога по продажам выбранного периода',
+    campaign_advertising_incomplete: 'Реклама загружена не за весь выбранный период',
+    campaign_finance_incomplete: 'Финансовый отчёт загружен не полностью',
+  }
+  const marginReason = actualProfit == null && displayedProfit != null
+    ? 'Результат по расходам, привязанным к товару, включая расход рекламных кампаний. До нераспределённых общих расходов; не окончательная прибыль.'
+    : actualProfit == null
+    ? ((row.analytics?.campaignBlockers ?? row.analytics?.settlementBlockers)?.map(reason => marginBlockerLabels[reason] ?? 'Финансовые данные требуют проверки').join('; ') || 'Нет подтверждённого финансового расчёта за выбранный период')
+    : actualMarginPct == null || marginRub == null
+      ? 'Нет положительной выручки или количества продаж за вычетом возвратов для расчёта относительной маржи'
+      : row.analytics?.settlementCogsState === 'assumed'
+        ? 'Расчёт по операциям WB с примерной себестоимостью. Загрузите фактическую себестоимость для окончательного результата.'
+        : 'Фактическая прибыль / выручка; ₽ на проданную единицу за вычетом возвратов'
   const netPerUnit = marginRub
-  const netSku = financeNetProfitRub != null
+  const netSku = hasSettlementProfit ? financeNetProfitRub : factTaxState
+    ? factTaxState === 'configured' ? financeNetProfitRub : null
+    : financeNetProfitRub != null
     ? financeNetProfitRub
-    : plannedPeriodMarginRub != null
-      ? plannedPeriodMarginRub
-    : marginRub != null && ordersPeriod > 0
-      ? marginRub * ordersPeriod
-      : null
-  const calculatedPminRub = parityPMinRub(row)
-  const pminRub = row.settings.pMinKopecks != null && row.settings.pMinKopecks > 0
-    ? kopecksToRub(row.settings.pMinKopecks)
-    : calculatedPminRub
+    : null
+  const rawAbc = row.analytics?.abcCode ?? ''
+  const versionedAbc = row.analytics?.abcPolicyVersion === 'wb-units-profit-cumulative-80-95-v1'
+  const abcCode = versionedAbc && /^[ABC—]{2}$/.test(rawAbc)
+    ? `${rawAbc[0]}${hasSettlementProfit && Number.isSafeInteger(financeNetProfitKopecks) ? rawAbc[1] : '—'}`
+    : /^[ABC]{2}$/.test(rawAbc) ? `${rawAbc[0]}—` : null
+  const pminRub = row.settings.effectivePMinKopecks != null
+    ? kopecksToRub(row.settings.effectivePMinKopecks)
+    : row.settings.pMinKopecks != null && row.settings.pMinKopecks > 0
+      ? kopecksToRub(row.settings.pMinKopecks)
+      : parityPMinRub(row)
   const pmaxRub = kopecksToRub(row.settings.pMaxKopecks ?? Math.max(row.analytics?.basePriceKopecks ?? 0, row.meta.currentPriceKopecks))
   const walletPct = row.analytics?.accountedWbWalletPct ?? row.analytics?.walletPct ?? row.analytics?.wbWalletPct ?? 0
   const sppMultiplier = Math.max(0, 1 - (sppPct ?? 0) / 100)
@@ -854,14 +997,18 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
   const noPromotionReason = /^Не участвует:/i.test(rawPromotionLabel) ? rawPromotionLabel : ''
   const promotionFallbackLabel = row.analytics?.promotionId != null ? `Акция ${row.analytics.promotionId}` : ''
   const displayPromotionLabel = promotionLabel && promotionLabel !== 'В акции' ? promotionLabel : promotionFallbackLabel
-  const wbPhotoUrl = wbProductPhotoUrl(row.meta.nmId)
-  const backendPhotoUrl = row.meta.imageUrl || row.meta.photoUrl || null
-  const photoUrl = backendPhotoUrl && !/\/\/basket-\d+\.wbbasket\.ru\//i.test(backendPhotoUrl)
-    ? backendPhotoUrl
-    : wbPhotoUrl || backendPhotoUrl
+  const promotionStatus = row.analytics?.promotionStatus === 'yes' || row.analytics?.promotionStatus === 'no'
+    ? row.analytics.promotionStatus : 'unknown'
+  const promotionReason = row.analytics?.promotionStatusReason || (promotionStatus === 'unknown'
+    ? 'Нет подтверждённых данных об участии в действующих акциях.'
+    : promotionStatus === 'yes' ? 'Участвует в акции WB' : 'Не участвует в акции WB')
+  const promotionObserved = new Date(row.analytics?.promotionStatusObservedAt || '')
+  const promoTooltip = promotionReason + (Number.isNaN(promotionObserved.getTime()) ? ''
+    : ` Проверено: ${promotionObserved.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК.`)
+  const photoUrl = row.meta.imageUrl || row.meta.photoUrl || wbProductPhotoUrl(row.meta.nmId)
 
   return {
-    sel: index < 2,
+    sel: false,
     sku: row.meta.articleId,
     photoUrl,
     imageUrl: photoUrl,
@@ -873,23 +1020,36 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
     status: parityStatus(row),
     sub: row.meta.status === 'warmup' && row.meta.warmupDaysLeft ? `ещё ${row.meta.warmupDaysLeft} дн` : '',
     price: currentPrice,
+    tableBuyerPrice,
     prevPrice: basePrice,
     pmin: pminRub,
     financeState,
     financeLabel: hasFinance ? null : 'нет данных',
     basketsState,
+    basketsReason: row.analytics?.basketsReason ?? null,
     periodStatsState,
     stockState,
-    mg: row.analytics?.marginPct != null ? Math.round(row.analytics.marginPct) : null,
+    circulationStock: row.analytics?.circulationStockUnits ?? null,
+    circulationStockRub: row.analytics?.circulationStockUnits != null
+      ? row.analytics.circulationStockUnits * currentPrice : null,
+    stockWarehouse: row.analytics?.wbStockUnits ?? null,
+    stockToBuyer: row.analytics?.stockInWayToClient ?? null,
+    stockFromBuyer: row.analytics?.stockInWayFromClient ?? null,
+    mg: actualMarginPct == null ? null : Math.round(actualMarginPct * 100) / 100,
     mgRub: marginRub,
+    marginMode: campaignAdvertising ? 'actual_campaign_expense' : 'actual_settlement',
+    marginReason,
+    marginBeforeAllocationRub,
+    marginAssumed: row.analytics?.settlementCogsState === 'assumed',
+    marginIsSubtotal: campaignAdvertising && actualProfit == null && attributedProfit != null,
     bsk: baskets,
     previousBaskets,
     previousOrdersPeriod: previousOrders,
     bskTrend: periodTrend(baskets, previousBaskets),
     bskBars: sparkBars(baskets, basketNorm),
     stock,
-    stockCls: stock === 0 ? 'zero' : stock <= 5 ? 'crit' : stock <= 20 ? 'low' : '',
-    stockRub: stock * currentPrice,
+    stockCls: stock == null ? '' : stock === 0 ? 'zero' : stock <= 5 ? 'crit' : stock <= 20 ? 'low' : '',
+    stockRub: stock == null ? null : stock * currentPrice,
     dl: basketNorm,
     dlCls: baskets >= basketNorm ? 't-ok' : baskets <= Math.max(2, Math.floor(basketNorm * 0.5)) ? 't-hot' : 't-warn',
     tpl: parityTemplate(row),
@@ -897,19 +1057,31 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
     strategyColor: row.strategy?.color ?? '',
     strategyDescription: row.strategy?.description ?? '',
     strategyAssignmentSource: parityAssignmentSource(row),
+    strategyConfig: row.strategy?.config ?? null,
     nmId: row.meta.nmId ?? 0,
-    abc: row.analytics?.abcCode ?? 'CC',
-    abcCode: row.analytics?.abcCode ?? 'CC',
-    promoActive: row.analytics?.promotionStatus === 'yes',
-    promoPrice: row.analytics?.promotionStatus === 'yes' ? currentPrice : 0,
+    // Legacy profit rank is not compatible with the owner's settlement policy.
+    abc: abcCode ?? '——',
+    abcCode,
+    abcReason: row.analytics?.abcPolicyVersion === 'wb-units-profit-cumulative-80-95-v1'
+      ? row.analytics.abcReason || (row.analytics.repricerEconomicsVersion
+        ? 'Первая буква — продажи в штуках, вторая — прибыль после расходов WB, хранения по остаткам, рекламы товара, себестоимости и налога. Удержания исключены. Накопленный вклад: 80% / 95%.'
+        : 'Первая буква — продажи в штуках, вторая — прибыль после удержаний WB, себестоимости и налога. Накопленный вклад: 80% / 95%. Внутренние расходы компании сейчас исключены.')
+      : 'Первая буква — текущий legacy-класс по штукам продаж (квоты 20/30/50%, не накопленный вклад). Вторая не рассчитана: чистая прибыль по новому контракту ещё не получена.',
+    promotionStatus,
+    promoTooltip,
+    promoActive: promotionStatus === 'unknown' ? null : promotionStatus === 'yes',
+    promoPrice: promotionStatus === 'yes' ? currentPrice : 0,
     promotionStatusText: displayPromotionLabel || promotionLabel || null,
     promotionName: displayPromotionLabel || promotionLabel || null,
     promotionId: row.analytics?.promotionId ?? null,
-    promoState: row.analytics?.promotionStatus === 'yes' ? (displayPromotionLabel || promotionLabel || 'да') : (noPromotionReason || 'нет'),
+    promoState: promotionStatus === 'unknown' ? 'Нет данных' : promotionStatus === 'yes'
+      ? (displayPromotionLabel || promotionLabel || 'да')
+      : row.analytics?.promotionStatusScope === 'regular' ? 'Нет в обычных' : (noPromotionReason || 'нет'),
     avgPriceSpp,
     priceWithSpp,
     priceWithWallet,
     spp: sppPct != null ? Number(sppPct.toFixed(2)) : null,
+    tableSppPct,
     pureSpp: sppPct != null ? Number(sppPct.toFixed(2)) : null,
     sppSource: row.analytics?.sppSource ?? null,
     sppObservedAt: row.analytics?.sppObservedAt ?? null,
@@ -931,9 +1103,12 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
     ordersPeriod,
     ordersTrend: periodTrend(ordersPeriod, previousOrders),
     cancelledOrdersUnits: row.analytics?.cancelledOrdersUnits ?? 0,
-    salesUnits: row.analytics?.salesUnits ?? 0,
-    returnsUnits: row.analytics?.returnsUnits ?? 0,
+    salesUnits: row.analytics?.financialTradeState === 'ok' ? row.analytics.salesUnits ?? null : row.analytics?.financeState === 'no_data' ? null : row.analytics?.salesUnits ?? null,
+    returnsUnits: row.analytics?.financialTradeState === 'ok' ? row.analytics.returnsUnits ?? null : row.analytics?.financeState === 'no_data' ? null : row.analytics?.returnsUnits ?? null,
     buyout: row.analytics?.buyoutPct ?? null,
+    ordersRub: row.analytics?.ordersAmountKopecks == null ? null : row.analytics.ordersAmountKopecks / 100,
+    grossSalesUnits: row.analytics?.grossSalesUnits ?? null,
+    salesRub: row.analytics?.grossSalesAmountKopecks == null ? null : row.analytics.grossSalesAmountKopecks / 100,
     views: null,
     views7d: null,
     cr: null,
@@ -950,16 +1125,21 @@ export function mapLiveRepricerRowToParityProduct(row: LiveRepricerSkuRow, index
     drr: null,
     adRoi: null,
     cogs: kopecksToRub(row.settings.cogsKopecks),
+    savedCogs: row.settings.savedCogsKopecks == null ? null : row.settings.savedCogsKopecks / 100,
     logistics: logisticsRub,
     storagePerSku,
     storage: storageRub,
     taxes: row.analytics?.taxPct ?? 6,
     stockMin: 5,
-    daysToOos: ordersPeriod > 0 ? Math.round(stock / Math.max(1, ordersPeriod / 7)) : 0,
+    daysToOos: stock != null && ordersPeriod != null && ordersPeriod > 0
+      && row.analytics?.periodDays != null && row.analytics.periodDays > 0
+      ? Math.round(stock * row.analytics.periodDays / ordersPeriod) : null,
     orders7d: ordersPeriod,
     revenue: revenue7d,
     netPerUnit,
     netSku,
+    factTaxState,
+    factTaxReason: row.analytics?.factTaxReason,
     wbWallet: row.analytics?.accountedWbWalletPct ?? row.analytics?.walletPct ?? row.analytics?.wbWalletPct ?? null,
     totalWbDiscountPct: accountedPlatformDiscountPct ?? row.analytics?.totalWbDiscountPct ?? null,
     buyerPriceNoWallet: buyerPriceNoWalletKopecks != null ? kopecksToRub(buyerPriceNoWalletKopecks) : null,
@@ -1023,7 +1203,7 @@ export async function updateLiveRepricerSkuSettings(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
@@ -1041,7 +1221,7 @@ export async function updateLiveRepricerSkuManager(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
@@ -1050,7 +1230,10 @@ export async function loadLiveRepricerParityProducts(
   signal?: AbortSignal,
   periodDaysOrQuery: number | LiveRepricerProductsQuery = DEFAULT_REPRICER_PERIOD_DAYS,
   force = false,
+  options: { savedOnly?: boolean } = {},
 ) {
+  signal?.throwIfAborted()
+  const readGeneration = assignmentGeneration()
   const query = typeof periodDaysOrQuery === 'number' ? { periodDays: periodDaysOrQuery } : periodDaysOrQuery
   const period = normalizeLiveRepricerPeriod(query)
   const periodDays = period.periodDays
@@ -1066,7 +1249,12 @@ export async function loadLiveRepricerParityProducts(
   if (query.status && query.status !== 'all') params.set('status', query.status)
   if (query.brand && query.brand !== 'all') params.set('brand', query.brand)
   if (query.manager && query.manager !== 'all') params.set('manager', query.manager)
-  const cacheKey = params.toString()
+  if (query.filters && Object.keys(query.filters).length) {
+    const filters = Object.fromEntries(Object.entries(query.filters).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, Array.isArray(value) ? [...new Set(value)].sort() : value]))
+    params.set('filters', JSON.stringify(filters))
+  }
+  const cacheKey = JSON.stringify([accessToken, params.toString(), ...(options.savedOnly ? [true] : [])])
   const now = Date.now()
   if (
     !force
@@ -1077,19 +1265,31 @@ export async function loadLiveRepricerParityProducts(
   ) {
     return liveProductsCache
   }
-  if (!force && liveProductsInFlight && liveProductsInFlightKey === cacheKey) {
-    return liveProductsInFlight
+  const existing = liveProductsRequests.get(cacheKey)
+  if (!force && existing && !existing.signal?.aborted) {
+    liveProductsInFlightKey = cacheKey
+    liveProductsInFlight = existing.request
+    return existing.request
   }
 
-  liveProductsInFlightKey = cacheKey
-  liveProductsInFlight = apiRequest<LiveRepricerSkuListResponse>(`/api/v1/wb-repricer/sku?${params.toString()}`, {
-    headers: authorizationHeaders(accessToken),
-    cache: 'no-store',
-    signal,
-  }).then((resolvedPayload) => {
+  const path = `/api/v1/wb-repricer/sku?${params.toString()}`
+  const read = options.savedOnly
+    ? reportRequest<LiveRepricerSkuListResponse>(path, { headers: authorizationHeaders(accessToken), signal, cache: 'no-store' })
+    : readWithCatalogRecovery<LiveRepricerSkuListResponse>(path, accessToken, period.dateFrom, period.dateTo, signal)
+  const request: Promise<LiveRepricerProductsPayload> = read.then((resolvedPayload) => {
+    if (options.savedOnly) {
+      if (!resolvedPayload || !Array.isArray(resolvedPayload.items)) throw new Error('Сервер вернул неполный ответ товаров. Сохранённые данные оставлены на экране.')
+      if ((resolvedPayload.dateFrom && resolvedPayload.dateFrom.slice(0, 10) !== period.dateFrom.slice(0, 10))
+        || (resolvedPayload.dateTo && resolvedPayload.dateTo.slice(0, 10) !== period.dateTo.slice(0, 10))) {
+        throw new Error('Сервер вернул товары за другой период. Сохранённые данные оставлены на экране.')
+      }
+    }
     if (!resolvedPayload) return { total: 0, products: [] }
     const rows = Array.isArray(resolvedPayload.items) ? resolvedPayload.items : []
-    const products = rows.map(mapLiveRepricerRowToParityProduct)
+    const currentAssignmentRead = readGeneration === assignmentGeneration() && !assignmentsPending()
+    if (currentAssignmentRead) rememberAssignmentRevisions(accessToken, Object.fromEntries(rows
+      .filter(row => !!row.meta.assignmentRevision).map(row => [row.meta.articleId, row.meta.assignmentRevision!])))
+    const products = rows.map((row, index) => ({ ...mapLiveRepricerRowToParityProduct(row, index), assignmentGeneration: readGeneration }))
     if (query.topMode !== false) products.sort(compareParityProductsByDemand)
     const total = Number(resolvedPayload.total ?? rows.length)
     const cache = resolvedPayload.cache
@@ -1102,6 +1302,7 @@ export async function loadLiveRepricerParityProducts(
         }
       : undefined
     const mapped = {
+      superseded: !currentAssignmentRead,
       total,
       products,
       summary: resolvedPayload.summary,
@@ -1114,24 +1315,34 @@ export async function loadLiveRepricerParityProducts(
       dateTo: resolvedPayload.dateTo,
       periodDays: resolvedPayload.periodDays,
     }
-    liveProductsCachedAt = Date.now()
-    liveProductsCachePeriodDays = periodDays
-    liveProductsCacheKey = cacheKey
-    liveProductsCache = mapped
+    if (liveProductsInFlight === request && currentAssignmentRead) {
+      liveProductsCachedAt = Date.now()
+      liveProductsCachePeriodDays = periodDays
+      liveProductsCacheKey = cacheKey
+      liveProductsCache = mapped
+    }
     return mapped
   }).finally(() => {
-    liveProductsInFlight = null
-    liveProductsInFlightKey = ''
+    if (liveProductsRequests.get(cacheKey)?.request === request) liveProductsRequests.delete(cacheKey)
+    if (liveProductsInFlight === request) {
+      liveProductsInFlight = null
+      liveProductsInFlightKey = ''
+    }
   })
+  liveProductsInFlightKey = cacheKey
+  liveProductsInFlight = request
+  liveProductsRequests.set(cacheKey, { request, signal })
 
-  if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
-  return liveProductsInFlight
+  return request
 }
+
+const statsReadCache = createReadCache<LiveRepricerStatsResponse>()
 
 export async function loadLiveRepricerStats(
   accessToken: string,
   signal?: AbortSignal,
   query: LiveRepricerProductsQuery = {},
+  options: { savedOnly?: boolean } = {},
 ) {
   const period = normalizeLiveRepricerPeriod(query)
   const page = Math.max(1, query.page ?? 1)
@@ -1146,35 +1357,55 @@ export async function loadLiveRepricerStats(
   if (query.status && query.status !== 'all') params.set('status', query.status)
   if (query.brand && query.brand !== 'all') params.set('brand', query.brand)
   if (query.manager && query.manager !== 'all') params.set('manager', query.manager)
-  const payload = await apiRequest<LiveRepricerStatsResponse>(`/api/v1/wb-repricer/stats?${params.toString()}`, {
-    headers: authorizationHeaders(accessToken),
-    cache: 'no-store',
-    signal,
-  })
-  if (!payload) return { items: [], total: 0, page, pageSize, periodDays: period.periodDays } satisfies LiveRepricerStatsResponse
-  return payload
+  const read = async (requestSignal?: AbortSignal) => {
+    const path = `/api/v1/wb-repricer/stats?${params.toString()}`
+    const payload = options.savedOnly
+      ? await reportRequest<LiveRepricerStatsResponse>(path, { headers: authorizationHeaders(accessToken), signal: requestSignal, cache: 'no-store' })
+      : await readWithCatalogRecovery<LiveRepricerStatsResponse>(path, accessToken, period.dateFrom, period.dateTo, requestSignal)
+    if (!payload || !Array.isArray(payload.items)) throw new Error('Сервер вернул неполный ответ статистики. Повторите загрузку.')
+    if ((payload.dateFrom && payload.dateFrom.slice(0, 10) !== period.dateFrom.slice(0, 10))
+      || (payload.dateTo && payload.dateTo.slice(0, 10) !== period.dateTo.slice(0, 10))) {
+      throw new Error('Сервер вернул статистику за другой период. Повторите загрузку выбранных дат.')
+    }
+    return payload
+  }
+  return options.savedOnly ? read(signal) : statsReadCache.get(JSON.stringify([accessToken, params.toString()]), read, signal)
 }
 
-export function resetLiveRepricerParityCache() {
-  liveProductsInFlight = null
-  liveProductsInFlightKey = ''
-  liveProductsCachedAt = 0
-  liveProductsCache = null
+export function resetLiveRepricerParityCache(accessToken?: string | null) {
+  statsReadCache.clear()
+  for (const key of liveProductsRequests.keys()) {
+    if (accessToken === undefined || JSON.parse(key)[0] === accessToken) liveProductsRequests.delete(key)
+  }
+  if (accessToken === undefined || JSON.parse(liveProductsInFlightKey || '[]')[0] === accessToken) {
+    liveProductsInFlight = null
+    liveProductsInFlightKey = ''
+  }
+  if (accessToken === undefined || JSON.parse(liveProductsCacheKey || '[]')[0] === accessToken) {
+    liveProductsCachedAt = 0
+    liveProductsCache = null
+    liveProductsCacheKey = ''
+  }
 }
 
-export function resetLiveRepricerStrategiesCache() {
-  liveStrategiesInFlight = null
-  liveStrategiesCachedAt = 0
-  liveStrategiesCache = null
+export function resetLiveRepricerStrategiesCache(accessToken?: string | null) {
+  if (accessToken === undefined || liveStrategiesInFlightKey === accessToken) {
+    liveStrategiesInFlight = null
+    liveStrategiesInFlightKey = ''
+  }
+  if (accessToken === undefined || liveStrategiesCacheKey === accessToken) {
+    liveStrategiesCachedAt = 0
+    liveStrategiesCache = null
+    liveStrategiesCacheKey = ''
+  }
 }
 
 export async function refreshLiveRepricerParityProducts(
   accessToken: string,
   offset: number,
   signal?: AbortSignal,
-  period: number | LiveRepricerPeriodRequest = DEFAULT_REPRICER_PERIOD_DAYS,
 ) {
-  const params = new URLSearchParams({ limit: '100', offset: String(Math.max(0, offset)) })
+  const params = new URLSearchParams({ limit: '1000', offset: String(Math.max(0, offset)) })
   if (offset === 0) params.set('all', 'true')
   const payload = await apiRequest<LiveRepricerSkuListResponse>(`/api/v1/wb-repricer/sku/refresh?${params.toString()}`, {
     method: 'POST',
@@ -1183,15 +1414,14 @@ export async function refreshLiveRepricerParityProducts(
     cache: 'no-store',
   })
   if (!payload) return { total: 0, products: [], cache: undefined }
-  resetLiveRepricerParityCache()
-  const loaded = await loadLiveRepricerParityProducts(accessToken, signal, period, true)
-  return payload.cache ? { ...loaded, cache: payload.cache } : loaded
+  resetLiveRepricerParityCache(accessToken)
+  return payload
 }
 
 export async function loadLiveRepricerSyncStatus(accessToken: string, _signal?: AbortSignal) {
   // The shared poll is not tied to one caller's lifetime, so an individual
   // abort signal no longer applies - callers just drop the resolved value.
-  return sharedStatusRequest('sync-status', 10_000, () =>
+  return sharedStatusRequest(JSON.stringify([accessToken, 'sync-status']), 10_000, () =>
     apiRequest<LiveRepricerSyncStatus>('/api/v1/wb-repricer/sync/status', {
       headers: authorizationHeaders(accessToken),
       cache: 'no-store',
@@ -1250,7 +1480,7 @@ export async function refreshLiveRepricerAllSources(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
@@ -1269,7 +1499,7 @@ export async function startLiveRepricerColdFullSync(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
@@ -1288,34 +1518,43 @@ export async function retryLiveRepricerSyncStep(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
 export async function loadLiveRepricerStrategies(accessToken: string, signal?: AbortSignal, force = false) {
+  signal?.throwIfAborted()
   const now = Date.now()
-  if (!force && liveStrategiesCache && now - liveStrategiesCachedAt <= LIVE_PRODUCTS_CACHE_TTL_MS) {
+  if (!force && liveStrategiesCache && liveStrategiesCacheKey === accessToken && now - liveStrategiesCachedAt <= LIVE_PRODUCTS_CACHE_TTL_MS) {
     return liveStrategiesCache
   }
-  if (!force && liveStrategiesInFlight) {
+  if (!force && liveStrategiesInFlight && liveStrategiesInFlightKey === accessToken && !liveStrategiesInFlightSignal?.aborted) {
     return liveStrategiesInFlight
   }
 
-  liveStrategiesInFlight = apiRequest<LiveRepricerStrategyCatalogResponse>('/api/v1/wb-repricer/strategies/catalog', {
+  const request: Promise<LiveRepricerStrategySnapshotItem[]> = apiRequest<LiveRepricerStrategyCatalogResponse>('/api/v1/wb-repricer/strategies/catalog', {
     headers: authorizationHeaders(accessToken),
     signal,
     cache: 'no-store',
   }).then((payload) => {
     const items = Array.isArray(payload?.items) ? payload.items : []
-    liveStrategiesCache = items
-    liveStrategiesCachedAt = Date.now()
+    if (liveStrategiesInFlight === request) {
+      liveStrategiesCache = items
+      liveStrategiesCachedAt = Date.now()
+      liveStrategiesCacheKey = accessToken
+    }
     return items
   }).finally(() => {
-    liveStrategiesInFlight = null
+    if (liveStrategiesInFlight === request) {
+      liveStrategiesInFlight = null
+      liveStrategiesInFlightKey = ''
+    }
   })
+  liveStrategiesInFlightKey = accessToken
+  liveStrategiesInFlight = request
+  liveStrategiesInFlightSignal = signal
 
-  if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
-  return liveStrategiesInFlight
+  return request
 }
 
 export async function loadLiveRepricerSkuGroups(accessToken: string, signal?: AbortSignal) {
@@ -1348,6 +1587,7 @@ export async function upsertLiveRepricerSkuGroup(
 }
 
 export type LiveRepricerExecutionSkuResult = {
+  priceConfirmed?: boolean
   articleId: string
   status: 'executed' | 'skipped' | 'blocked' | 'failed'
   skipReason?: string | null
@@ -1370,11 +1610,20 @@ export type LiveRepricerExecutionReport = {
 }
 
 export type LiveRepricerStrategyApplyResponse = {
+  assignmentRevisions?: Record<string, string>
+  superseded?: boolean
   strategy: { id: string; name: string; typedStrategyId?: string | null }
   assignedCount: number
   unassignedCount?: number
   items: Array<{ articleId: string; strategyId: string; strategyName: string }>
   execution?: LiveRepricerExecutionReport
+  executionError?: { code: string; message: string }
+}
+
+export function strategyAssignmentExecutionWarning(result: LiveRepricerStrategyApplyResponse) {
+  if (result.executionError) return result.executionError.message
+  const failed = result.execution?.items.filter(item => item.status === 'failed').length ?? 0
+  return failed ? `Назначение стратегии сохранено, но выполнение завершилось ошибкой для ${failed} SKU. Проверьте статус изменения цены.` : null
 }
 
 export type LiveWbPromotion = {
@@ -1470,9 +1719,28 @@ export async function uploadLiveRepricerNomenclatureXlsx(accessToken: string, fi
     cache: 'no-store',
   })
   if (!payload) throw new ApiError('Empty repricer nomenclature upload response', 204)
-  resetLiveRepricerParityCache()
-  resetLiveRepricerStrategiesCache()
+  resetLiveRepricerParityCache(accessToken)
+  resetLiveRepricerStrategiesCache(accessToken)
   return payload
+}
+
+async function reconcileLiveAssignmentRevisions(accessToken: string, articleIds: string[]) {
+  const values: Record<string, string> = {}
+  const remaining = [...new Set(articleIds)]
+  // Error recovery only: bounded, product-scoped reads, no catalog/source load.
+  await Promise.all(Array.from({ length: Math.min(4, remaining.length) }, async () => {
+    for (let articleId = remaining.shift(); articleId; articleId = remaining.shift()) {
+      const result = await apiRequest<{ articleId: string; assignmentRevision: string }>(
+        `/api/v1/wb-repricer/sku/${encodeURIComponent(articleId)}/configuration-state`,
+        { headers: authorizationHeaders(accessToken), cache: 'no-store' },
+      )
+      if (!result || result.articleId !== articleId || !result.assignmentRevision) {
+        throw new ApiError('Не удалось подтвердить актуальную версию стратегии', 502)
+      }
+      values[articleId] = result.assignmentRevision
+    }
+  }))
+  return values
 }
 
 export async function applyLiveRepricerStrategy(
@@ -1483,20 +1751,45 @@ export async function applyLiveRepricerStrategy(
   executeAfterAssign = true,
   config?: Record<string, unknown> | null,
 ) {
-  const payload = await apiRequest<LiveRepricerStrategyApplyResponse>('/api/v1/wb-repricer/strategy-assignments/bulk', {
-    method: 'POST',
-    headers: authorizationHeaders(accessToken),
-    body: JSON.stringify({ articleIds, strategyName, executeAfterAssign, config }),
-    signal,
-    cache: 'no-store',
-  })
-  resetLiveRepricerParityCache()
-  resetLiveRepricerStrategiesCache()
-  return payload
+  resetLiveRepricerParityCache(accessToken)
+  try {
+    return await orderedStrategyAssignment(accessToken, articleIds, async (expectedRevisions) => {
+      signal?.throwIfAborted()
+      const result = await apiRequest<LiveRepricerStrategyApplyResponse>('/api/v1/wb-repricer/strategy-assignments/bulk', {
+        method: 'POST',
+        headers: authorizationHeaders(accessToken),
+        body: JSON.stringify({ articleIds, strategyName, executeAfterAssign, config, expectedRevisions }),
+        cache: 'no-store',
+      })
+      if (!result) throw new ApiError('Empty strategy assignment response', 204)
+      return result
+    }, () => reconcileLiveAssignmentRevisions(accessToken, articleIds))
+  } finally {
+    resetLiveRepricerParityCache(accessToken)
+    resetLiveRepricerStrategiesCache(accessToken)
+  }
 }
 
-export async function loadLiveWbPromotions(accessToken: string, signal?: AbortSignal) {
-  const payload = await apiRequest<LiveWbPromotion[]>('/api/v1/wb-repricer/promotions', {
+export async function updateLiveRepricerSkuAutomation(accessToken: string, articleId: string, automationEnabled: boolean) {
+  resetLiveRepricerParityCache(accessToken)
+  try {
+    return await orderedStrategyAssignment(accessToken, [articleId], async (expected) => {
+      const result = await apiRequest<{ automationEnabled: boolean; status: string; assignmentRevisions?: Record<string, string> }>(
+        `/api/v1/wb-repricer/sku/${encodeURIComponent(articleId)}/automation`, {
+          method: 'PATCH', headers: authorizationHeaders(accessToken), cache: 'no-store',
+          body: JSON.stringify({ automationEnabled, expectedRevision: expected?.[articleId] }),
+        })
+      if (!result || result.automationEnabled !== automationEnabled) throw new ApiError('Режим автоматизации не подтверждён сервером', 502)
+      return result
+    }, () => reconcileLiveAssignmentRevisions(accessToken, [articleId]))
+  } finally {
+    resetLiveRepricerParityCache(accessToken)
+    resetLiveRepricerStrategiesCache(accessToken)
+  }
+}
+
+export async function loadLiveWbPromotions(accessToken: string, signal?: AbortSignal, refresh = false) {
+  const payload = await apiRequest<LiveWbPromotion[]>(`/api/v1/wb-repricer/promotions${refresh ? '?refresh=true' : ''}`, {
     headers: authorizationHeaders(accessToken),
     signal,
     cache: 'no-store',
@@ -1537,11 +1830,12 @@ export async function previewLiveRepricerStrategies(
   articleIds: string[],
   signal?: AbortSignal,
   force = false,
+  assignment?: { strategyId?: string; strategyName?: string; config?: Record<string, unknown> },
 ) {
   return apiRequest<LiveRepricerExecutionReport>('/api/v1/wb-repricer/strategies/preview', {
     method: 'POST',
     headers: authorizationHeaders(accessToken),
-    body: JSON.stringify({ articleIds, scenario: 'complete', force }),
+    body: JSON.stringify({ articleIds, scenario: 'complete', force, ...assignment }),
     signal,
     cache: 'no-store',
   })
@@ -1572,11 +1866,11 @@ export async function executeLiveRepricerStrategies(
     signal,
     cache: 'no-store',
   })
-  resetLiveRepricerParityCache()
+  resetLiveRepricerParityCache(accessToken)
   return payload
 }
 
-type LiveRepricerSourceRefreshResult = {
+export type LiveRepricerSourceRefreshResult = {
   source: string
   count: number
   requestedNmIds?: number
@@ -1602,7 +1896,7 @@ export async function refreshLiveRepricerSource(
   refreshPeriodParams.set('period_days', String(period.periodDays))
   if (period.dateFrom) refreshPeriodParams.set('dateFrom', period.dateFrom)
   if (period.dateTo) refreshPeriodParams.set('dateTo', period.dateTo)
-  const flightKey = `${source}:${periodParams.toString()}`
+  const flightKey = JSON.stringify([accessToken, source, periodParams.toString()])
   const existing = refreshSourceInFlight.get(flightKey)
   if (existing) return existing
 
@@ -1625,7 +1919,7 @@ export async function refreshLiveRepricerSource(
     signal,
     cache: 'no-store',
   }).then((payload) => {
-    resetLiveRepricerParityCache()
+    resetLiveRepricerParityCache(accessToken)
     return payload
   }).finally(() => {
     refreshSourceInFlight.delete(flightKey)

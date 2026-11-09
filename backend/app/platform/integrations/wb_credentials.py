@@ -94,8 +94,27 @@ def _binding_candidate(
         )
     )
     if lock:
-        account_query = account_query.with_for_update()
-        token_query = token_query.with_for_update()
+        # Locate only the owner first, then follow publication's user→account→
+        # token order. Reassignment while waiting must not change that owner.
+        expected_owner = session.scalar(
+            select(LkUserWbTokenRow.user_id).where(
+                LkUserWbTokenRow.token_id == token_id,
+                LkUserWbTokenRow.organization_id == organization_id,
+            )
+        )
+        if expected_owner is None:
+            raise WbCredentialBindingError()
+        user = session.execute(
+            select(LkUserRow.user_id, LkUserRow.organization_id, LkUserRow.is_active)
+            .where(LkUserRow.user_id == expected_owner)
+            .with_for_update(read=True)
+        ).one_or_none()
+        if user is None or user.organization_id != organization_id or not user.is_active:
+            raise WbCredentialBindingError()
+        account_query = account_query.with_for_update().execution_options(populate_existing=True)
+        token_query = token_query.where(
+            LkUserWbTokenRow.user_id == expected_owner,
+        ).with_for_update(of=LkUserWbTokenRow)
     account = session.scalar(account_query)
     secret = (session.scalar(token_query) or "").strip()
     if account is None or not secret:
@@ -196,17 +215,16 @@ def resolve_bound_wb_credential(
     account_query = select(
         MarketplaceAccountRow.marketplace_account_id,
         MarketplaceAccountRow.credential_ref,
+        MarketplaceAccountRow.external_account_id,
     ).where(
         MarketplaceAccountRow.organization_id == organization_id,
         MarketplaceAccountRow.marketplace == "wb",
         MarketplaceAccountRow.status == "connected",
     )
-    if lock:
-        account_query = account_query.with_for_update()
     accounts = session.execute(account_query).all()
     if len(accounts) != 1:
         raise WbCredentialBindingError()
-    account_id, stored_ref = accounts[0]
+    account_id, stored_ref, external_id = accounts[0]
     reference = (stored_ref or "").strip()
     token_id_text = reference.removeprefix(_PREFIX)
     if (
@@ -230,8 +248,20 @@ def resolve_bound_wb_credential(
         )
     )
     if lock:
-        token_query = token_query.with_for_update()
-    secret = (session.scalar(token_query) or "").strip()
+        # The initial account is a locator, not a lock: publication also takes
+        # user SHARE → exact account UPDATE → token UPDATE OF token only.
+        # The shared primitive freezes the actual token owner before waiting.
+        account, secret = _binding_candidate(
+            session, organization_id, int(account_id), token_id, lock=True
+        )
+        if (
+            account.credential_ref != stored_ref
+            or account.external_account_id != external_id
+            or session.execute(account_query).all() != accounts
+        ):
+            raise WbCredentialBindingError()
+    else:
+        secret = (session.scalar(token_query) or "").strip()
     if (
         not secret
         or (

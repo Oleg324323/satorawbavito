@@ -313,6 +313,8 @@ def get_cash_flow_for_period(
     period_to: date,
     requested_by: str | None = None,
 ) -> dict[str, Any]:
+    if not get_settings().one_c_enabled:
+        return {"status": "disabled"}
     return get_or_create_cash_flow_job(
         organization_id=organization_id,
         period_from=period_from,

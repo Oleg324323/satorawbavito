@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>Satorna Avito Orders</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body data-screen="collect">
+    <main class="popup-shell">
+      <header class="popup-header">
+        <div>
+          <p class="eyebrow">Satorna</p>
+          <h1>Заказы Авито</h1>
+        </div>
+        <span id="connectionBadge" class="connection-badge">не настроено</span>
+      </header>
+
+      <nav class="screen-tabs" aria-label="Разделы расширения">
+        <button id="collectTab" class="active" type="button" data-target-screen="collect">Сбор</button>
+        <button id="settingsTab" type="button" data-target-screen="settings">Настройки</button>
+      </nav>
+
+      <section id="collectScreen" class="screen active" data-screen-panel="collect" aria-label="Сбор заказов">
+        <div class="hero-card">
+          <div class="hero-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 6h13" />
+              <path d="M8 12h13" />
+              <path d="M8 18h13" />
+              <path d="M3 6h.01" />
+              <path d="M3 12h.01" />
+              <path d="M3 18h.01" />
+            </svg>
+          </div>
+          <div class="hero-copy">
+            <b>Сбор для листа подбора</b>
+            <span>Откроем Avito, соберём товары, фото, размеры, цвета и отправим в Satorna.</span>
+          </div>
+        </div>
+
+        <button id="collectBtn" class="primary-action" type="button">Собрать всё</button>
+        <p id="orderProgress" class="status-line" role="status" aria-live="polite"></p>
+        <details class="advanced-collection">
+        <summary>Диагностика и отдельные операции</summary>
+        <button id="retryBtn" class="secondary-action" type="button">Повторить недостающее</button>
+        <button id="labelsBtn" class="secondary-action" type="button">Получить недостающие этикетки</button>
+        <button id="listingPhotosBtn" class="secondary-action" type="button">Фото активных объявлений</button>
+        <button id="stopListingPhotosBtn" type="button" hidden>Остановить сбор фото</button>
+        <p id="listingPhotosStatus" role="status">Фото сохраняются один раз. Повторный сбор загружает только недостающие.</p>
+        </details>
+        <p id="collectTokenHint" class="token-hint">Сначала вставьте код подключения Satorna в настройках.</p>
+        <p id="status" class="status-line" role="status" aria-live="polite">Нажмите сбор. Расширение само откроет заказы Avito.</p>
+
+        <div class="run-summary">
+          <div>
+            <span>Последний сбор</span>
+            <b id="lastRunText">ещё не запускался</b>
+          </div>
+          <button id="openSettingsHintBtn" type="button">Проверить настройки</button>
+        </div>
+      </section>
+
+      <section id="settingsScreen" class="screen" data-screen-panel="settings" aria-label="Настройки расширения">
+        <section id="connectionSettings" class="settings-card">
+          <div class="settings-head">
+            <div>
+              <h2>Подключение</h2>
+              <p>Скопируйте код подключения на сайте Satorna в разделе «Авито → Заказы → Настройки расширения».</p>
+            </div>
+          </div>
+          <label>Код подключения Satorna
+            <input id="connectionCode" type="password" maxlength="12288" autocomplete="off" spellcheck="false" placeholder="Вставьте код подключения с сайта Satorna">
+          </label>
+          <button id="connectBtn" class="primary-action" type="button">Подключить</button>
+          <p id="connectionDestination">Адрес Satorna: не настроен</p>
+          <p id="connectionStatus" role="status" aria-live="polite"></p>
+          <div id="destinationConfirmation" hidden>
+            <p>Это незнакомый сервер. Токен будет отправлен только после вашего подтверждения:</p>
+            <b id="confirmationDestination"></b>
+            <button id="confirmDestinationBtn" class="secondary-action" type="button">Подключить к этому адресу</button>
+            <button id="cancelDestinationBtn" type="button">Отмена</button>
+          </div>
+          <details id="legacyConnectionSettings">
+            <summary>Дополнительные настройки</summary>
+            <label>Адрес Satorna
+              <input id="backendUrl" type="url" placeholder="http://127.0.0.1:5177" autocomplete="off">
+            </label>
+            <button id="localServerBtn" type="button">Локальный проект :5177</button>
+            <label>Токен Satorna
+              <input id="accessToken" type="password" autocomplete="off" placeholder="Вставьте токен расширения">
+            </label>
+            <p>Адрес и токен должны быть из одной Satorna. Укажите адрес явно; без него токен не отправляется.</p>
+            <button id="legacyConnectBtn" class="secondary-action" type="button">Сохранить подключение вручную</button>
+          </details>
+        </section>
+
+        <section id="dataSettings" class="settings-card">
+          <div class="settings-head">
+            <div>
+              <h2>Данные заказа</h2>
+              <p>Что добавлять к каждой позиции в листе подбора.</p>
+            </div>
+          </div>
+          <div class="field-grid">
+            <label>
+              Фото товара
+              <select id="photoMode">
+                <option value="none">Не собирать</option>
+                <option value="one">1 фото</option>
+                <option value="two">2 фото</option>
+              </select>
+            </label>
+            <label>
+              Размер
+              <select id="sizeMode">
+                <option value="none">Не собирать</option>
+                <option value="description">Из описания</option>
+                <option value="chat_ai">Размер из чата с покупателем</option>
+              </select>
+            </label>
+          </div>
+          <label class="switch-row">
+            <input id="colorFromDescription" type="checkbox">
+            <span><b>Цвет из описания</b><small>Берём только явное поле цвета.</small></span>
+          </label>
+          <label class="switch-row">
+            <input id="articleFromDescription" type="checkbox">
+            <span><b>Артикул из описания</b><small>Полезно для печати и стикеров.</small></span>
+          </label>
+          <button id="saveBtn" class="secondary-action" type="button">Сохранить настройки</button>
+        </section>
+
+        <section id="diagnosticsSettings" class="settings-card diagnostics-card">
+          <div class="settings-head">
+            <div>
+              <h2>Диагностика</h2>
+              <p>Технические события сборщика, если нужно разобраться в проблеме.</p>
+            </div>
+            <button id="clearLogsBtn" type="button">Очистить</button>
+          </div>
+          <div id="logsList" class="logs-list">Логов пока нет</div>
+        </section>
+      </section>
+    </main>
+    <script src="connection.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

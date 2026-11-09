@@ -99,6 +99,10 @@ def test_ingestion_token_model_is_one_way_and_account_owned() -> None:
         "revoked_at",
         "revocation_reason_code",
         "last_used_at",
+        "binding_schema_version",
+        "binding_external_account_id",
+        "binding_credential_ref",
+        "binding_version",
     }
     assert "token" not in table.c
     assert "bearer" not in table.c

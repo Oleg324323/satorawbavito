@@ -6,11 +6,16 @@ from app.infra.celery_app import get_celery_app
 from app.reviews.schemas import ReviewFeedbackSyncResponse, ReviewSyncSettingsView, ReviewSyncStatusView
 
 
-def test_celery_beat_includes_reviews_sync_feedbacks():
-    celery_app = get_celery_app()
+def test_celery_beat_includes_reviews_sync_feedbacks(monkeypatch):
+    monkeypatch.setenv("VELLA_REPRICER_SCHEDULER_ENABLED", "true")
+    get_celery_app.cache_clear()
+    try:
+        celery_app = get_celery_app()
 
-    assert "reviews-sync-feedbacks" in celery_app.conf.beat_schedule
-    assert celery_app.conf.beat_schedule["reviews-sync-feedbacks"]["task"] == "reviews.sync_all_orgs"
+        assert "reviews-sync-feedbacks" in celery_app.conf.beat_schedule
+        assert celery_app.conf.beat_schedule["reviews-sync-feedbacks"]["task"] == "reviews.sync_all_orgs"
+    finally:
+        get_celery_app.cache_clear()
 
 
 def test_reviews_sync_for_org_skips_when_interval_not_due(monkeypatch):

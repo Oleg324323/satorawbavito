@@ -339,17 +339,16 @@ export async function createSettingsTeamUser(
 }
 
 export async function upsertCurrentUserWbToken(accessToken: string, wbToken: string) {
+  if (import.meta.env.VITE_WB_LIVE_ENABLED === 'true') throw new Error('Используйте подключение выбранного аккаунта WB')
   return apiData<UserWbTokenView>('/api/v1/cabinet/wb-token', {
-    method: 'PUT',
-    headers: authorizationHeaders(accessToken),
-    body: JSON.stringify({ wbToken }),
+    method: 'PUT', headers: authorizationHeaders(accessToken), body: JSON.stringify({ wbToken }),
   })
 }
 
 export async function deleteCurrentUserWbToken(accessToken: string) {
+  if (import.meta.env.VITE_WB_LIVE_ENABLED === 'true') throw new Error('Используйте подключение выбранного аккаунта WB')
   return apiData<UserWbTokenView>('/api/v1/cabinet/wb-token', {
-    method: 'DELETE',
-    headers: authorizationHeaders(accessToken),
+    method: 'DELETE', headers: authorizationHeaders(accessToken),
   })
 }
 

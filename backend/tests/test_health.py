@@ -12,6 +12,31 @@ def client() -> TestClient:
     return TestClient(main_module.create_app())
 
 
+def test_database_readiness_supports_local_sqlite(monkeypatch):
+    from sqlalchemy import create_engine
+    engine = create_engine('sqlite+pysqlite:///:memory:')
+    monkeypatch.setattr(health, 'get_engine', lambda: engine)
+    try:
+        health._database()
+    finally:
+        engine.dispose()
+
+
+def test_postgres_readiness_keeps_transaction_local_timeout(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    statements = []
+    def execute(statement):
+        statements.append(str(statement))
+        return SimpleNamespace(scalar_one=lambda: 1)
+    @contextmanager
+    def begin():
+        yield SimpleNamespace(dialect=SimpleNamespace(name='postgresql'), execute=execute)
+    monkeypatch.setattr(health, 'get_engine', lambda: SimpleNamespace(begin=begin))
+    health._database()
+    assert statements == ['SET LOCAL statement_timeout = 1000', 'SELECT 1']
+
+
 def test_liveness_does_not_call_dependency_checks(monkeypatch):
     def fail() -> None:
         raise RuntimeError("dependencies are down")
@@ -56,6 +81,8 @@ def test_legacy_health_contract_is_unchanged():
         "status": "ok",
         "environment": "local",
         "contractVersion": "0.19.05-runtime-boundary",
+        "wbApiMode": "fake",
+        "wbLiveSyncEnabled": False,
         "realPriceApplyEnabled": False,
         "repricerLocalPriceApplyEnabled": True,
         "repricerPreserveLocalPriceOverrides": True,
@@ -179,6 +206,9 @@ def test_database_probe_uses_existing_engine_with_statement_timeout(monkeypatch)
             return 1
 
     class Connection:
+        class dialect:
+            name = "postgresql"
+
         def execute(self, statement):
             statements.append(str(statement))
             return Result()
@@ -240,3 +270,25 @@ def test_redis_factory_can_target_the_celery_redis_urls(monkeypatch):
 
     assert client is created_client
     assert calls[0][0] == "redis://broker:6379/0"
+
+
+@pytest.mark.parametrize("database", [0, 3])
+def test_celery_unix_readiness_uses_actual_socket_and_selected_database(database):
+    from redis.connection import UnixDomainSocketConnection
+
+    redis_module.get_redis_client.cache_clear()
+    try:
+        target = f"redis+socket:///run/redis/redis-server.sock?virtual_host={database}"
+        connection = redis_module.get_redis_client(target).connection_pool
+        assert connection.connection_class is UnixDomainSocketConnection
+        assert connection.connection_kwargs["path"] == "/run/redis/redis-server.sock"
+        assert connection.connection_kwargs["db"] == database
+        assert "virtual_host" not in connection.connection_kwargs
+    finally:
+        redis_module.get_redis_client.cache_clear()
+
+
+@pytest.mark.parametrize("query", ["virtual_host=0&virtual_host=3", "virtual_host=0&db=3"])
+def test_celery_unix_readiness_rejects_ambiguous_database(query):
+    with pytest.raises(ValueError, match="REDIS_SOCKET_DATABASE_AMBIGUOUS"):
+        redis_module.get_redis_client(f"redis+socket:///run/redis/redis-server.sock?{query}")

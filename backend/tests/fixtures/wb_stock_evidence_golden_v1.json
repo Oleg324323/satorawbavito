@@ -1,0 +1,210 @@
+{
+  "schema": "wb-stock-evidence-golden/v1",
+  "max_bytes": 8192,
+  "vectors": [
+    {
+      "kind": "row",
+      "name": "presence",
+      "inputs": {
+        "nm_id": 10,
+        "chrt_id": null,
+        "warehouse_id": 20,
+        "quantity": {
+          "presence": "missing",
+          "value": null
+        },
+        "in_way_to_client": {
+          "presence": "null",
+          "value": null
+        },
+        "in_way_from_client": {
+          "presence": "value",
+          "value": 0
+        }
+      },
+      "canonical_ascii": "[\"wb-stock-evidence-row/v1\",[\"missing\",null],[\"null\",null],[\"value\",0]]",
+      "byte_count": 71,
+      "sha256": "f4ea6867f4fccadb8abc16a70810cf9cd6c505a09624cd9cfa3cdb972c277159"
+    },
+    {
+      "kind": "row",
+      "name": "bigint",
+      "inputs": {
+        "nm_id": 9223372036854775807,
+        "chrt_id": 9223372036854775807,
+        "warehouse_id": 20,
+        "quantity": {
+          "presence": "value",
+          "value": 9223372036854775807
+        },
+        "in_way_to_client": {
+          "presence": "null",
+          "value": null
+        },
+        "in_way_from_client": {
+          "presence": "value",
+          "value": 0
+        }
+      },
+      "canonical_ascii": "[\"wb-stock-evidence-row/v1\",[\"value\",9223372036854775807],[\"null\",null],[\"value\",0]]",
+      "byte_count": 84,
+      "sha256": "819c505db61829978ad518521fdf024a9cef2d70181bfe55a3848211f1732373"
+    },
+    {
+      "kind": "row",
+      "name": "all_zero",
+      "inputs": {
+        "nm_id": 10,
+        "chrt_id": null,
+        "warehouse_id": 20,
+        "quantity": {
+          "presence": "value",
+          "value": 0
+        },
+        "in_way_to_client": {
+          "presence": "value",
+          "value": 0
+        },
+        "in_way_from_client": {
+          "presence": "value",
+          "value": 0
+        }
+      },
+      "canonical_ascii": "[\"wb-stock-evidence-row/v1\",[\"value\",0],[\"value\",0],[\"value\",0]]",
+      "byte_count": 64,
+      "sha256": "aa51b376d372c5b6c012c6a15ce675c20d842ab242a4b9fe86d99a8ad443c801"
+    },
+    {
+      "kind": "diff",
+      "name": "empty",
+      "inputs": [],
+      "canonical_ascii": "[\"wb-stock-evidence-diff/v1\",[]]",
+      "byte_count": 32,
+      "sha256": "696ae55f24d671ba6c46bfc479c7f6c7bfd3f83e7202401891d5ddc9e4f43d8e"
+    },
+    {
+      "kind": "diff",
+      "name": "lexical",
+      "inputs": [
+        {
+          "nm_id": 2,
+          "chrt_id": null,
+          "warehouse_id": 20,
+          "change_kind": "changed",
+          "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "nm_id": 10,
+          "chrt_id": null,
+          "warehouse_id": 20,
+          "change_kind": "changed",
+          "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "canonical_ascii": "[\"wb-stock-evidence-diff/v1\",[[[\"nmId\",\"10\",\"chrtId\",\"null\",\"warehouseId\",\"20\"],\"changed\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],[[\"nmId\",\"2\",\"chrtId\",\"null\",\"warehouseId\",\"20\"],\"changed\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]]]",
+      "byte_count": 420,
+      "sha256": "a5a05ae535279dee22a00464d19519aca5eb72c6ddcd8c1f2eb6b8f114dc4f7f"
+    },
+    {
+      "kind": "diff",
+      "name": "all_changes",
+      "inputs": [
+        {
+          "nm_id": 10,
+          "chrt_id": null,
+          "warehouse_id": 20,
+          "change_kind": "changed",
+          "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "nm_id": 2,
+          "chrt_id": null,
+          "warehouse_id": 20,
+          "change_kind": "added",
+          "before_checksum": null,
+          "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "nm_id": 3,
+          "chrt_id": null,
+          "warehouse_id": 20,
+          "change_kind": "removed",
+          "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "after_checksum": null
+        }
+      ],
+      "canonical_ascii": "[\"wb-stock-evidence-diff/v1\",[[[\"nmId\",\"10\",\"chrtId\",\"null\",\"warehouseId\",\"20\"],\"changed\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],[[\"nmId\",\"2\",\"chrtId\",\"null\",\"warehouseId\",\"20\"],\"added\",null,\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],[[\"nmId\",\"3\",\"chrtId\",\"null\",\"warehouseId\",\"20\"],\"removed\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",null]]]",
+      "byte_count": 488,
+      "sha256": "874da4647880427411c66f317ab0fc74ebef2e5680096a1d33063bd74ecab69d"
+    },
+    {
+      "kind": "proposal",
+      "name": "basic",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "evidence_id": "12345678-1234-4234-8234-123456789abc",
+        "before_run_id": "12345678-1234-4234-8234-123456789abd",
+        "before_manifest_checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "after_run_id": "12345678-1234-4234-8234-123456789abe",
+        "after_manifest_checksum": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "request_checksum": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "business_date": "2026-09-09",
+        "before_daily_revision": 1,
+        "proposer_membership_id": 77,
+        "proposal_command_id": "12345678-1234-4234-8234-123456789abf",
+        "reviewed_evidence_reference": "synthetic:review-1",
+        "diffs": [
+          {
+            "nm_id": 10,
+            "chrt_id": null,
+            "warehouse_id": 20,
+            "change_kind": "changed",
+            "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "evidence_document_hex": "d0a1d0b8d0bdd182d0b5d182d0b8d187d0b5d181d0bad0bed0b520d0bed0b1d18ad18fd181d0bdd0b5d0bdd0b8d0b5"
+      },
+      "canonical_ascii": "[\"wb-stock-evidence-proposal/v1\",7,42,\"12345678-1234-4234-8234-123456789abc\",\"12345678-1234-4234-8234-123456789abd\",\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"12345678-1234-4234-8234-123456789abe\",\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"wb_warehouse_v1\",\"wb-warehouse-stocks/v1\",\"nmId/chrtId?/warehouseId\",\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"2026-09-09\",1,77,\"12345678-1234-4234-8234-123456789abf\",\"34c86777711e943c46e8fc2067f1f2f36baf03d36a49fe1dc4d31589d5993c88\",\"synthetic:review-1\",\"eb2a0a65ee1cb74af0c4e2486fe84fca718f2216adfe1b52041122eb84b1ab9d\",0,0,1]",
+      "byte_count": 644,
+      "sha256": "883dc3b64b4a184ff47eb7152e3da1b196783d88c6480dfdb55e25194033ccc8"
+    },
+    {
+      "kind": "proposal",
+      "name": "unicode",
+      "inputs": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "evidence_id": "12345678-1234-4234-8234-123456789abc",
+        "before_run_id": "12345678-1234-4234-8234-123456789abd",
+        "before_manifest_checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "after_run_id": "12345678-1234-4234-8234-123456789abe",
+        "after_manifest_checksum": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "request_checksum": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "business_date": "2026-09-09",
+        "before_daily_revision": 1,
+        "proposer_membership_id": 77,
+        "proposal_command_id": "12345678-1234-4234-8234-123456789abf",
+        "reviewed_evidence_reference": "synthetic:\u0435\u0308/\u0451/\ud83d\ude00/\"\\",
+        "diffs": [
+          {
+            "nm_id": 10,
+            "chrt_id": null,
+            "warehouse_id": 20,
+            "change_kind": "changed",
+            "before_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "after_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "evidence_document_hex": "d09ed0b1d18ad18fd181d0bdd0b5d0bdd0b8d0b50af09f9880"
+      },
+      "canonical_ascii": "[\"wb-stock-evidence-proposal/v1\",7,42,\"12345678-1234-4234-8234-123456789abc\",\"12345678-1234-4234-8234-123456789abd\",\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"12345678-1234-4234-8234-123456789abe\",\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"wb_warehouse_v1\",\"wb-warehouse-stocks/v1\",\"nmId/chrtId?/warehouseId\",\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"2026-09-09\",1,77,\"12345678-1234-4234-8234-123456789abf\",\"8552000d825fe1223c9570fbbc805cacdc15b5a7d0fd1d295e03f47aa5e8d707\",\"synthetic:\\u0435\\u0308/\\u0451/\\ud83d\\ude00/\\\"\\\\\",\"eb2a0a65ee1cb74af0c4e2486fe84fca718f2216adfe1b52041122eb84b1ab9d\",0,0,1]",
+      "byte_count": 673,
+      "sha256": "3296b49d682f7571221d7cf1d3ed43c5a984c8898d49056497729cbc14a1e942"
+    }
+  ]
+}

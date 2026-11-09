@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.avito.auth import resolve_user_avito_access_token
+from app.avito.auth import resolve_user_avito_access_token, scoped_avito_cache_key
 from app.avito.listings import AvitoListingsFetchRequest, AvitoListingRow, build_avito_listings_client
 from app.cabinet.store import get_organization_avito_credentials_secret, get_user_avito_credentials_secret
 from app.config import get_settings
@@ -86,7 +86,6 @@ def _response_payload(
     error: Any | None = None,
 ) -> dict[str, Any]:
     sorted_rows = sorted(rows, key=lambda item: (_metric(item.views), _metric(item.contacts), _metric(item.favorites)), reverse=True)
-    settings = get_settings()
     return {
         "status": status,
         "period": {"dateFrom": start.isoformat(), "dateTo": end.isoformat(), "days": days},
@@ -133,11 +132,6 @@ def get_avito_listings(
     if not has_permission(actor, "cabinet:read"):
         raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
     start, end, days = _date_range(date_from, date_to, period_days)
-    source_key = _cache_key(start, end, account_id)
-    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
-    if not force_refresh and isinstance(cached, dict) and cached.get("rows"):
-        return _cache_hit_payload(cached)
-
     credentials = get_user_avito_credentials_secret(actor.user_id) or get_organization_avito_credentials_secret(actor.organization_id)
     if credentials is None:
         raise HTTPException(status_code=409, detail="AVITO_CREDENTIALS_REQUIRED")
@@ -152,6 +146,11 @@ def get_avito_listings(
         )
     except Exception as exc:
         raise HTTPException(status_code=409, detail="AVITO_OAUTH_FAILED") from exc
+
+    source_key = scoped_avito_cache_key(_cache_key(start, end, account_id), access_token)
+    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
+    if not force_refresh and isinstance(cached, dict) and cached.get("rows"):
+        return _cache_hit_payload(cached)
 
     client = build_avito_listings_client(
         access_token=access_token,

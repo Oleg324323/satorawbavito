@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "https://api.elfprint-system.ru:8443/api/$1",
+      "headers": { "Cache-Control": "no-store" }
+    },
+    {
+      "src": "/health/(.*)",
+      "dest": "https://api.elfprint-system.ru:8443/health/$1",
+      "headers": { "Cache-Control": "no-store" }
+    },
+    {
+      "src": "/(.*)",
+      "status": 307,
+      "headers": {
+        "Location": "https://app.comcookie.store/$1",
+        "Cache-Control": "no-store"
+      }
+    }
+  ]
+}

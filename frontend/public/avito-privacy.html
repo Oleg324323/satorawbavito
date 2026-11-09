@@ -17,6 +17,8 @@
     body { margin: 0; }
     a { color: #1d4ed8; }
     .topbar { border-bottom: 1px solid #e5e7eb; background: #fff; }
+    .embedded .topbar { display: none; }
+    .embedded main { padding-top: 24px; }
     .topbar-inner { display: flex; max-width: 860px; margin: 0 auto; padding: 18px 24px; }
     .brand { display: inline-flex; align-items: center; gap: 10px; color: #0f172a; font-weight: 800; text-decoration: none; }
     .brand img { width: 28px; height: 28px; }
@@ -41,6 +43,7 @@
       dd + dt { margin-top: 10px; }
     }
   </style>
+  <script>if (new URLSearchParams(location.search).has('embedded')) document.documentElement.classList.add('embedded')</script>
 </head>
 <body>
   <div class="topbar">

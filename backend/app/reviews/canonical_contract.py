@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -124,7 +124,7 @@ class NormalizedReviewFact:
         object.__setattr__(
             self,
             "source_run_id",
-            _nonempty_string(self.source_run_id, "source_run_id"),
+            validate_review_source_run_id(self.source_run_id),
         )
         object.__setattr__(
             self,
@@ -224,7 +224,7 @@ def normalize_wb_review(
             "source_status",
         ),
         observed_at=_timestamp(observed_at, "observed_at"),
-        source_run_id=_nonempty_string(source_run_id, "source_run_id"),
+        source_run_id=validate_review_source_run_id(source_run_id),
         source_schema_version=_nonempty_string(
             _read(
                 payload,
@@ -291,7 +291,7 @@ def normalize_avito_review(
             "source_status",
         ),
         observed_at=_timestamp(observed_at, "observed_at"),
-        source_run_id=_nonempty_string(source_run_id, "source_run_id"),
+        source_run_id=validate_review_source_run_id(source_run_id),
         source_schema_version=_nonempty_string(
             _read(
                 payload,
@@ -368,7 +368,7 @@ def _checksum_fact(
         answered=_read(value, "answered"),
         can_answer=_read(value, "can_answer", default=None),
         source_status=_read(value, "source_status", default=None),
-        observed_at=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        observed_at=datetime(1970, 1, 1, tzinfo=UTC),
         source_run_id="checksum-only",
         source_schema_version=_read(value, "source_schema_version"),
         normalization_version=_read(value, "normalization_version"),
@@ -387,7 +387,7 @@ def _read(payload: object, *names: str, default: Any = _NO_DEFAULT) -> Any:
                 return getattr(payload, name)
             except AttributeError:
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001 - DTO properties may raise arbitrary errors; never expose them.
                 raise ReviewNormalizationError("invalid_payload", "payload") from None
     if default is not _NO_DEFAULT:
         return default
@@ -419,7 +419,7 @@ def _external_id(
 ) -> str:
     if raw is _MISSING or raw is None or raw == "":
         raise ReviewNormalizationError(missing_code, field)
-    if isinstance(raw, bool) or isinstance(raw, float):
+    if isinstance(raw, (bool, float)):
         raise ReviewNormalizationError(invalid_code, field)
     if isinstance(raw, int):
         if raw <= 0:
@@ -436,7 +436,26 @@ def _external_id(
         )
     ):
         raise ReviewNormalizationError(invalid_code, field)
+    _require_unicode_scalars(raw, invalid_code, field)
     return raw
+
+
+def _require_unicode_scalars(raw: str, code: str, field: str) -> None:
+    try:
+        raw.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise ReviewNormalizationError(code, field) from None
+
+
+def validate_review_source_run_id(raw: Any) -> str:
+    """review-run-key-v1: exact nonempty Unicode scalar text, including NUL.
+
+    Run keys are not checksum content. Validate here rather than relying on a
+    later checksum encoder or database driver to reject Python surrogate strings.
+    """
+    value = _nonempty_string(raw, "source_run_id")
+    _require_unicode_scalars(value, "invalid_string", "source_run_id")
+    return value
 
 
 def _optional_external_id(raw: Any, field: str) -> str | None:
@@ -463,12 +482,12 @@ def _timestamp(raw: Any, field: str) -> datetime:
         raise ReviewNormalizationError("invalid_timestamp", field)
     try:
         offset = value.utcoffset()
-    except Exception:
+    except Exception:  # noqa: BLE001 - custom tzinfo must not leak its exception through normalization.
         raise ReviewNormalizationError("invalid_timestamp", field) from None
     if value.tzinfo is None or offset is None:
         raise ReviewNormalizationError("invalid_timestamp", field)
     try:
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
     except (OverflowError, ValueError):
         raise ReviewNormalizationError("invalid_timestamp", field) from None
 
@@ -534,4 +553,4 @@ def _avito_answered(payload: Mapping[str, Any] | object) -> bool:
 def _rfc3339_z(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")

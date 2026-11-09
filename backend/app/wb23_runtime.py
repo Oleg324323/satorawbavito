@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.contracts.envelopes import UtcDateTime
 from app.wb_api.client import WbApiClient, WbApiRequest
 from app.wb_api.price_units import wb_goods_price_to_kopecks
+from app.repricer_price_safety import price_baseline, utc_timestamp
 
 
 SourceStatus = Literal["fresh", "partial", "stale", "blocked"]
@@ -50,6 +51,7 @@ class PriceMetricsSnapshot(BaseModel):
     sourceStatus: SourceStatus
     blockerIds: list[str]
     metrics: list[PriceMetricValue]
+    priceBaseline: dict[str, Any] | None = None
 
 
 class MarginPreviewRequest(BaseModel):
@@ -209,7 +211,7 @@ def _optional_price_kopecks(value: Any) -> int | None:
     if number is None:
         return None
     kopecks = wb_goods_price_to_kopecks(number)
-    return kopecks if kopecks > 0 else None
+    return kopecks if kopecks is not None and kopecks > 0 else None
 
 
 def _first_price_kopecks(*values: Any) -> int | None:
@@ -305,12 +307,14 @@ def _price_metrics_from_payload(
     orders_client: WbApiClient | None = None,
 ) -> PriceMetricsSnapshot:
     item = _extract_price_item(payload) or {}
+    if requested_nm_id is not None and item.get("nmID") != requested_nm_id:
+        item = {}
     size = _extract_first_size(item) or {}
     nm_id = requested_nm_id or (item.get("nmID") if isinstance(item.get("nmID"), int) else None)
 
     before_spp_raw = _coerce_number(size.get("discountedPrice"))
     before_spp = wb_goods_price_to_kopecks(before_spp_raw) if before_spp_raw is not None else None
-    before_spp = before_spp if before_spp > 0 else None
+    before_spp = before_spp if before_spp is not None and before_spp > 0 else None
 
     after_spp = _first_price_kopecks(
         size.get("buyerPriceNoWallet"),
@@ -398,21 +402,35 @@ def _price_metrics_from_payload(
         sourceStatus=overall_status,
         blockerIds=blocker_ids,
         metrics=[metric_before, metric_after, metric_spp],
+        priceBaseline=price_baseline(item, fetched_at.isoformat()),
     )
 
 
 def build_price_metrics_snapshot_from_row(article_id: str, row: dict[str, Any]) -> PriceMetricsSnapshot:
-    fetched_at = datetime.now(timezone.utc)
     meta = row.get("meta") or {}
     analytics = row.get("analytics") or {}
     nm_id = meta.get("nmId") if isinstance(meta.get("nmId"), int) else None
-    before_spp = int(meta.get("currentPriceKopecks") or analytics.get("sellerDiscountedPriceKopecks") or analytics.get("basePriceKopecks") or 0) or None
-    after_spp = int(analytics.get("buyerPriceNoWalletKopecks") or analytics.get("avgPriceWithSppKopecks") or 0) or None
+    before_spp = int(meta.get("currentPriceKopecks") or analytics.get("sellerDiscountedPriceKopecks") or 0) or None
+    after_spp = int(analytics.get("buyerPriceNoWalletKopecks") or 0) or None
     spp_pct = analytics.get("sppPct")
     if isinstance(spp_pct, (int, float)):
         spp_pct = float(spp_pct)
     else:
         spp_pct = None
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    observed = utc_timestamp(meta.get("priceObservedAt") or (meta.get("wbPriceBaseline") or {}).get("observedAt"))
+    buyer_observed = utc_timestamp(analytics.get("buyerPriceObservedAt"))
+    buyer_expiry = utc_timestamp(analytics.get("buyerPriceExpiresAt"))
+    now = datetime.now(timezone.utc)
+
+    def row_freshness(metric_id: str, stamp: datetime | None, expiry: datetime | None = None) -> MetricFreshness:
+        result = _freshness(metric_id, stamp or epoch)
+        if expiry is not None and expiry < result.staleAfter:
+            result.staleAfter = expiry
+        result.isStale = stamp is None or stamp > now + timedelta(seconds=30) or now >= result.staleAfter
+        if result.isStale:
+            result.confidence = "blocked"
+        return result
 
     metric_before = PriceMetricValue(
         metricId="current_price_before_spp",
@@ -422,7 +440,7 @@ def build_price_metrics_snapshot_from_row(article_id: str, row: dict[str, Any]) 
         sourceStatus="fresh" if before_spp is not None else "blocked",
         blockerIds=[] if before_spp is not None else ["WB-23"],
         fieldSource="repricer_cache.currentPriceKopecks",
-        freshness=_freshness("current_price_before_spp", fetched_at),
+        freshness=row_freshness("current_price_before_spp", observed),
         warnings=[],
     )
     metric_after = PriceMetricValue(
@@ -432,8 +450,8 @@ def build_price_metrics_snapshot_from_row(article_id: str, row: dict[str, Any]) 
         unit="kopecks",
         sourceStatus="fresh" if after_spp is not None else "blocked",
         blockerIds=[] if after_spp is not None else ["WB-23"],
-        fieldSource="repricer_cache.avgPriceWithSppKopecks",
-        freshness=_freshness("current_price_after_spp", fetched_at),
+        fieldSource="repricer_cache.buyerPriceNoWalletKopecks",
+        freshness=row_freshness("current_price_after_spp", buyer_observed, buyer_expiry),
         warnings=[],
     )
     metric_spp = PriceMetricValue(
@@ -444,12 +462,20 @@ def build_price_metrics_snapshot_from_row(article_id: str, row: dict[str, Any]) 
         sourceStatus="fresh" if spp_pct is not None else "blocked",
         blockerIds=[] if spp_pct is not None else ["WB-23"],
         fieldSource="repricer_cache.sppPct",
-        freshness=_freshness("spp_pct", fetched_at),
+        freshness=row_freshness("spp_pct", buyer_observed, buyer_expiry),
         warnings=[],
     )
     statuses = [metric_before.sourceStatus, metric_after.sourceStatus, metric_spp.sourceStatus]
+    for metric in (metric_before, metric_after, metric_spp):
+        if metric.value is not None and metric.freshness.isStale:
+            metric.sourceStatus = "stale"
+            metric.blockerIds = ["WB-23"]
+            metric.warnings = ["Source observation is missing, expired or in the future"]
+    statuses = [metric_before.sourceStatus, metric_after.sourceStatus, metric_spp.sourceStatus]
     if "blocked" in statuses:
         overall_status: SourceStatus = "blocked"
+    elif "stale" in statuses:
+        overall_status = "stale"
     elif "partial" in statuses:
         overall_status = "partial"
     else:
@@ -461,6 +487,7 @@ def build_price_metrics_snapshot_from_row(article_id: str, row: dict[str, Any]) 
         sourceStatus=overall_status,
         blockerIds=blocker_ids,
         metrics=[metric_before, metric_after, metric_spp],
+        priceBaseline=meta.get("wbPriceBaseline"),
     )
 
 

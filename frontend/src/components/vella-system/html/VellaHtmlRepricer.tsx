@@ -130,8 +130,6 @@ export function VellaHtmlRepricer() {
         <div className="nav-item"><Icon name="□" /><span className="nav-label">Чаты</span><span className="nav-badge alert">3</span></div>
         <div className="nav-item"><Icon name="▯" /><span className="nav-label">Объявления</span><span className="nav-badge">214</span></div>
         <div className="nav-item"><Icon name="▱" /><span className="nav-label">Кошельки</span><span className="nav-badge soon">скоро</span></div>
-        <div className="nav-section">Производство</div>
-        <div className="nav-item"><Icon name="◇" /><span className="nav-label">КИЗ</span><span className="nav-badge warn">142</span></div>
         <div className="nav-section">Система</div>
         <div className="nav-item"><Icon name="♧" /><span className="nav-label">Уведомления</span><span className="nav-badge alert">7</span></div>
         <div className="nav-item"><Icon name="⚙" /><span className="nav-label">Настройки</span></div>

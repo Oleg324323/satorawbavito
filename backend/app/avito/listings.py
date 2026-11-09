@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from math import ceil
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -62,6 +64,8 @@ class AvitoListingsError(BaseModel):
     message: str = Field(min_length=1)
     retryable: bool
     blockerIds: list[str] = Field(default_factory=list)
+    retryAfterSeconds: int | None = None
+    retryAfterUntil: str | None = None
 
 
 class AvitoListingsFetchResult(BaseModel):
@@ -88,9 +92,13 @@ def _normalize_status(value: Any) -> AvitoListingStatus:
 
 
 class LiveAvitoListingsClient(LiveAvitoStatsClient):
+    # Photos are imported once by the extension and served from the database.
+    # Loading repricer statistics must never scrape each public listing page.
+    _PUBLIC_IMAGE_FETCH_LIMIT = 0
     """Read-only Avito listings registry with period item analytics."""
 
     def fetch_listings(self, request: AvitoListingsFetchRequest) -> AvitoListingsFetchResult:
+        self.analytics_error: AvitoListingsError | None = None
         try:
             with self._http_client() as client:
                 accounts = self._accounts(client, request.accountIds)
@@ -107,7 +115,7 @@ class LiveAvitoListingsClient(LiveAvitoStatsClient):
                 status="blocked",
                 error=self._fetch_error(exc, fallback_code="avito_listings_failed", fallback_blocker="AVITO_LISTINGS"),
             )
-        return AvitoListingsFetchResult(status="synced", accounts=accounts, rows=rows, diagnostics=diagnostics)
+        return AvitoListingsFetchResult(status="partial" if self.analytics_error else "synced", accounts=accounts, rows=rows, diagnostics=diagnostics, error=self.analytics_error)
 
     def fetch_listing_details(self, request: AvitoListingDetailsFetchRequest) -> AvitoListingsFetchResult:
         item_ids = list(dict.fromkeys(str(item_id).strip() for item_id in request.itemIds if str(item_id).strip()))
@@ -147,7 +155,19 @@ class LiveAvitoListingsClient(LiveAvitoStatsClient):
             if code_int == 403:
                 return AvitoListingsError(code="forbidden_scope", message="Avito HTTP 403", retryable=False, blockerIds=["AVITO_SCOPE"])
             if code_int == 429:
-                return AvitoListingsError(code="rate_limited", message="Avito HTTP 429", retryable=True, blockerIds=["AVITO_RATE_LIMIT"])
+                retry = str(getattr(response, "headers", {}).get("Retry-After") or "")
+                seconds = None
+                try:
+                    seconds = max(0, ceil(float(retry)))
+                except (ValueError, OverflowError):
+                    try:
+                        until = parsedate_to_datetime(retry)
+                        if until.tzinfo is not None:
+                            seconds = max(0, ceil((until - datetime.now(timezone.utc)).total_seconds()))
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                return AvitoListingsError(code="rate_limited", message="Avito HTTP 429", retryable=True,
+                                          blockerIds=["AVITO_RATE_LIMIT"], retryAfterSeconds=seconds)
             if code_int >= 500:
                 return AvitoListingsError(code="avito_server_error", message=f"Avito HTTP {code_int}", retryable=True, blockerIds=[fallback_blocker])
             if code_int:
@@ -168,7 +188,13 @@ class LiveAvitoListingsClient(LiveAvitoStatsClient):
             account.itemCount = len(account_items)
             account.activeItemCount = sum(1 for item in account_items if str(item.get("status") or "active") == "active")
             account.inactiveItemCount = max(0, account.itemCount - account.activeItemCount)
-            stats_by_item = self._v2_item_analytics_for_account(client, request, account.accountId)
+            try:
+                stats_by_item = self._v2_item_analytics_for_account(client, request, account.accountId)
+            except Exception as exc:
+                # Inventory is valid even when optional selected-period
+                # analytics fail. Keep metrics unavailable, not zero.
+                self.analytics_error = self._fetch_error(exc, fallback_code="avito_analytics_failed", fallback_blocker="AVITO_STATS")
+                stats_by_item = {}
             for item in account_items:
                 stats = stats_by_item.get(item["itemId"], {})
                 account_name = by_account.get(item["accountId"], account).accountName

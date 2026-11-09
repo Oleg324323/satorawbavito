@@ -66,10 +66,16 @@ class PnlFieldMapping(BaseModel):
 class ManualCost(BaseModel):
     costId: str = Field(min_length=1)
     label: str = Field(min_length=1)
-    amountKopecks: Optional[int] = Field(default=None, ge=0)
+    amountKopecks: Optional[int] = None
     allocationBase: Literal["sku", "brand", "manager", "marketplace", "manual", "unknown"]
     sourceStatus: SourceStatus
     blockerIds: List[str]
+
+    @model_validator(mode="after")
+    def validate_signed_tax(self) -> ManualCost:
+        if self.costId not in {"tax", "storage", "overhead"} and self.amountKopecks is not None and self.amountKopecks < 0:
+            raise ValueError("Only settlement tax, storage and overhead may include credits")
+        return self
 
 
 class DayAllocationSummary(BaseModel):
@@ -81,19 +87,32 @@ class DayAllocationSummary(BaseModel):
 
 
 class PnlRow(BaseModel):
+    comment: Optional[str] = None
+    financialExpenseSubtotalKopecks: Optional[int] = None
+    costReasons: list[str] = Field(default_factory=list)
+    costOperationDates: list[str] = Field(default_factory=list)
     rowId: str = Field(min_length=1)
     label: str = Field(min_length=1)
     brandId: Optional[str]
     managerId: Optional[str]
     skuId: Optional[str]
-    revenueKopecks: Optional[int] = Field(default=None, ge=0)
-    cogsKopecks: Optional[int] = Field(default=None, ge=0)
-    commissionKopecks: Optional[int] = Field(default=None, ge=0)
-    logisticsKopecks: Optional[int] = Field(default=None, ge=0)
-    storageKopecks: Optional[int] = Field(default=None, ge=0)
-    adSpendKopecks: Optional[int] = Field(default=None, ge=0)
-    taxKopecks: Optional[int] = Field(default=None, ge=0)
-    overheadKopecks: Optional[int] = Field(default=None, ge=0)
+    nmId: Optional[int] = None
+    sku: Optional[str] = None
+    productName: Optional[str] = None
+    category: Optional[str] = None
+    photoUrl: Optional[str] = None
+    revenueKopecks: Optional[int] = None
+    # Net settlement cost can be negative when returns exceed sales.
+    cogsKopecks: Optional[int] = None
+    commissionKopecks: Optional[int] = None
+    logisticsKopecks: Optional[int] = None
+    storageKopecks: Optional[int] = None
+    penaltyKopecks: Optional[int] = None
+    acceptanceKopecks: Optional[int] = None
+    expenseState: Literal["confirmed", "partial", "unavailable", "stale"] = "unavailable"
+    adSpendKopecks: Optional[int] = None
+    taxKopecks: Optional[int] = None
+    overheadKopecks: Optional[int] = None
     netProfitKopecks: Optional[int]
     marginPct: Optional[float]
     sourceStatus: SourceStatus
@@ -101,7 +120,7 @@ class PnlRow(BaseModel):
 
 
 class PnlTotals(BaseModel):
-    revenueKopecks: Optional[int] = Field(default=None, ge=0)
+    revenueKopecks: Optional[int] = None
     netProfitKopecks: Optional[int]
     marginPct: Optional[float]
     sourceStatus: SourceStatus
@@ -109,6 +128,9 @@ class PnlTotals(BaseModel):
 
 
 class PnlReportResponse(SourceStateBase):
+    financialCoverage: Dict[str, Any] = Field(default_factory=dict)
+    unallocatedFinancials: Dict[str, Any] = Field(default_factory=dict)
+    storageAllocation: Dict[str, Any] = Field(default_factory=dict)
     reportState: Literal["operative", "preliminary", "final", "blocked"]
     groupBy: ReportGroupBy
     totals: PnlTotals
@@ -213,6 +235,9 @@ class RnpRow(BaseModel):
     brandName: Optional[str] = None
     categoryName: Optional[str] = None
     photoUrl: Optional[str] = None
+    colorName: Optional[str] = None
+    managerName: Optional[str] = None
+    strategyName: Optional[str] = None
     warehouseId: Optional[int] = Field(default=None, ge=0)
     warehouseName: Optional[str] = None
     warehouses: List[Dict[str, Any]] = Field(default_factory=list)
@@ -221,15 +246,25 @@ class RnpRow(BaseModel):
     managerId: Optional[str]
     activeRule: Optional[str] = None
     openCount: Optional[int] = Field(default=None, ge=0)
+    impressions: Optional[int] = Field(default=None, ge=0)
     openCountDeltaPct: Optional[float] = None
     cartCount: Optional[int] = Field(default=None, ge=0)
+    wishlistCount: Optional[int] = Field(default=None, ge=0)
     cartCountDeltaPct: Optional[float] = None
     orderCount: Optional[int] = Field(default=None, ge=0)
     orderCountDeltaPct: Optional[float] = None
     orderSumKopecks: Optional[int] = Field(default=None, ge=0)
     orderSumDeltaPct: Optional[float] = None
-    buyoutCount: Optional[int] = Field(default=None, ge=0)
-    buyoutSumKopecks: Optional[int] = Field(default=None, ge=0)
+    buyoutCount: Optional[int] = None
+    buyoutCountDeltaPct: Optional[float] = None
+    buyoutSumKopecks: Optional[int] = None
+    buyoutSumDeltaPct: Optional[float] = None
+    funnelBuyoutCount: Optional[int] = Field(default=None, ge=0)
+    funnelBuyoutSumKopecks: Optional[int] = Field(default=None, ge=0)
+    financialBuyoutState: Literal["confirmed", "partial", "unavailable", "forbidden"] = "unavailable"
+    financialBuyoutSource: Optional[str] = None
+    financialSalesUnits: Optional[int] = None
+    financialReturnsUnits: Optional[int] = None
     buyoutPct: Optional[float] = None
     ctrPct: Optional[float] = None
     atcrPct: Optional[float] = None
@@ -296,6 +331,9 @@ class AbcFilteredSummary(BaseModel):
 
 
 class AbcReportResponse(SourceStateBase):
+    financialCoverage: Dict[str, Any] = Field(default_factory=dict)
+    unallocatedFinancials: Dict[str, Any] = Field(default_factory=dict)
+    storageAllocation: Dict[str, Any] = Field(default_factory=dict)
     filteredSummary: AbcFilteredSummary
     rows: List[Dict[str, Any]]
 

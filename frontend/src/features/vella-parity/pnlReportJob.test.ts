@@ -4,6 +4,12 @@ import { describePnlReportJob, PNL_JOB_STALE_AFTER_MS } from './pnlReportJob'
 const now = Date.parse('2026-07-13T12:00:00.000Z')
 
 describe('describePnlReportJob', () => {
+  it('treats an expired worker heartbeat as paused, not an idle successful job', () => {
+    expect(describePnlReportJob({ state: 'stale', stage: 'pnl', label: 'Нет свежего heartbeat' }, now)).toMatchObject({
+      state: 'paused', terminal: true, label: 'Нет свежего heartbeat',
+    })
+  })
+
   it('describes a queued job that is still waiting normally', () => {
     expect(describePnlReportJob({ state: 'queued', queuedAt: '2026-07-13T11:59:50.000Z' }, now)).toMatchObject({
       state: 'queued',

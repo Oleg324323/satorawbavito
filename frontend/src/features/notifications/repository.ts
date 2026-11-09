@@ -46,7 +46,7 @@ const ITEMS: NotificationEvent[] = [
     entityType: 'order',
     entityId: 'fbs-sla-batch-2026-05-08',
     route: '/orders',
-    blockedActions: ['Печать без проверки КИЗ', 'Автоперенос в конец очереди'],
+    blockedActions: ['Автоперенос в конец очереди'],
     freshness: {
       label: 'Заказы WB+Авито',
       state: 'partial',

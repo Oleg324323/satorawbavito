@@ -15,10 +15,6 @@ describe('P&L default source', () => {
     // из 1С" while the WB financial report behind the toggle was fully working.
     expect(source).toContain("useState<PnlReportMode>('financial')")
     expect(source).not.toContain("useState<PnlReportMode>('operational')")
-  })
-
-  it('still offers both sources in the toolbar', () => {
-    expect(source).toContain("{ label: 'Операционный 1С', mode: 'operational' }")
-    expect(source).toContain("{ label: 'Финансовый WB', mode: 'financial' }")
+    expect(source).not.toContain("{ label: 'Операционный 1С', mode: 'operational' }")
   })
 })

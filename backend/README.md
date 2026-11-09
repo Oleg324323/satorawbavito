@@ -41,10 +41,13 @@ The frontend is discovered at the canonical workspace path; set
 command, and removes only that container. It preserves the frontend generated
 snapshot and never prints inherited secrets or environment values.
 
-The empty migration chain has the documented legacy `0019` duplicate-column
-defect. The gate upgrades to `0018`, proves `ai_prompt` already exists from
-`0017`, explicitly stamps `0019`, then performs `upgrade head → downgrade -1 →
-upgrade head`. The final line is `SATORNA_GATE_SUMMARY=<json>`; any baseline ID
+The gate runs the empty database chain directly: `upgrade head → downgrade -1 →
+upgrade head`, without stamping or skipping migrations. Revision `0019` accepts
+the prompt column owned by `0017`, repairs its absence in historical schemas,
+and preserves operator prompts on downgrade. Incompatible existing column
+definitions fail explicitly. Real PostgreSQL regression tests are in
+`tests/test_empty_database_migrations.py` (local `initdb`, `pg_ctl`, `createdb`
+binaries required). The final line is `SATORNA_GATE_SUMMARY=<json>`; any baseline ID
 change, new failure, interrupted check or cleanup failure returns non-zero.
 
 From this repo root (Windows PowerShell):

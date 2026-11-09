@@ -4,12 +4,12 @@ import re
 import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from hmac import compare_digest
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,7 @@ from app.cabinet.schemas import (
     UserPreferencesView,
 )
 from app.infra.db import get_engine, get_session_factory, set_tenant_context
+from app.config import get_settings
 from app.platform.identity.orm import IamMembershipRow
 from app.platform.integrations.wb_credentials import invalidate_wb_credential_bindings
 
@@ -151,13 +152,38 @@ def _slugify(value: str) -> str:
 def _run_db(db_fn):
     try:
         engine = get_engine()
+        if get_settings().wb_live_sync_enabled and engine.dialect.name != "postgresql":
+            raise HTTPException(503, detail={"code": "WB_LIVE_UNAVAILABLE"})
         with engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
         session_factory = get_session_factory()
         with session_factory() as session:
+            if get_settings().wb_live_sync_enabled:
+                event.listen(session, "after_begin", _live_utc_transaction)
             return db_fn(session)
     except SQLAlchemyError:
+        if get_settings().wb_live_sync_enabled:
+            raise HTTPException(503, detail={"code": "WB_LIVE_UNAVAILABLE"}) from None
+        if _requires_persistent_storage():
+            raise HTTPException(503, detail={
+                "code": "CABINET_STORAGE_UNAVAILABLE",
+                "message": "База данных временно занята или недоступна. Повторите запрос; сохранённые данные не потеряны.",
+            }) from None
         return None
+
+
+def _requires_persistent_storage() -> bool:
+    settings = get_settings()
+    return (
+        getattr(settings, "cabinet_require_persistent_storage", False)
+        or getattr(settings, "environment", "local").lower() not in {"local", "dev", "development", "test"}
+    )
+
+
+def _live_utc_transaction(session, transaction, connection):
+    # DB timestamps must satisfy the existing UTC wire contract, including reads
+    # in the new transaction opened by refresh() after a registration commit.
+    connection.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
 
 
 def _default_notification_settings() -> dict[str, Any]:
@@ -317,6 +343,14 @@ def _append_audit_event(
 
 
 def _ensure_defaults(session: Session | None = None) -> None:
+    if getattr(get_settings(), 'environment', 'local').lower() not in {'local', 'dev', 'development', 'test'}:
+        if session is None:
+            raise HTTPException(503, detail={"code": "CABINET_STORAGE_UNAVAILABLE"})
+        return  # Never seed demo users or known passwords on the VPS.
+    if get_settings().wb_live_sync_enabled:
+        if session is None:
+            raise HTTPException(503, detail={"code": "WB_LIVE_UNAVAILABLE"})
+        return
     defaults = [
         ("viewer@vella.local", "Viewer Pass", "viewer", "pbkdf2_sha256$120000$viewer-v1$X8nL6oW3xibOEeoflBcI5RBmXfOMtyt3VrUhfA0eK3k"),
         ("editor@vella.local", "Settings Editor", "settings_editor", "pbkdf2_sha256$120000$editor-v1$cqH317m8tJt__yOEu-lHGapdxEFgVAjyGPC6c225q8M"),
@@ -627,6 +661,8 @@ def get_user_auth_record_by_email(email: str) -> UserAuthRecord | None:
         )
 
     result = _run_db(_db)
+    if get_settings().wb_live_sync_enabled or _requires_persistent_storage():
+        return result
     if result is not None:
         return result
 
@@ -796,6 +832,8 @@ def resolve_active_session(*, session_id: str, user_id: str) -> tuple[UserAuthRe
         )
 
     result = _run_db(_db)
+    if get_settings().wb_live_sync_enabled or _requires_persistent_storage():
+        return result
     if result is not None:
         return result
 
@@ -891,6 +929,8 @@ def resolve_refresh_session_by_token_hash(refresh_token_hash: str) -> tuple[User
         )
 
     result = _run_db(_db)
+    if get_settings().wb_live_sync_enabled or _requires_persistent_storage():
+        return result
     if result is not None:
         return result
 
@@ -1543,7 +1583,11 @@ def get_user_wb_token(user_id: str) -> UserWbTokenView:
             userId=row.user_id,
             hasToken=True,
             tokenMasked=row.token_masked,
-            updatedAt=row.updated_at,
+            updatedAt=(
+                row.updated_at.astimezone(timezone.utc)
+                if row.updated_at.utcoffset() is not None
+                else row.updated_at
+            ),
         )
 
     result = _run_db(_db)
@@ -1565,7 +1609,7 @@ def get_user_wb_token_secret(user_id: str) -> str | None:
         return row.wb_token
 
     result = _run_db(_db)
-    if result is not None:
+    if result is not None or _requires_persistent_storage():
         return result
 
     _ensure_defaults(None)
@@ -1589,7 +1633,7 @@ def get_organization_wb_token_secret(organization_id: int) -> str | None:
         return row.wb_token
 
     result = _run_db(_db)
-    if result is not None:
+    if result is not None or _requires_persistent_storage():
         return result
 
     _ensure_defaults(None)
@@ -1644,7 +1688,7 @@ def get_user_avito_credentials_secret(user_id: str) -> AvitoCredentialsSecret | 
         )
 
     result = _run_db(_db)
-    if result is not None:
+    if result is not None or _requires_persistent_storage():
         return result
 
     _ensure_defaults(None)
@@ -1673,7 +1717,7 @@ def get_organization_avito_credentials_secret(organization_id: int) -> AvitoCred
         )
 
     result = _run_db(_db)
-    if result is not None:
+    if result is not None or _requires_persistent_storage():
         return result
 
     _ensure_defaults(None)
@@ -1847,6 +1891,8 @@ def upsert_user_wb_token(
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> UserWbTokenView:
+    if get_settings().wb_live_sync_enabled:
+        raise HTTPException(409, detail={"code": "WB_USE_ACCOUNT_CONNECTION"})
     normalized = wb_token.strip()
     if len(normalized) < 8:
         raise HTTPException(status_code=400, detail="WB_TOKEN_TOO_SHORT")
@@ -1949,6 +1995,8 @@ def delete_user_wb_token(
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> UserWbTokenView:
+    if get_settings().wb_live_sync_enabled:
+        raise HTTPException(409, detail={"code": "WB_USE_ACCOUNT_CONNECTION"})
     invalidated_bindings = 0
 
     def _db(session: Session) -> UserWbTokenView:
@@ -2126,9 +2174,26 @@ def update_preferences(
     user_agent: str | None = None,
 ) -> UserPreferencesView:
     now = _utc_now()
+    canonical = get_settings().canonical_notifications_enabled
+    if canonical:
+        unavailable = False
+        try:
+            unavailable = get_engine().dialect.name != "postgresql"
+        except Exception:  # noqa: BLE001 - engine/configuration diagnostics are private.
+            unavailable = True
+        if unavailable:
+            raise HTTPException(503, detail={"code": "PREFERENCES_UNAVAILABLE"})
 
     def _db(session: Session) -> UserPreferencesView:
-        row = session.scalar(select(LkUserPreferenceRow).where(LkUserPreferenceRow.user_id == user_id))
+        statement = select(LkUserPreferenceRow).where(LkUserPreferenceRow.user_id == user_id)
+        if canonical:
+            statement = statement.with_for_update()
+        row = session.scalar(statement)
+        if canonical:
+            if row is None:
+                raise HTTPException(503, detail={"code": "PREFERENCES_UNAVAILABLE"})
+            if row.notification_settings != notification_settings:
+                raise HTTPException(409, detail={"code": "PREFERENCES_CANONICAL_REQUIRED"})
         if row is None:
             row = LkUserPreferenceRow(
                 user_id=user_id,
@@ -2143,6 +2208,12 @@ def update_preferences(
             row.export_settings = export_settings
             row.timezone = timezone_value
             row.updated_at = now
+        if canonical:
+            session.add(LkAuditEventRow(
+                organization_id=organization_id, actor_user_id=actor_user_id,
+                action="preferences.update", object_type="lk_preferences", object_id=user_id,
+                reason="preferences updated",
+            ))
         session.commit()
         session.refresh(row)
         return UserPreferencesView(
@@ -2150,10 +2221,15 @@ def update_preferences(
             notificationSettings=row.notification_settings,
             exportSettings=row.export_settings,
             timezone=row.timezone,
-            updatedAt=row.updated_at,
+            updatedAt=row.updated_at.astimezone(UTC) if canonical else row.updated_at,
         )
 
     result = _run_db(_db)
+    if canonical and result is None:
+        # _run_db's legacy outage fallback must never accept this activated writer.
+        raise HTTPException(503, detail={"code": "PREFERENCES_READBACK_REQUIRED"})
+    if canonical:
+        return result
     if result is not None:
         _append_audit_event(
             organization_id=organization_id,

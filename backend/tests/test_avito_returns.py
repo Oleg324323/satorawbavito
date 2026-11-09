@@ -81,6 +81,8 @@ def test_matches_return_candidate_by_article_size_and_color():
             )
         ]
     )
+    assert match_return_candidates(order.items[0], order=order, candidates=candidates) == []
+    candidates[0].availableQuantity = 1
 
     matches = match_return_candidates(order.items[0], order=order, candidates=candidates)
 
@@ -128,6 +130,7 @@ def test_matches_by_title_size_color_when_article_missing():
             )
         ]
     )
+    candidates[0].availableQuantity = 1
 
     matches = match_return_candidates(order.items[0], order=order, candidates=candidates)
 
@@ -162,6 +165,11 @@ def test_upserts_return_candidates_without_duplicates(monkeypatch, tmp_path):
 
     first = store.upsert_return_candidates(organization_id=1, candidates=candidates)
     second = store.upsert_return_candidates(organization_id=1, candidates=candidates)
+    candidates[0].sourceUpdatedAt = "2026-09-30T11:00:00Z"
+    candidates[0].returnStatus = "ready_for_pickup"
+    store.upsert_return_candidates(organization_id=1, candidates=candidates)
+    stale = candidates[0].model_copy(update={"sourceUpdatedAt": "2026-09-30T13:00:00+03:00", "returnStatus": "started"})
+    store.upsert_return_candidates(organization_id=1, candidates=[stale])
     rows = store.list_active_return_candidates(organization_id=1)
 
     assert first == {"inserted": 1, "updated": 0}
@@ -169,6 +177,7 @@ def test_upserts_return_candidates_without_duplicates(monkeypatch, tmp_path):
     assert len(rows) == 1
     assert rows[0].returnOrderId == "ret_1"
     assert rows[0].sellerArticle == "FBBT_42"
+    assert rows[0].returnStatus == "ready_for_pickup"
 
     with factory() as session:
         assert session.query(AvitoReturnItemRow).count() == 1
@@ -176,11 +185,13 @@ def test_upserts_return_candidates_without_duplicates(monkeypatch, tmp_path):
 
 def test_sync_returns_for_org_fetches_on_return_orders_and_persists_candidates(monkeypatch):
     import app.avito.returns_tasks as tasks
+    import app.routers.avito_orders as orders_router
     from app.avito.orders import AvitoOrdersFetchRequest, AvitoOrdersFetchResult
 
     requests: list[AvitoOrdersFetchRequest] = []
     saved: list[tuple[int, list[str]]] = []
     statuses: list[tuple[int, str, dict]] = []
+    cache: dict[tuple[int, str], dict] = {}
 
     class ReturnsOrdersClient:
         def fetch_orders(self, request: AvitoOrdersFetchRequest) -> AvitoOrdersFetchResult:
@@ -219,14 +230,16 @@ def test_sync_returns_for_org_fetches_on_return_orders_and_persists_candidates(m
     )
     monkeypatch.setattr(tasks, "resolve_user_avito_access_token", lambda **_kwargs: "avito-bearer-token")
     monkeypatch.setattr(tasks, "build_avito_orders_client", lambda **_kwargs: ReturnsOrdersClient())
-    monkeypatch.setattr(tasks, "upsert_return_candidates", lambda organization_id, candidates: saved.append((organization_id, [item.returnOrderId for item in candidates])) or {"inserted": len(candidates), "updated": 0})
+    monkeypatch.setattr(orders_router, "get_source_cache", lambda organization_id, key, **_kwargs: cache.get((organization_id, key)))
+    monkeypatch.setattr(orders_router, "save_source_cache", lambda organization_id, key, payload: cache.__setitem__((organization_id, key), payload))
+    monkeypatch.setattr(orders_router, "upsert_return_candidates", lambda organization_id, candidates: saved.append((organization_id, [item.returnOrderId for item in candidates])) or {"inserted": len(candidates), "updated": 0})
     monkeypatch.setattr(tasks, "save_source_cache", lambda organization_id, source_key, payload: statuses.append((organization_id, source_key, payload)) or payload)
 
     result = tasks.sync_returns_for_org.run(1, force=True)
 
     assert result["organizationId"] == 1
     assert result["syncedCount"] == 1
-    assert requests[0].statuses == ["on_return"]
+    assert requests[0].statuses == []
     assert saved == [(1, ["ret_1"])]
     assert statuses[-1][1] == "avito_returns_sync_status"
     assert statuses[-1][2]["state"] == "completed"

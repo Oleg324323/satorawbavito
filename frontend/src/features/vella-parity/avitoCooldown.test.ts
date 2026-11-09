@@ -25,4 +25,12 @@ describe('avito cooldown helpers', () => {
     expect(avitoCooldownRemainingMs('2026-08-05T10:01:30.000Z', now)).toBe(90_000)
     expect(formatAvitoRefreshCountdown(90_000)).toBe('1:30')
   })
+
+  it('does not restart an expired absolute cooldown from retryAfterSeconds', () => {
+    const now = Date.parse('2026-08-05T10:02:00.000Z')
+    const payload = { source: { errors: { stats: {
+      retryAfterUntil: '2026-08-05T10:01:00.000Z', retryAfterSeconds: 90,
+    } } } }
+    expect(avitoCooldownUntilFromPayload(payload, now)).toBeNull()
+  })
 })

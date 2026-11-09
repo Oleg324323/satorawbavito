@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from app.security.marketplace_credentials import CredentialCryptoError, CredentialKeyring
+
+
+def _parse_marketplace_role(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value) is None:
+        raise RuntimeError("marketplace_executor_configuration_invalid") from None
+    return value
 
 
 def _parse_csv_env(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -43,6 +52,193 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() == "true"
 
 
+_REVIEW_SHADOW_CONFIGURATION_INVALID = "review_shadow_configuration_invalid"
+_INT4_MAX = 2_147_483_647
+
+
+def _canonical_notification_settings() -> dict[str, object]:
+    invalid = "canonical_notifications_configuration_invalid"
+    enabled = os.getenv("VELLA_CANONICAL_NOTIFICATIONS_ENABLED", "false").strip().lower()
+    if enabled not in {"true", "false"}:
+        raise RuntimeError(invalid)
+    raw = os.getenv("VELLA_CANONICAL_NOTIFICATION_ACCOUNTS", "")
+    accounts: list[tuple[int, int, str]] = []
+    for entry in raw.split(",") if raw.strip() else ():
+        match = re.fullmatch(r"([1-9][0-9]{0,9}):([1-9][0-9]{0,9}):(wb|avito)", entry.strip())
+        if match is None:
+            raise RuntimeError(invalid)
+        org, account, provider = match.groups()
+        item = (int(org), int(account), provider)
+        if item[0] > _INT4_MAX or item[1] > _INT4_MAX or item in accounts:
+            raise RuntimeError(invalid)
+        accounts.append(item)
+    return {"canonical_notifications_enabled": enabled == "true",
+            "canonical_notification_accounts": tuple(accounts)}
+
+
+def _canonical_account_discovery_enabled() -> bool:
+    raw = os.getenv("VELLA_CANONICAL_ACCOUNT_DISCOVERY_ENABLED", "false").strip().lower()
+    if raw not in {"true", "false"}:
+        raise RuntimeError("canonical_account_discovery_configuration_invalid")
+    return raw == "true"
+
+
+def _wb_sku_override_settings() -> dict[str, object]:
+    invalid = "wb_sku_overrides_configuration_invalid"
+    enabled = os.getenv("VELLA_WB_SKU_OVERRIDES_ENABLED", "false").strip().lower()
+    if enabled not in {"true", "false"}:
+        raise RuntimeError(invalid)
+    raw = os.getenv("VELLA_WB_SKU_OVERRIDE_ACCOUNT_PAIRS", "")
+    pairs: list[tuple[int, int]] = []
+    for entry in raw.split(",") if raw.strip() else ():
+        match = re.fullmatch(r"([1-9][0-9]{0,9}):([1-9][0-9]{0,9})", entry.strip())
+        if match is None:
+            raise RuntimeError(invalid)
+        pair = tuple(int(value) for value in match.groups())
+        if any(value > _INT4_MAX for value in pair) or pair in pairs:
+            raise RuntimeError(invalid)
+        pairs.append(pair)
+    return {"wb_sku_overrides_enabled": enabled == "true", "wb_sku_override_account_pairs": tuple(pairs)}
+
+
+def _raise_review_shadow_configuration_invalid() -> None:
+    raise RuntimeError(_REVIEW_SHADOW_CONFIGURATION_INVALID) from None
+
+
+def _parse_review_shadow_enabled(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    _raise_review_shadow_configuration_invalid()
+    return False
+
+
+def _parse_review_shadow_id(value: str) -> int:
+    if (
+        not 1 <= len(value) <= 10
+        or value[0] not in "123456789"
+        or any(character not in "0123456789" for character in value)
+    ):
+        _raise_review_shadow_configuration_invalid()
+    parsed = int(value)
+    if parsed > _INT4_MAX:
+        _raise_review_shadow_configuration_invalid()
+    return parsed
+
+
+def _parse_review_shadow_account_pairs(
+    value: str | None,
+) -> tuple[tuple[int, int], ...]:
+    if value is None or not value.strip():
+        return ()
+    result: list[tuple[int, int]] = []
+    for raw_pair in value.split(","):
+        parts = raw_pair.strip().split(":")
+        if len(parts) != 2:
+            _raise_review_shadow_configuration_invalid()
+        pair = (
+            _parse_review_shadow_id(parts[0]),
+            _parse_review_shadow_id(parts[1]),
+        )
+        if pair in result:
+            _raise_review_shadow_configuration_invalid()
+        result.append(pair)
+    return tuple(result)
+
+
+def _canonical_avito_stats_settings() -> dict[str, object]:
+    invalid = "canonical_avito_stats_configuration_invalid"
+    enabled = os.getenv("VELLA_CANONICAL_AVITO_STATS_ENABLED", "false").strip().lower()
+    if enabled not in {"true", "false"}:
+        raise RuntimeError(invalid)
+    try:
+        # Same strict int4/no-leading-zero/no-duplicate pair grammar as SKU.
+        pairs = _parse_review_shadow_account_pairs(
+            os.getenv("VELLA_CANONICAL_AVITO_STATS_ACCOUNT_PAIRS")
+        )
+    except RuntimeError:
+        pairs = None
+    if pairs is None:
+        raise RuntimeError(invalid)
+    return {
+        "canonical_avito_stats_enabled": enabled == "true",
+        "canonical_avito_stats_account_pairs": pairs,
+    }
+
+
+def _canonical_avito_order_status_settings() -> dict[str, object]:
+    invalid = "canonical_avito_order_status_configuration_invalid"
+    enabled = os.getenv(
+        "VELLA_CANONICAL_AVITO_ORDER_STATUS_ENABLED", "false"
+    ).strip().lower()
+    if enabled not in {"true", "false"}:
+        raise RuntimeError(invalid)
+    try:
+        # Identical strict internal int4 pair grammar to Avito Stats.
+        pairs = _parse_review_shadow_account_pairs(
+            os.getenv("VELLA_CANONICAL_AVITO_ORDER_STATUS_ACCOUNT_PAIRS")
+        )
+    except RuntimeError:
+        pairs = None
+    if pairs is None:
+        raise RuntimeError(invalid)
+    return {
+        "canonical_avito_order_status_enabled": enabled == "true",
+        "canonical_avito_order_status_account_pairs": pairs,
+    }
+
+
+def _canonical_avito_reviews_preview_settings() -> dict[str, object]:
+    invalid = "canonical_avito_reviews_preview_configuration_invalid"
+    enabled = os.getenv(
+        "VELLA_CANONICAL_AVITO_REVIEWS_PREVIEW_ENABLED", "false"
+    ).strip().lower()
+    if enabled not in {"true", "false"}:
+        raise RuntimeError(invalid)
+    try:
+        # Identical strict internal int4 pair grammar to Avito Stats/Orders.
+        pairs = _parse_review_shadow_account_pairs(
+            os.getenv("VELLA_CANONICAL_AVITO_REVIEWS_PREVIEW_ACCOUNT_PAIRS")
+        )
+    except RuntimeError:
+        pairs = None
+    if pairs is None:
+        raise RuntimeError(invalid)
+    return {
+        "canonical_avito_reviews_preview_enabled": enabled == "true",
+        "canonical_avito_reviews_preview_account_pairs": pairs,
+    }
+
+
+def _heartbeat_env_settings() -> dict[str, object]:
+    """Retain malformed policy as invalid; never repair IDs or disable a bad flag."""
+    prefix = "VELLA_PROCESS_HEARTBEAT_"
+    raw = os.getenv(prefix + "ENABLED", "false").strip().lower()
+    enabled = {"true": True, "false": False}.get(raw)
+    values: dict[str, object] = {"process_heartbeat_enabled": enabled}
+    if enabled is False:
+        return values
+    for field in ("namespace", "worker_instance_id", "beat_instance_id"):
+        values["process_heartbeat_" + field] = os.getenv(prefix + field.upper())
+    for field in ("expected_worker_ids", "expected_beat_ids"):
+        raw = os.getenv(prefix + field.upper())
+        values["process_heartbeat_" + field] = tuple(raw.split(",")) if raw is not None else ()
+    for field in ("max_age_seconds", "retention_seconds", "beat_max_interval_seconds",
+                  "redis_connect_timeout_seconds", "redis_socket_timeout_seconds", "redis_retry_attempts"):
+        raw = os.getenv(prefix + field.upper())
+        try:
+            parser = int if field in {"retention_seconds", "redis_retry_attempts"} else float
+            value = parser(raw) if raw is not None else None
+        except (ValueError, OverflowError):
+            value = None
+        values["process_heartbeat_" + field] = value
+    return values
+
+
 def _parse_positive_int_env(name: str) -> int | None:
     raw = os.getenv(name)
     if raw is None:
@@ -76,9 +272,10 @@ class Settings:
     real_price_apply_enabled: bool = False
     repricer_local_price_apply_enabled: bool = True
     repricer_preserve_local_price_overrides: bool = True
-    repricer_scheduler_enabled: bool = True
+    repricer_scheduler_enabled: bool = False
     repricer_execute_interval_minutes: int = 60
     repricer_wb_sync_enabled: bool = True
+    wb_live_sync_enabled: bool = False
     repricer_wb_sync_interval_minutes: int = 40
     repricer_wb_sync_period_days: int = 30
     finance_shadow_ingest_enabled: bool = False
@@ -87,7 +284,20 @@ class Settings:
     advertising_shadow_ingest_organization_ids: tuple[int, ...] = ()
     canonical_shadow_collection_enabled: bool = False
     canonical_shadow_collection_organization_ids: tuple[int, ...] = ()
+    review_shadow_enabled: bool = False
+    review_shadow_account_pairs: tuple[tuple[int, int], ...] = ()
+    canonical_avito_stats_enabled: bool = False
+    canonical_avito_stats_account_pairs: tuple[tuple[int, int], ...] = ()
+    canonical_avito_order_status_enabled: bool = False
+    canonical_avito_order_status_account_pairs: tuple[tuple[int, int], ...] = ()
+    canonical_avito_reviews_preview_enabled: bool = False
+    canonical_avito_reviews_preview_account_pairs: tuple[tuple[int, int], ...] = ()
     marketplace_credentials_enabled: bool = False
+    # Optional nonsecret JSON policy. Parsing belongs to explicit ingestion
+    # bootstrap: malformed/partial policy must not prevent unrelated app startup.
+    ingestion_policy_config: str | None = None
+    marketplace_executor_role: str | None = None
+    marketplace_api_runtime_role: str | None = None
     marketplace_credential_keyring_dir: str | None = None
     marketplace_credential_current_key_version: int | None = None
     marketplace_credential_key_versions: tuple[int, ...] = ()
@@ -162,12 +372,30 @@ class Settings:
     auth_cookie_secure: bool = True
     auth_cookie_samesite: str = "none"
     auth_cookie_domain: str | None = None
+    cabinet_require_persistent_storage: bool = False
     cors_allowed_origins: tuple[str, ...] = (
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
     )
+    process_heartbeat_enabled: bool | None = False
+    process_heartbeat_namespace: str | None = None
+    process_heartbeat_worker_instance_id: str | None = None
+    process_heartbeat_beat_instance_id: str | None = None
+    process_heartbeat_expected_worker_ids: tuple[str, ...] = ()
+    process_heartbeat_expected_beat_ids: tuple[str, ...] = ()
+    process_heartbeat_max_age_seconds: float | None = None
+    process_heartbeat_retention_seconds: int | None = None
+    process_heartbeat_beat_max_interval_seconds: float | None = None
+    process_heartbeat_redis_connect_timeout_seconds: float | None = None
+    process_heartbeat_redis_socket_timeout_seconds: float | None = None
+    process_heartbeat_redis_retry_attempts: int | None = None
+    canonical_account_discovery_enabled: bool = False
+    wb_sku_overrides_enabled: bool = False
+    wb_sku_override_account_pairs: tuple[tuple[int, int], ...] = ()
+    canonical_notifications_enabled: bool = False
+    canonical_notification_accounts: tuple[tuple[int, int, str], ...] = ()
 
 
 def get_settings() -> Settings:
@@ -175,6 +403,13 @@ def get_settings() -> Settings:
     environment = os.getenv("VELLA_ENV", "local")
     auth_cookie_secure_raw = os.getenv("VELLA_AUTH_COOKIE_SECURE")
     return Settings(
+        **_canonical_avito_stats_settings(),
+        **_canonical_avito_order_status_settings(),
+        **_canonical_avito_reviews_preview_settings(),
+        **_heartbeat_env_settings(),
+        **_canonical_notification_settings(),
+        **_wb_sku_override_settings(),
+        canonical_account_discovery_enabled=_canonical_account_discovery_enabled(),
         app_name=os.getenv("VELLA_APP_NAME", "Vella WB Backend"),
         environment=environment,
         api_prefix=os.getenv("VELLA_API_PREFIX", "/api/v1"),
@@ -182,9 +417,10 @@ def get_settings() -> Settings:
         real_price_apply_enabled=os.getenv("VELLA_REAL_PRICE_APPLY_ENABLED", "false").lower() == "true",
         repricer_local_price_apply_enabled=os.getenv("VELLA_REPRICER_LOCAL_PRICE_APPLY_ENABLED", "true").lower() == "true",
         repricer_preserve_local_price_overrides=os.getenv("VELLA_REPRICER_PRESERVE_LOCAL_PRICE_OVERRIDES", "true").lower() == "true",
-        repricer_scheduler_enabled=os.getenv("VELLA_REPRICER_SCHEDULER_ENABLED", "true").lower() == "true",
+        repricer_scheduler_enabled=os.getenv("VELLA_REPRICER_SCHEDULER_ENABLED", "false").lower() == "true",
         repricer_execute_interval_minutes=int(os.getenv("VELLA_REPRICER_EXECUTE_INTERVAL_MINUTES", "60")),
         repricer_wb_sync_enabled=os.getenv("VELLA_REPRICER_WB_SYNC_ENABLED", "true").lower() == "true",
+        wb_live_sync_enabled=_parse_bool_env("VELLA_WB_LIVE_SYNC_ENABLED", False),
         repricer_wb_sync_interval_minutes=int(os.getenv("VELLA_REPRICER_WB_SYNC_INTERVAL_MINUTES", "40")),
         repricer_wb_sync_period_days=int(os.getenv("VELLA_REPRICER_WB_SYNC_PERIOD_DAYS", "30")),
         finance_shadow_ingest_enabled=_parse_bool_env("VELLA_FINANCE_SHADOW_INGEST_ENABLED", False),
@@ -203,9 +439,18 @@ def get_settings() -> Settings:
         canonical_shadow_collection_organization_ids=_parse_int_csv_env(
             os.getenv("VELLA_CANONICAL_SHADOW_COLLECTION_ORGANIZATION_IDS")
         ),
+        review_shadow_enabled=_parse_review_shadow_enabled(
+            os.getenv("VELLA_REVIEW_SHADOW_ENABLED")
+        ),
+        review_shadow_account_pairs=_parse_review_shadow_account_pairs(
+            os.getenv("VELLA_REVIEW_SHADOW_ACCOUNT_PAIRS")
+        ),
         marketplace_credentials_enabled=_parse_bool_env(
             "VELLA_MARKETPLACE_CREDENTIALS_ENABLED", False
         ),
+        ingestion_policy_config=os.getenv("VELLA_INGESTION_POLICY"),
+        marketplace_executor_role=_parse_marketplace_role(os.getenv("VELLA_MARKETPLACE_EXECUTOR_ROLE")),
+        marketplace_api_runtime_role=_parse_marketplace_role(os.getenv("VELLA_MARKETPLACE_API_RUNTIME_ROLE")),
         marketplace_credential_keyring_dir=os.getenv(
             "VELLA_MARKETPLACE_CREDENTIAL_KEYRING_DIR"
         ),
@@ -296,6 +541,7 @@ def get_settings() -> Settings:
             "lax" if environment.lower() in {"local", "dev", "development", "test"} else "none",
         ).lower(),
         auth_cookie_domain=os.getenv("VELLA_AUTH_COOKIE_DOMAIN"),
+        cabinet_require_persistent_storage=_parse_bool_env("VELLA_CABINET_REQUIRE_PERSISTENT_STORAGE", False),
         cors_allowed_origins=_parse_csv_env(
             os.getenv("VELLA_CORS_ALLOWED_ORIGINS"),
             (
@@ -306,6 +552,52 @@ def get_settings() -> Settings:
             ),
         ),
     )
+
+
+def is_review_shadow_enabled(
+    settings: Settings,
+    *,
+    organization_id: int,
+    marketplace_account_id: int,
+) -> bool:
+    enabled = settings.review_shadow_enabled
+    pairs = settings.review_shadow_account_pairs
+    if type(enabled) is not bool or type(pairs) is not tuple:
+        _raise_review_shadow_configuration_invalid()
+    if any(
+        type(pair) is not tuple
+        or len(pair) != 2
+        or not all(type(value) is int and 1 <= value <= _INT4_MAX for value in pair)
+        for pair in pairs
+    ) or len(pairs) != len(set(pairs)):
+        _raise_review_shadow_configuration_invalid()
+    if not (
+        type(organization_id) is int
+        and 1 <= organization_id <= _INT4_MAX
+        and type(marketplace_account_id) is int
+        and 1 <= marketplace_account_id <= _INT4_MAX
+    ):
+        return False
+    return settings.review_shadow_enabled and (
+        organization_id,
+        marketplace_account_id,
+    ) in settings.review_shadow_account_pairs
+
+
+def is_wb_sku_overrides_enabled(*, organization_id, marketplace_account_id, settings=None) -> bool:
+    settings = get_settings() if settings is None else settings
+    if type(settings) is not Settings:
+        raise RuntimeError("wb_sku_overrides_configuration_invalid")
+    enabled, pairs = settings.wb_sku_overrides_enabled, settings.wb_sku_override_account_pairs
+    if (type(enabled) is not bool or type(pairs) is not tuple or any(
+            type(pair) is not tuple or len(pair) != 2
+            or any(type(value) is not int or not 0 < value <= _INT4_MAX for value in pair)
+            for pair in pairs) or len(pairs) != len(set(pairs))):
+        raise RuntimeError("wb_sku_overrides_configuration_invalid")
+    if any(type(value) is not int or not 0 < value <= _INT4_MAX
+           for value in (organization_id, marketplace_account_id)):
+        return False
+    return enabled and (organization_id, marketplace_account_id) in pairs
 
 
 def load_marketplace_credential_keyring(settings: Settings) -> CredentialKeyring:

@@ -103,6 +103,7 @@ def api() -> TestClient:
                     "nmId": 453200669,
                     "vendorCode": "FBBT_1133",
                     "docTypeName": "Продажа",
+                    "sellerOperName": "Продажа",
                     "quantity": 1,
                     "retailAmount": "1208.00",
                     "saleDt": "2026-08-20",
@@ -178,7 +179,7 @@ def test_finance_v2_is_cache_only_and_returns_one_consistent_snapshot(
         "temporalState": "complete",
     }
     assert payload["meta"]["snapshot"]["operationCount"] == 1
-    assert payload["meta"]["snapshot"]["formulaVersion"] == "wb-finance-v2"
+    assert payload["meta"]["snapshot"]["formulaVersion"] == "wb-finance-v4-rrdate"
     assert payload["timestamp"] == "2026-09-01T12:34:56Z"
     assert "token" not in str(payload).lower()
 

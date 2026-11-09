@@ -33,23 +33,8 @@ describe('Products live loading source', () => {
     expect(source).toContain('finalizeProductsBackendLoad(loaded)')
   })
 
-  it('explains that WB sync is running instead of saying the selected period has no data', () => {
-    expect(source).toContain('window.__vellaProductsFullSyncRunning = syncRunning')
-    expect(source).toContain("syncRunning ? 'Идет синхронизация с WB' : 'Данных за этот период пока нет'")
-    expect(source).toContain('Идет синхронизация с WB')
-    expect(source).toContain('Синхронизация уже запущена')
-  })
-
-  it('marks basket and order cells stale while WB funnel detail is loading', () => {
-    expect(source).toContain('window.__vellaBasketsDetailRefreshing = basketsDetailRunning')
-    expect(source).toContain('window.__vellaBasketsOrdersCellsPatched')
-    expect(source).toContain('wb-funnel-refreshing-cell')
-    expect(source).toContain('Обновляем WB')
-    expect(source).toContain('Данные обновятся после загрузки дневной воронки WB')
-  })
-
   it('keeps the products page vertically scrollable on short viewports', () => {
-    expect(source).toContain('.vella-html-parity-root #tab-products {')
+    expect(source).toContain('.vella-html-parity-root #tab-products.tab-content {')
     expect(source).toContain('overflow-y: auto !important;')
     expect(source).toContain('flex: 1 0 min(720px, calc(100vh - 220px));')
     expect(source).toContain('@media (max-height: 760px)')

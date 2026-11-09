@@ -164,7 +164,24 @@ def _combine_totals(
 def _campaign_residual(
     campaign: WbAdvertisingFactRow,
     source_rows: list[WbAdvertisingFactRow],
+    daily_rows: list[WbAdvertisingFactRow] | None = None,
 ) -> tuple[AdvertisingMetricTotals, bool, bool]:
+    if daily_rows:
+        # WB rounds each level independently; validate the stored daily totals
+        # before combining them instead of widening the period's tolerance.
+        levels = [_campaign_residual(campaign, daily_rows)]
+        levels.extend(
+            _campaign_residual(
+                day,
+                [row for row in source_rows if row.business_date == day.business_date],
+            )
+            for day in daily_rows
+        )
+        return (
+            _combine_totals([residual for residual, _, _ in levels]),
+            any(invalid for _, invalid, _ in levels),
+            any(tolerated for _, _, tolerated in levels),
+        )
     parent = _metric_totals([campaign])
     children = _metric_totals(source_rows)
     values: dict[str, int | None] = {}
@@ -177,10 +194,15 @@ def _campaign_residual(
             values[name] = None
             continue
         difference = parent_value - child_value
-        tolerance = 1 if name in _RECONCILIATION_MONEY else 0
+        # Parent and each child are rounded to kopecks independently. Seven
+        # daily totals can differ by several kopecks even with full coverage.
+        tolerance = max(1, (len(source_rows) + 1) // 2) if name in _RECONCILIATION_MONEY else 0
         if difference < -tolerance:
             values[name] = None
             invalid = True
+        elif source_rows and abs(difference) <= tolerance:
+            values[name] = 0
+            tolerance_applied |= difference != 0
         else:
             values[name] = max(0, difference)
             tolerance_applied |= difference < 0
@@ -508,6 +530,49 @@ def _snapshot(row: WbAdvertisingSyncRunRow) -> AdvertisingSnapshot:
         evidence_status=row.evidence_status,
         captured_at=_utc(row.captured_at),
         last_observed_at=_utc(row.last_observed_at),
+    )
+
+
+def _coverage_snapshot(
+    organization_id: int, period: Period, runs: list[WbAdvertisingSyncRunRow]
+) -> AdvertisingSnapshot:
+    if len(runs) == 1:
+        return _snapshot(runs[0])
+    version = "wb-advertising-daily-v1"
+    checksum = _hash(
+        {
+            "formula_version": version,
+            "organization_id": organization_id,
+            "marketplace_account_id": runs[0].marketplace_account_id,
+            "period": period.cache_key,
+            "members": [
+                (run.date_from.isoformat(), run.sync_run_id, run.snapshot_checksum)
+                for run in runs
+            ],
+        }
+    )
+    return AdvertisingSnapshot(
+        sync_run_id=str(uuid.uuid5(uuid.NAMESPACE_URL, checksum)),
+        marketplace_account_id=runs[0].marketplace_account_id,
+        source_kind="ads_fullstats",
+        period=period,
+        snapshot_checksum=checksum,
+        formula_version=version,
+        source_total_spend_kopecks=sum(run.source_total_spend_kopecks for run in runs),
+        fact_count=sum(run.fact_count for run in runs),
+        campaign_count=sum(run.campaign_count for run in runs),
+        spend_document_count=sum(run.spend_document_count for run in runs),
+        document_total_spend_kopecks=(
+            None
+            if any(run.document_total_spend_kopecks is None for run in runs)
+            else sum(run.document_total_spend_kopecks for run in runs)
+        ),
+        expected_request_count=sum(run.expected_request_count for run in runs),
+        completed_request_count=sum(run.completed_request_count for run in runs),
+        evidence_status="raw",
+        # Conservative timestamps: the newest member cannot freshen the whole period.
+        captured_at=min(_utc(run.captured_at) for run in runs),
+        last_observed_at=min(_utc(run.last_observed_at) for run in runs),
     )
 
 
@@ -959,15 +1024,11 @@ class AdvertisingService:
             raise
         return _snapshot(run)
 
-    def get_raw_reconciliation(
-        self, marketplace_account_id: int, period: Period
-    ) -> AdvertisingRawReconciliation:
-        self._account(marketplace_account_id)
-        temporal_state = period.temporal_state(self.now())
-        if temporal_state == "future":
-            return AdvertisingRawReconciliation("future", period, None)
-
-        run = self.session.scalar(
+    def _raw_coverage(
+        self, marketplace_account_id: int, period: Period, now: datetime
+    ) -> list[WbAdvertisingSyncRunRow]:
+        # ponytail: scan period versions; rank in SQL if correction history grows large.
+        candidates = self.session.scalars(
             select(WbAdvertisingSyncRunRow)
             .where(
                 WbAdvertisingSyncRunRow.organization_id == self.organization_id,
@@ -975,9 +1036,15 @@ class AdvertisingService:
                 == marketplace_account_id,
                 WbAdvertisingSyncRunRow.source_kind == "ads_fullstats",
                 WbAdvertisingSyncRunRow.evidence_status == "raw",
-                WbAdvertisingSyncRunRow.date_from == period.date_from,
-                WbAdvertisingSyncRunRow.date_to == period.date_to,
+                WbAdvertisingSyncRunRow.date_from >= period.date_from,
+                WbAdvertisingSyncRunRow.date_to <= period.date_to,
+                (
+                    (WbAdvertisingSyncRunRow.date_from == period.date_from)
+                    & (WbAdvertisingSyncRunRow.date_to == period.date_to)
+                )
+                | (WbAdvertisingSyncRunRow.date_from == WbAdvertisingSyncRunRow.date_to),
                 WbAdvertisingSyncRunRow.is_materialized.is_(True),
+                WbAdvertisingSyncRunRow.expected_request_count > 0,
                 WbAdvertisingSyncRunRow.expected_request_count
                 == WbAdvertisingSyncRunRow.completed_request_count,
             )
@@ -986,9 +1053,39 @@ class AdvertisingService:
                 WbAdvertisingSyncRunRow.captured_at.desc(),
                 WbAdvertisingSyncRunRow.sync_run_id.desc(),
             )
-            .limit(1)
         )
-        if run is None:
+        exact = None
+        daily: dict[date, WbAdvertisingSyncRunRow] = {}
+        for run in candidates:
+            run_period = Period(run.date_from, run.date_to)
+            if (
+                run_period.temporal_state(now) == "complete"
+                and _utc(run.last_observed_at) < run_period.end_exclusive_at
+            ):
+                continue
+            if run_period == period and exact is None:
+                exact = run
+            if run.date_from == run.date_to:
+                daily.setdefault(run.date_from, run)
+        if len(daily) == period.days and (
+            exact is None
+            or min(_utc(run.last_observed_at) for run in daily.values())
+            > _utc(exact.last_observed_at)
+        ):
+            return [daily[day] for day in sorted(daily)]
+        return [exact] if exact is not None else []
+
+    def get_raw_reconciliation(
+        self, marketplace_account_id: int, period: Period
+    ) -> AdvertisingRawReconciliation:
+        self._account(marketplace_account_id)
+        now = self.now()
+        temporal_state = period.temporal_state(now)
+        if temporal_state == "future":
+            return AdvertisingRawReconciliation("future", period, None)
+
+        runs = self._raw_coverage(marketplace_account_id, period, now)
+        if not runs:
             return AdvertisingRawReconciliation(
                 "partial" if temporal_state == "partial" else "missing",
                 period,
@@ -996,12 +1093,13 @@ class AdvertisingService:
                 diagnostics=("WB_ADS_RAW_EVIDENCE_MISSING",),
             )
 
+        run_ids = [run.sync_run_id for run in runs]
         facts = self.session.scalars(
             select(WbAdvertisingFactRow).where(
                 WbAdvertisingFactRow.organization_id == self.organization_id,
                 WbAdvertisingFactRow.marketplace_account_id
                 == marketplace_account_id,
-                WbAdvertisingFactRow.sync_run_id == run.sync_run_id,
+                WbAdvertisingFactRow.sync_run_id.in_(run_ids),
             )
         ).all()
         campaign_rows = [
@@ -1010,11 +1108,19 @@ class AdvertisingService:
             if fact.fact_scope == "campaign" and fact.grain == "period"
         ]
         source_rows = [fact for fact in facts if fact.fact_scope == "source_sku"]
-        source_by_campaign: dict[int, list[WbAdvertisingFactRow]] = {}
+        daily_by_campaign: dict[tuple[str, int], list[WbAdvertisingFactRow]] = {}
+        for fact in facts:
+            if fact.fact_scope == "campaign" and fact.grain == "day":
+                daily_by_campaign.setdefault(
+                    (fact.sync_run_id, int(fact.campaign_id)), []
+                ).append(fact)
+        source_by_campaign: dict[tuple[str, int], list[WbAdvertisingFactRow]] = {}
         source_by_nm: dict[int, list[WbAdvertisingFactRow]] = {}
         for fact in source_rows:
             if fact.campaign_id is not None:
-                source_by_campaign.setdefault(int(fact.campaign_id), []).append(fact)
+                source_by_campaign.setdefault(
+                    (fact.sync_run_id, int(fact.campaign_id)), []
+                ).append(fact)
             if fact.nm_id is not None:
                 source_by_nm.setdefault(int(fact.nm_id), []).append(fact)
         residuals: list[AdvertisingMetricTotals] = []
@@ -1025,9 +1131,19 @@ class AdvertisingService:
                 campaign,
                 [
                     fact
-                    for fact in source_by_campaign.get(int(campaign.campaign_id), [])
+                    for fact in source_by_campaign.get(
+                        (campaign.sync_run_id, int(campaign.campaign_id)), []
+                    )
                     if fact.date_from >= campaign.date_from
                     and fact.date_to <= campaign.date_to
+                ],
+                [
+                    day
+                    for day in daily_by_campaign.get(
+                        (campaign.sync_run_id, int(campaign.campaign_id)), []
+                    )
+                    if day.date_from >= campaign.date_from
+                    and day.date_to <= campaign.date_to
                 ],
             )
             residuals.append(residual)
@@ -1046,19 +1162,23 @@ class AdvertisingService:
                 WbAdvertisingSpendDocumentRow.organization_id == self.organization_id,
                 WbAdvertisingSpendDocumentRow.marketplace_account_id
                 == marketplace_account_id,
-                WbAdvertisingSpendDocumentRow.sync_run_id == run.sync_run_id,
+                WbAdvertisingSpendDocumentRow.sync_run_id.in_(run_ids),
             )
         ).all()
-        campaign_windows: dict[int, list[WbAdvertisingFactRow]] = {}
+        campaign_windows: dict[tuple[str, int], list[WbAdvertisingFactRow]] = {}
         for campaign in campaign_rows:
-            campaign_windows.setdefault(int(campaign.campaign_id), []).append(campaign)
+            campaign_windows.setdefault(
+                (campaign.sync_run_id, int(campaign.campaign_id)), []
+            ).append(campaign)
         unknown_documents = [
             document
             for document in documents
             if not any(
                 campaign.spend_kopecks is not None
                 and campaign.date_from <= document.business_date <= campaign.date_to
-                for campaign in campaign_windows.get(document.campaign_id, [])
+                for campaign in campaign_windows.get(
+                    (document.sync_run_id, document.campaign_id), []
+                )
             )
         ]
 
@@ -1093,7 +1213,7 @@ class AdvertisingService:
         return AdvertisingRawReconciliation(
             state=state,
             period=period,
-            snapshot=_snapshot(run),
+            snapshot=_coverage_snapshot(self.organization_id, period, runs),
             campaign=campaign_totals,
             source_sku=source_totals,
             campaign_only=campaign_only,

@@ -1,0 +1,43 @@
+# Dedicated local infrastructure only; no project, home or credential mounts.
+# Lima 2.2.0 official Ubuntu 24.04 ARM64 image, pinned to its published digest.
+# Start with an explicit dedicated LIMA_HOME and instance name satorna-db.
+minimumLimaVersion: 2.2.0
+images:
+- location: https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img
+  arch: aarch64
+  digest: sha256:7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: 1GiB
+disk: 8GiB
+mounts: []
+propagateProxyEnv: false
+containerd:
+  system: false
+  user: false
+ssh:
+  forwardAgent: false
+  loadDotSSHPubKeys: false
+portForwards:
+- guestIP: 127.0.0.1
+  guestPort: 58000
+  hostIP: 127.0.0.1
+  hostPort: 58000
+  proto: tcp
+- guestIP: 127.0.0.1
+  guestPortRange: [1, 65535]
+  proto: any
+  ignore: true
+- guestIP: 0.0.0.0
+  guestPortRange: [1, 65535]
+  proto: any
+  ignore: true
+- guestIP: "::1"
+  guestPortRange: [1, 65535]
+  proto: any
+  ignore: true
+- guestIP: "::"
+  guestPortRange: [1, 65535]
+  proto: any
+  ignore: true

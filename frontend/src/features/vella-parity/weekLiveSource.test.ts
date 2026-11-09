@@ -23,7 +23,8 @@ describe('stock and week report user-facing states', () => {
     expect(stockIsland).toContain('Загружаем остатки')
     expect(stockIsland).toContain('За выбранный период нет остатков')
     expect(stockIsland).not.toContain('ReportSourcesRefreshBar')
-    expect(stockIsland).not.toContain('ReportProgressPanelIsland')
+    // Loading/empty/error rendering is exercised against the actual React page
+    // in reportLoadingBrowser.test.ts; a progress component is not itself a technical panel.
     expect(stockIsland).not.toContain('OOS риск')
     expect(stockIsland).not.toContain('КТР высокий')
   })
@@ -41,7 +42,7 @@ describe('stock and week report user-facing states', () => {
     expect(weekIsland).toContain('Загружаем сравнение недель')
     expect(weekIsland).toContain('За выбранный период нет сравнения')
     expect(weekIsland).not.toContain('ReportSourcesRefreshBar')
-    expect(weekIsland).not.toContain('ReportProgressPanelIsland')
+    // Actual progress-to-empty/error behavior is covered by reportLoadingBrowser.test.ts.
     expect(weekIsland).not.toContain('live WoW')
     expect(weekIsland).not.toContain('Week over week')
   })

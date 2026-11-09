@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import time
+import re
+from math import ceil, isfinite
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from celery.exceptions import Retry
+from celery.exceptions import Ignore, Retry
+from fastapi import HTTPException
 
 from app import repricer_bff as repricer_bff_module
 from app.avito.auth import resolve_user_avito_access_token
@@ -16,6 +19,10 @@ from app.avito.price_apply import LiveAvitoPriceClient
 from app.cabinet.store import get_organization_avito_credentials_secret, get_organization_wb_token_secret, get_user_wb_token_secret
 from app.config import get_settings
 from app.infra.celery_app import REPRICER_SCHEDULER_POLL_MINUTES, celery_app
+from app.infra.db import get_session_factory
+from app.platform.advertising.raw_backfill import _connected_wb_account_id
+from app.platform.economics.backfill import LegacyCostSnapshot, apply_cost_backfill
+from app.platform.economics.wb_quarterly_tax import tax_consistent_report
 from app.repricer_cache.store import (
     cached_goods_meta,
     finance_cache_uses_current_revenue_basis,
@@ -47,16 +54,74 @@ from app.wb_sync_plan import WbSyncProfile, historical_sync_as_of, nightly_baske
 
 
 REPORT_SOURCE_REFRESH_PLANS: dict[str, dict[str, Any]] = {
+    "stats": {"sources": ("period-stats", "finance", "ads", "baskets"), "baskets_include_daily_detail": False},
     "digest": {"sources": ("period-stats", "finance", "ads", "baskets"), "baskets_include_daily_detail": True},
-    "abc": {"sources": ("period-stats", "finance", "ads", "baskets"), "baskets_include_daily_detail": True},
-    "rnp": {"sources": ("baskets", "ads"), "baskets_include_daily_detail": True},
+    "abc": {"sources": ("period-stats", "finance", "ads", "baskets"), "baskets_include_daily_detail": False},
+    "rnp": {"sources": ("finance", "baskets", "ads"), "baskets_include_daily_detail": False},
     "pnl": {"sources": ("finance", "ads"), "baskets_include_daily_detail": False},
     "ads": {"sources": ("ads",), "baskets_include_daily_detail": False},
     "stock": {"sources": ("stocks", "period-stats", "finance"), "baskets_include_daily_detail": False},
-    "week-over-week": {"sources": ("stocks", "period-stats", "finance", "ads"), "baskets_include_daily_detail": False},
+    "week-over-week": {"sources": ("stocks", "period-stats", "finance", "ads", "baskets"), "baskets_include_daily_detail": False},
 }
 
 NIGHTLY_BASKETS_DETAIL_PAUSE_SECONDS = 120
+
+
+@celery_app.task(name="reports.refresh_sales_funnel", bind=True, max_retries=80)
+def refresh_sales_funnel(self, organization_id, account, scope, start, end, job_key, lock_key, owner, native_comparison=False, aggregate_comparison=False):
+    from app.infra.redis_client import get_redis_client
+    from app.wb_api.report_reads import ReportDemandEnded
+    from app.wb_sales_funnel import collect
+    redis = get_redis_client()
+    if redis.get(lock_key) not in {owner, owner.encode()}:
+        return  # A redelivered/expired task must not resurrect an old load.
+    collection = redis.lock(f"wb:funnel:collect:{organization_id}:{scope}", timeout=1200)
+    if not collection.acquire(blocking=False):
+        redis.expire(lock_key, 1200)
+        raise self.retry(countdown=15)
+    def heartbeat():
+        collection.extend(1200, replace_ttl=True)
+        redis.expire(lock_key, 1200)
+    rescheduled = False
+    try:
+        collect(organization_id, account, scope, start, end, job_key, heartbeat=heartbeat,
+                **({"native_comparison": True} if native_comparison else {}),
+                **({"aggregate_comparison": True} if aggregate_comparison else {}))
+    except ReportDemandEnded:
+        save_source_cache(organization_id, job_key, {"status": "paused", "message": "Загрузка приостановлена: период больше не открыт."}, strict=True)
+    except Exception as exc:
+        code = getattr(exc, "status_code", None)
+        if code == 429 and self.request.retries < self.max_retries:
+            delay = repricer_bff_module._retry_after_from_http_exception(exc) or 60
+            delay = max(15, int(delay) + 1)
+            save_source_cache(organization_id, job_key, {"status": "queued", "message": "Ожидаем лимит WB; продолжим автоматически.", "retryAfterSeconds": delay}, strict=True)
+            heartbeat()
+            redis.expire(lock_key, max(1200, delay + 120))
+            rescheduled = True
+            raise self.retry(countdown=delay) from None
+        message = ("WB ограничил запросы. Повторите позже; сохранённые данные не потеряны." if code == 429 else
+                   "WB отклонил доступ к воронке. Проверьте права токена." if code in {401, 403} else
+                   "Не удалось загрузить все данные WB. Сохранённая часть доступна; повторите загрузку.")
+        if str(exc) == "WB_FUNNEL_COMPARISON_PERIOD_MISMATCH":
+            message = "WB вернул другой период сравнения. Готовая динамика за выбранную пару недоступна."
+        elif str(exc) == "WB_FUNNEL_SELECTED_PERIOD_PENDING":
+            message = "Сначала завершите обновление выбранного периода. Его сохранённые значения доступны."
+        save_source_cache(organization_id, job_key, {"status": "failed", "message": message}, strict=True)
+    finally:
+        collection.release()
+        if not rescheduled:
+            redis.eval("if redis.call('GET',KEYS[1]) == ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0", 1, lock_key, owner)
+
+
+def _enqueue_report_budget_step(org, user, digest, owner, cursor, delay):
+    refresh_report_budget_step.apply_async(args=(org, user, digest, owner, cursor), countdown=delay)
+
+
+@celery_app.task(name="reports.refresh_budget_step", max_retries=0)
+def refresh_report_budget_step(organization_id, user_id, digest, owner, cursor):
+    from app.wb_report_budgets import run_step
+    return run_step(organization_id, user_id, digest, owner, cursor,
+                    _report_refresh_wb_token, _enqueue_report_budget_step)
 
 
 def _report_source_refresh_plan(report_id: str) -> dict[str, Any]:
@@ -135,12 +200,23 @@ def _digest_report_summary(organization_id: int, date_from: date, date_to: date)
         "adSpendKopecks",
     )
     if snapshot_summary and all(snapshot_summary.get(field) == summary.get(field) for field in source_fields):
-        return snapshot_summary
+        summary = snapshot_summary
+    # Repricer unit-margin × orders is not realized financial report profit.
+    from app.wb_reports_sprint_d import _get_cached_pnl_response, _pnl_report_cache_key, _period_cache, _complete_finance_ledger
+    finance = _period_cache(organization_id, "finance", date_from, date_to)
+    summary = {**summary, "marginKopecks": None}
+    if _complete_finance_ledger(finance, date_from, date_to):
+        key = _pnl_report_cache_key(date_from=date_from, date_to=date_to, group_by="sku",
+            requested_state="preliminary", finance_allowed=True)
+        pnl = _get_cached_pnl_response(organization_id=organization_id, cache_key=key)
+        if pnl is not None and pnl.sourceStatus != "stale":
+            summary["marginKopecks"] = pnl.totals.netProfitKopecks
+            summary["exampleCosts"] = "WB_USER_EXAMPLE_COSTS" in pnl.blockerIds
     return summary
 
 
 @celery_app.task(name="reports.build_digest_for_org", bind=True, max_retries=0)
-def build_digest_for_org(self, organization_id: int, date_from_iso: str, date_to_iso: str, finance_allowed: bool, wb_token: str | None) -> dict[str, Any]:
+def build_digest_for_org(self, organization_id: int, date_from_iso: str, date_to_iso: str, finance_allowed: bool, wb_token: str | None, *, source_refresh: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build one exact digest range outside the request/response lifecycle."""
     from datetime import date as date_type
     from app.routers import wb_reports_bff as reports
@@ -149,11 +225,13 @@ def build_digest_for_org(self, organization_id: int, date_from_iso: str, date_to
     date_to = date_type.fromisoformat(date_to_iso)
     date_range = {"preset": "custom", "from": date_from_iso, "to": date_to_iso}
     job_key = reports._digest_job_cache_key(date_from, date_to)
+    refresh_context = {"kind": "report_source_refresh", "sync": source_refresh} if source_refresh is not None else {}
     started_at = reports._utc_now_iso()
     def update_progress(stage: str, label: str, percent: int) -> None:
-        reports.save_source_cache(organization_id, job_key, {"state": "running", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "startedAt": started_at, "stage": stage, "label": label, "percent": percent, "updatedAt": reports._utc_now_iso()})
+        reports.save_source_cache(organization_id, job_key, {**refresh_context, "state": "running", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "startedAt": started_at, "stage": stage, "label": label, "percent": percent, "updatedAt": reports._utc_now_iso()})
     update_progress("queued", "Задача принята, ждём worker", 0)
     try:
+        source_revision = reports._digest_source_revision(organization_id, date_from, date_to)
         wb_token = None
         update_progress("cache-snapshot", "Читаем WB sync cache для дайджеста", 8)
         update_progress("cache-snapshot", "Собираем дайджест из WB cache", 75)
@@ -184,20 +262,99 @@ def build_digest_for_org(self, organization_id: int, date_from_iso: str, date_to
         plan = reports.get_source_cache(organization_id, reports._digest_plan_cache_key(date_to.strftime("%Y-%m")), slim=False) or {}
         if isinstance(plan, dict) and plan:
             reports._apply_digest_plan(digest, plan)
-        cached = {"digest": digest, "dateFrom": date_from_iso, "dateTo": date_to_iso, "completedAt": reports._utc_now_iso()}
+        source_from, source_to = reports._digest_source_bounds(date_from, date_to)
+        ready, missing = reports._report_daily_sources_ready(organization_id, reports.REPORT_DAILY_SOURCES_BY_ID["digest"], date_from=source_from, date_to=source_to)
+        cached = {"digest": digest, "dateFrom": date_from_iso, "dateTo": date_to_iso, "completedAt": reports._utc_now_iso(),
+            "sourceComplete": ready, "sourceRevision": source_revision}
         reports.save_source_cache(organization_id, reports._digest_cache_key(date_from, date_to), cached)
         reports.save_source_cache(organization_id, "reports_digest_latest", cached)
-        result = {"state": "completed", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "stage": "completed", "label": "Воронка продаж готова", "percent": 100, "finishedAt": reports._utc_now_iso()}
+        result = {**refresh_context, "state": "completed", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "stage": "completed", "label": "Воронка продаж готова", "percent": 100, "finishedAt": reports._utc_now_iso()}
+        if not ready:
+            result.update(state="failed", stage="partial", label="Воронка сохранена частично",
+                error=f"Не получены все дни: {', '.join(missing)}. Сохранённая часть доступна; повторите дозагрузку.")
         reports.save_source_cache(organization_id, job_key, result)
         return result
     except Exception as exc:
-        result = {"state": "failed", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "finishedAt": reports._utc_now_iso(), "error": str(exc)[:500]}
+        result = {**refresh_context, "state": "failed", "stage": "failed", "taskId": self.request.id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "finishedAt": reports._utc_now_iso(), "error": str(exc)[:500]}
         reports.save_source_cache(organization_id, job_key, result)
         raise
 
 
-@celery_app.task(name="reports.refresh_report_sources_for_org", bind=True, max_retries=0)
-def refresh_report_sources_for_org(self, organization_id: int, user_id: str, report_id: str, date_from_iso: str, date_to_iso: str, group_by: str, source: str, finance_allowed: bool, wb_token: str | None) -> dict[str, Any]:
+class ReportSourceRateLimited(RuntimeError):
+    def __init__(self, message: str, delay: int):
+        super().__init__(message)
+        self.delay = delay
+
+
+def _finance_rate_limit_delay(exc: HTTPException) -> int:
+    """Honor provider retry/reset windows, including local shared cooldowns."""
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    details = detail.get("details") or {}
+    rate_limit = details.get("rateLimit") if isinstance(details, dict) else None
+    rate_limit = rate_limit if isinstance(rate_limit, dict) else {}
+    headers = {key.lower(): value for key, value in (exc.headers or {}).items()}
+    delays = [61]  # Finance has a one-minute budget; keep a boundary margin.
+    for value in (
+        rate_limit.get("retryAfterSeconds"), rate_limit.get("resetAfterSeconds"),
+        headers.get("retry-after"), headers.get("x-ratelimit-retry"), headers.get("x-ratelimit-reset"),
+    ):
+        try:
+            seconds = float(value)
+            if isfinite(seconds) and seconds > 0:
+                delays.append(ceil(seconds) + 1)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return max(delays)
+
+
+def _report_rate_limit_delay(result: dict[str, Any]) -> int | None:
+    errors = [step for step in result.get("steps", [])
+              if isinstance(step, dict) and step.get("status") == "error"]
+    if not errors:
+        return None
+    delays = []
+    for step in errors:
+        message = str(step.get("error") or step.get("message") or "")
+        if "rate limit exceeded" not in message.lower() and "HTTP 429" not in message:
+            return None  # Authentication and other failures are not retryable limits.
+        match = re.search(r"повтор через (\d+) сек", message)
+        delays.append(max(60, int(match.group(1)) if match else 60))
+    return max(delays)
+
+
+@tax_consistent_report
+def _publish_loading_report_snapshot(organization_id, user_id, report_id,
+        date_from, date_to, group_by, source, finance_allowed, *, include_previous=True):
+    """Materialize available DB observations in the worker, never in a GET.
+
+    A preview is explicitly provisional, not proof of complete collection.
+    Neither builder below receives marketplace credentials.
+    """
+    from app.routers import wb_reports_bff as reports
+    actor = SimpleNamespace(organization_id=organization_id, user_id=user_id)
+    if report_id == "week-over-week":
+        payload = reports._build_week_over_week_fallback_report(
+            request=SimpleNamespace(query_params={}), actor=actor,
+            date_from=date_from, date_to=date_to,
+            date_range={"preset": "custom", "from": str(date_from), "to": str(date_to)},
+            finance_allowed=finance_allowed, wb_token=None, include_previous=include_previous)
+        if not reports._week_report_has_period_activity(payload):
+            return
+    else:
+        payload = reports._saved_report_preview(actor=actor, report_id=report_id,
+            date_from=date_from, date_to=date_to, group_by=group_by, finance_allowed=finance_allowed,
+            **({"source": source} if report_id == "pnl" else {}))
+    if payload is not None:
+        payload = {**payload, "loadingSnapshot": True,
+                   "meta": {**payload.get("meta", {}), "freshnessState": "partial"}}
+        payload.pop("reportJob", None)
+        reports._save_exact_report_payload_cache(organization_id=organization_id,
+            report_id=report_id, date_from=date_from, date_to=date_to,
+            group_by=group_by, source=source, report=payload, finance_allowed=finance_allowed)
+
+
+@celery_app.task(name="reports.refresh_report_sources_for_org", bind=True, max_retries=3)
+def refresh_report_sources_for_org(self, organization_id: int, user_id: str, report_id: str, date_from_iso: str, date_to_iso: str, group_by: str, source: str, finance_allowed: bool, wb_token: str | None, *, refresh_missing_only: bool = False) -> dict[str, Any]:
     """Refresh only the WB sources needed by one report range, then rebuild it."""
     from datetime import date as date_type
     from app.routers import wb_reports_bff as reports
@@ -205,10 +362,48 @@ def refresh_report_sources_for_org(self, organization_id: int, user_id: str, rep
     date_from = date_type.fromisoformat(date_from_iso)
     date_to = date_type.fromisoformat(date_to_iso)
     plan = _report_source_refresh_plan(report_id)
-    job_key = reports._digest_job_cache_key(date_from, date_to) if report_id == "digest" else reports._report_job_cache_key(report_id, date_from, date_to, group_by, source)
+    repricer_only = report_id == "stats" and source.startswith("repricer-finance:")
+    catalog_only = report_id == "stats" and source.startswith("catalog:")
+    statistics_comparison = report_id == "stats" and source == "statistics-comparison"
+    if repricer_only:
+        plan = {**plan, "sources": ("finance",)}
+    elif statistics_comparison:
+        plan = {"sources": ("ads", "baskets"), "baskets_include_daily_detail": False}
+    job_key = reports._digest_job_cache_key(date_from, date_to) if report_id == "digest" else reports._report_job_cache_key(
+        report_id,
+        date_from,
+        date_to,
+        group_by,
+        source,
+        finance_allowed=finance_allowed,
+    )
     task_id = str(getattr(self.request, "id", None) or f"manual-refresh-{uuid4().hex[:12]}")
     started_at = reports._utc_now_iso()
     resolved_wb_token = _report_refresh_wb_token(organization_id, user_id, wb_token)
+    previous_job = (reports.get_source_cache(organization_id, job_key, slim=False) or {}) if (repricer_only or report_id in {"abc", "pnl", "week-over-week"}) and self.request.retries else {}
+    finance_progress = {key: int(previous_job.get(key) or 0) for key in ("pagesLoaded", "rowsCount")}
+    period_phase = "selected"
+    last_preview_at = 0.0
+    preview_unavailable = False
+
+    def publish_preview(*, force=False):
+        nonlocal last_preview_at, preview_unavailable
+        if report_id not in {"abc", "pnl", "rnp", "week-over-week"}:
+            return
+        if not force and time.monotonic() - last_preview_at < 30:
+            return
+        last_preview_at = time.monotonic()
+        try:
+            _publish_loading_report_snapshot(organization_id, user_id, report_id,
+                date_from, date_to, group_by, source, finance_allowed,
+                # Collection stays current-first; already persisted comparison
+                # evidence does not depend on which provider batch is running.
+                include_previous=True)
+            preview_unavailable = False
+        except Exception:
+            # Incomplete source evidence can prevent a preview. Continue the
+            # collection; the final builder still reports any actual failure.
+            preview_unavailable = True
 
     def save_job(stage: str, label: str, percent: int, state: str = "running", **extra: Any) -> dict[str, Any]:
         payload = {
@@ -224,6 +419,9 @@ def refresh_report_sources_for_org(self, organization_id: int, user_id: str, rep
             "percent": max(0, min(100, int(percent))),
             "startedAt": started_at,
             "updatedAt": reports._utc_now_iso(),
+            **({"periodPhase": period_phase} if report_id == "week-over-week" else {}),
+            **({"previewUnavailable": True} if preview_unavailable else {}),
+            **({"source": source} if report_id == "stats" and not repricer_only else {}),
             **extra,
         }
         reports.save_source_cache(organization_id, job_key, payload)
@@ -241,52 +439,315 @@ def refresh_report_sources_for_org(self, organization_id: int, user_id: str, rep
             currentSource=source_name,
             sourceStep=step,
         )
+        publish_preview()
+
+    def finance_page_collected(pages: int, count: int) -> None:
+        finance_progress.update(pagesLoaded=pages, rowsCount=count)
+        save_job("refreshing_sources", "Сохраняем операции WB для «Неделя к неделе»" if report_id == "week-over-week" else "Сохраняем операции WB для P&L" if report_id == "pnl" else "Сохраняем операции WB для ABC" if report_id == "abc" else "Сохраняем операции WB для репрайсера", 50, **finance_progress)
 
     save_job("queued", "Задача принята", 0, "queued")
+    from app.wb_api.report_reads import active_report_read, install_report_read, ReportDemandEnded
+    read_context = install_report_read(organization_id, resolved_wb_token, job_key)
     try:
-        sources = tuple(plan["sources"])
-        if sources:
+        publish_preview(force=True)
+        if not repricer_only:
+            from app.wb_catalog_loading import missing_catalog_sources, recover_catalog
+            if missing_catalog_sources(organization_id):
+                if not resolved_wb_token:
+                    raise RuntimeError("no_cabinet_wb_token")
+                recover_catalog(organization_id, resolved_wb_token, source_progress)
+            if catalog_only:
+                from app.repricer_page_finance import connection_key
+                if source != f"catalog:{connection_key(resolved_wb_token or '')}":
+                    raise RuntimeError("WB connection changed; restart catalog collection")
+                return save_job("completed", "Каталог WB сохранён", 100, "completed", finishedAt=reports._utc_now_iso())
+        if repricer_only:
+            from app.repricer_page_finance import connection_key
+            if source != f"repricer-finance:{connection_key(resolved_wb_token or '')}":
+                raise RuntimeError("WB connection changed; restart the financial collection")
+        if report_id == "ads":
+            if not resolved_wb_token:
+                raise RuntimeError("no_cabinet_wb_token")
+            # Historical statistics must not wait for optional current budgets.
+            snapshot = reports.build_ads_attribution_snapshot(
+                date_from=date_from, date_to=date_to, group_by="campaign", wb_token=resolved_wb_token,
+                include_budgets=False,
+                progress_callback=lambda stage, label, percent: save_job(stage, label, percent),
+            )
+            limited = [item for item in (getattr(snapshot, "diagnostics", None) or {}).get("sources", [])
+                       if item.get("statusCode") == 429 and item.get("status") == "blocked"]
+            retry_delay = max([20, *[reports._int_value((item.get("rateLimit") or {}).get("retryAfterSeconds")) for item in limited]]) + 1
+            if snapshot.source_status == "blocked":
+                if limited:
+                    raise ReportSourceRateLimited("WB ограничил загрузку рекламы; сохранённые данные остаются доступны", retry_delay)
+                raise RuntimeError("WB не вернул рекламные кампании. Проверьте доступ токена и повторите загрузку.")
+            report = reports._map_ads_to_report_response({"preset": "custom", "from": date_from_iso, "to": date_to_iso}, snapshot)
+            report["campaignDetailsCollected"] = True
+            from app.wb_report_ads import save_campaign_performance
+            save_campaign_performance(organization_id, date_from, date_to, report)
+            stored = reports.save_ads_report_cache(organization_id=organization_id, date_from=date_from, date_to=date_to,
+                group_by="campaign", payload=report)
+            reports.save_ads_history_snapshots(organization_id=organization_id, rows=stored.get("rows", []),
+                daily_rows=stored.get("dailyRows", []), spend_documents=stored.get("spendDocuments", []))
+            reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="ads", date_from=date_from,
+                date_to=date_to, group_by=group_by, source=source, report=stored, finance_allowed=finance_allowed)
+            if snapshot.source_status != "fresh":
+                if limited:
+                    # Successful HTTP batches are durable report-read checkpoints.
+                    # Resume the same job after cooldown instead of finalizing a
+                    # partial report and requiring a new full collection.
+                    raise ReportSourceRateLimited("WB ограничил часть рекламных пакетов; дозагружаем недостающие", retry_delay)
+                failures = [f"{item.get('sourceId')}: HTTP {item.get('statusCode')}" for item in (snapshot.diagnostics or {}).get('sources', []) if item.get('status') == 'blocked']
+                return save_job("partial", "Реклама сохранена частично", 100, "failed",
+                    error=("; ".join(failures) or "WB не вернул полную статистику кампаний") + ". Полученная часть сохранена; повторите дозагрузку.")
+            completed = save_job("completed", "Историческая статистика рекламы сохранена", 100, "completed", finishedAt=reports._utc_now_iso())
+            from app.wb_report_budgets import connection, start
+            try:
+                start(organization_id, user_id, connection(resolved_wb_token),
+                      [row.get("campaignId") for row in stored.get("rows", [])], _enqueue_report_budget_step)
+            except Exception:
+                pass  # Optional queue failure must not fail the published report.
+            return completed
+        sources = tuple(item for item in plan["sources"] if finance_allowed or item != "finance")
+        windows: dict[tuple[date, date], list[str]] = {}
+        source_from, source_to = reports._report_source_bounds(report_id, date_from, date_to)
+        # Never merge current and comparison dates into one collection window.
+        # Planning is DB-only; all current-period sources execute before any
+        # previous-period request, including financial and advertising reads.
+        periods = ((date_from, date_to), reports._previous_period(date_from, date_to)) if report_id == "week-over-week" else ((source_from, source_to),)
+        for phase_index, (left, right) in enumerate(periods):
+            for item in sources:
+                if report_id == "week-over-week" and phase_index and item == "stocks":
+                    continue  # A current stock snapshot is collected only once.
+                readiness_source = "baskets-summary" if item == "baskets" and report_id in {"stats", "abc", "rnp"} else item
+                if report_id == "week-over-week" and item == "baskets":
+                    from app.wb_week_sources import load_funnel
+                    coverage = load_funnel(organization_id, left, right)
+                    ranges = coverage.get("missingRanges", [(left, right)]) if coverage["needsCollection"] else []
+                elif report_id == "pnl" and item == "ads":
+                    from app.wb_pnl_advertising import missing_campaign_ranges
+                    ranges = missing_campaign_ranges(organization_id, left, right, fresh_only=True)
+                elif report_id in {"abc", "pnl", "rnp", "week-over-week"}:
+                    from app.wb_abc_loading import missing_source_ranges
+                    ranges = missing_source_ranges(organization_id, readiness_source, left, right, fresh_only=True,
+                        **({"raw_required": True} if report_id in {"pnl", "week-over-week"} else {}))
+                else:
+                    ranges = reports._report_missing_source_ranges(organization_id, readiness_source, date_from=left, date_to=right, fresh_only=True) if refresh_missing_only else [(left, right)]
+                if repricer_only:
+                    from app.repricer_page_finance import missing_page_ranges
+                    ranges = missing_page_ranges(organization_id, resolved_wb_token, date_from, date_to, fresh_only=True)
+                for window in ranges:
+                    windows.setdefault(window, []).append(item)
+        if report_id == "rnp" and finance_allowed:
+            previous_from, previous_to = reports._previous_period(date_from, date_to)
+            for window in reports._report_missing_source_ranges(organization_id, "finance",
+                    date_from=previous_from, date_to=previous_to, fresh_only=True):
+                windows.setdefault(window, []).append("finance")
+        if windows:
             if not resolved_wb_token:
                 raise RuntimeError("no_cabinet_wb_token")
             save_job("refreshing_sources", "Обновляем источники WB для отчета", 10, sources=list(sources))
-            refresh_result = refresh_wb_data_sources(
-                organization_id=organization_id,
-                wb_token=resolved_wb_token,
-                scenario="complete",
-                period_days=(date_to - date_from).days + 1,
-                date_from=date_from,
-                date_to=date_to,
-                trigger=f"reports-{report_id}-manual-refresh",
-                force=True,
-                execute_lock=False,
-                sources=sources,
-                sync_profile=f"reports-{report_id}-manual-refresh",
-                sync_profile_label=f"Отчет {report_id}: обновление из WB",
-                window_kind="report",
-                baskets_include_daily_detail=bool(plan.get("baskets_include_daily_detail")),
-                _progress_callback=source_progress,
-                _parallelize=False,
-            )
-            refresh_error = _report_refresh_error(refresh_result)
-            if refresh_error:
-                raise RuntimeError(refresh_error)
+            refresh_result = {"state": "completed", "steps": []}
+            def collect_window(start, end, window_sources):
+                if report_id == "pnl" and "ads" in window_sources:
+                    # Publish independent finance first; advertising has its own
+                    # existing fullstats checkpoints, rate limits and demand lease.
+                    if "finance" in window_sources:
+                        collect_window(start, end, ["finance"])
+                    from app.wb_pnl_advertising import collect_campaign_spend
+                    collect_campaign_spend(organization_id, resolved_wb_token, start, end,
+                        lambda stage, label, percent: save_job(stage, label, percent))
+                    publish_preview(force=True)
+                    return
+                if report_id == "week-over-week" and "baskets" in window_sources:
+                    from app.wb_week_sources import collect_funnel
+                    try:
+                        collect_funnel(organization_id, resolved_wb_token, start, end)
+                        publish_preview(force=True)
+                    except HTTPException as exc:
+                        if exc.status_code != 429:
+                            raise
+                        raise ReportSourceRateLimited("WB ограничил загрузку воронки; страницы сохранены.",
+                            _finance_rate_limit_delay(exc)) from exc
+                    window_sources = [item for item in window_sources if item != "baskets"]
+                    if not window_sources:
+                        return
+                abc_finance = report_id in {"abc", "pnl", "rnp", "week-over-week"} and "finance" in window_sources
+                if repricer_only or abc_finance:
+                    try:
+                        finance_payload = repricer_bff_module.fetch_finance_report_aggregates(
+                            "complete",
+                            wb_token=resolved_wb_token,
+                            date_from=datetime.combine(start, datetime.min.time()),
+                            date_to=datetime.combine(end, datetime.min.time()),
+                            repricer_operations_org=organization_id,
+                            page_collected_callback=finance_page_collected,
+                        )
+                        if abc_finance:
+                            from app.platform.finance.service import shadow_ingest_legacy_finance_payload
+                            canonical = shadow_ingest_legacy_finance_payload(organization_id, finance_payload)
+                            if canonical.get("state") == "failed":
+                                raise RuntimeError("Не удалось сохранить финансовый снимок для отчёта")
+                        publish_preview(force=True)
+                    except HTTPException as exc:
+                        if exc.status_code != 429:
+                            raise
+                        # Each received page is already committed with its cursor.
+                        # Release the worker, then resume only the missing pages.
+                        raise ReportSourceRateLimited(
+                            "WB временно ограничил загрузку финансов. Полученные страницы сохранены.",
+                            _finance_rate_limit_delay(exc),
+                        ) from exc
+                    if repricer_only:
+                        return
+                    window_sources = [item for item in window_sources if item != "finance"]
+                    if not window_sources:
+                        return
+                window_result = refresh_wb_data_sources(
+                    organization_id=organization_id,
+                    wb_token=resolved_wb_token,
+                    scenario="complete",
+                    period_days=(end - start).days + 1,
+                    date_from=start,
+                    date_to=end,
+                    trigger=f"reports-{report_id}-manual-refresh",
+                    force=True,
+                    execute_lock=False,
+                    sources=tuple(window_sources),
+                    sync_profile=f"reports-{report_id}-manual-refresh",
+                    sync_profile_label=f"Отчет {report_id}: обновление из WB",
+                    window_kind="report",
+                    baskets_include_daily_detail=bool(plan.get("baskets_include_daily_detail")),
+                    _progress_callback=source_progress,
+                    _parallelize=False,
+                )
+                refresh_result["steps"].extend(window_result.get("steps", []))
+                refresh_error = _report_refresh_error(window_result)
+                if refresh_error:
+                    delay = _report_rate_limit_delay(window_result)
+                    if delay is not None:
+                        raise ReportSourceRateLimited(refresh_error, delay)
+                    raise RuntimeError(refresh_error)
+
+            ordered = sorted(windows.items(), key=lambda item: (
+                report_id in {"week-over-week", "rnp"} and item[0][0] < date_from, item[0]))
+            for (start, end), window_sources in ordered:
+                next_phase = "previous" if report_id == "week-over-week" and start < date_from else "selected"
+                if next_phase != period_phase:
+                    publish_preview(force=True)
+                    period_phase = next_phase
+                    save_job("week-over-week-previous", "Этап текущего периода завершён; загружаем сравнение", 55)
+                source_groups = [window_sources]
+                if report_id == "week-over-week":
+                    # A terminal funnel/finance failure must not skip another
+                    # independently available source in the same date window.
+                    source_groups = [[item] for item in ("baskets", "finance") if item in window_sources]
+                    remaining = [item for item in window_sources if item not in {"baskets", "finance"}]
+                    if remaining:
+                        source_groups.append(remaining)
+                for source_group in source_groups:
+                    try:
+                        collect_window(start, end, source_group)
+                    except (ReportSourceRateLimited, ReportDemandEnded, Retry, Ignore):
+                        raise
+                    except Exception as exc:
+                        if report_id != "week-over-week" or getattr(exc, "status_code", None) in {401, 403}:
+                            raise
+                        # Missing coverage stays visible; it is never zero.
+                        refresh_result.setdefault("sourceErrors", []).append({
+                            "periodPhase": period_phase, "dateFrom": str(start), "dateTo": str(end),
+                            "sources": source_group, "error": str(exc)[:300]})
+                    publish_preview()
+            publish_preview(force=True)
+            if repricer_only:
+                return save_job("completed", "Финансы репрайсера сохранены", 100, "completed", finishedAt=reports._utc_now_iso())
+            settings = get_settings()
+            if (
+                report_id in {"abc", "pnl"}
+                and finance_allowed
+                and settings.advertising_shadow_ingest_enabled
+                and organization_id in settings.advertising_shadow_ingest_organization_ids
+            ):
+                # Keep the existing opt-in catalogue/economics bridge, but its
+                # Finance-backed report no longer depends on a second Promotion
+                # download. Campaign ingestion remains a separate workflow.
+                save_job("economics_evidence", "Проверяем сохранённые настройки товаров", 76)
+                with get_session_factory()() as session:
+                    account_id = _connected_wb_account_id(session, organization_id, wb_token=resolved_wb_token)
+                    apply_cost_backfill(
+                        session,
+                        organization_id=organization_id,
+                        marketplace_account_id=account_id,
+                        snapshot=LegacyCostSnapshot(
+                            captured_at=datetime.now(timezone.utc),
+                            goods=list_cached_goods(organization_id),
+                            content_cards=(get_source_cache(organization_id, "content_cards", slim=False) or {}).get("cards", []),
+                            runtime_state={}, algorithm_settings={}, costs_excel={},
+                        ),
+                        include_costs=False,
+                    )
             save_job("building_report", "Источники обновлены, собираем отчет", 78, sync=refresh_result)
         else:
+            if repricer_only:
+                return save_job("completed", "Финансы репрайсера сохранены", 100, "completed", finishedAt=reports._utc_now_iso())
             refresh_result = {"state": "skipped", "steps": [], "reason": "no_wb_sources_for_report"}
             save_job("building_report", "Собираем отчет", 78, sync=refresh_result)
 
+        if report_id == "stats":
+            ready, missing = reports._report_daily_sources_ready(organization_id,
+                tuple("baskets-summary" if item == "baskets" else item for item in sources), date_from=date_from, date_to=date_to)
+            if not ready:
+                raise RuntimeError(f"Не получены все дни: {', '.join(missing)}. Сохранённые данные доступны; повторите дозагрузку.")
+            return save_job("completed", "Данные статистики сохранены", 100, "completed", sync=refresh_result, finishedAt=reports._utc_now_iso())
         if report_id == "digest":
-            result = build_digest_for_org.run(organization_id, date_from_iso, date_to_iso, finance_allowed, None)
-        else:
-            result = build_report_for_org.run(organization_id, user_id, report_id, date_from_iso, date_to_iso, group_by, source, finance_allowed, None)
-        return save_job("completed", "Отчет обновлен", 100, "completed", sync=refresh_result, result=result, finishedAt=reports._utc_now_iso())
+            return self.replace(build_digest_for_org.s(
+                organization_id, date_from_iso, date_to_iso, finance_allowed, None,
+                source_refresh=refresh_result,
+            ))
+        return self.replace(build_report_for_org.s(
+            organization_id, user_id, report_id, date_from_iso, date_to_iso,
+            group_by, source, finance_allowed, None, source_refresh=refresh_result,
+        ))
+    except ReportDemandEnded:
+        return save_job("paused", "Загрузка остановлена после смены экрана", 0, "paused",
+            error="Полученные данные сохранены. При открытии раздела сбор продолжится с недостающих данных.")
+    except Ignore:
+        raise
+    except ReportSourceRateLimited as exc:
+        retry_count = self.request.retries
+        retry_options = {}
+        retry_progress = {}
+        if report_id in {"abc", "pnl", "week-over-week"}:
+            # Provider throttling is a resumable state, not a failed report
+            # after three attempts. Keep a bound and the shared WB budget.
+            retry_options["max_retries"] = 240
+            retry_progress = dict(finance_progress)
+        if report_id == "ads" or catalog_only:
+            retry_options["max_retries"] = 80
+        if repricer_only:
+            # Bound consecutive failures, not the total page count of a cold
+            # report. A newly committed page proves that collection is moving.
+            retry_count = int(previous_job.get("rateLimitRetryCount") or 0) if finance_progress["pagesLoaded"] <= int(previous_job.get("pagesLoaded") or 0) else 0
+            retry_options["max_retries"] = self.request.retries + 1
+            retry_progress = {**finance_progress, "rateLimitRetryCount": retry_count + 1}
+        if retry_count < (80 if report_id == "ads" or catalog_only else 240 if report_id in {"abc", "pnl", "week-over-week"} else self.max_retries):
+            save_job("rate_limit", f"WB ограничил запросы. Повтор недостающих источников через {exc.delay} сек", 10,
+                     "queued", retryAfterSeconds=exc.delay, retryAttempt=retry_count + 1, **retry_progress)
+            raise self.retry(exc=exc, countdown=exc.delay, kwargs={**(self.request.kwargs or {}), "refresh_missing_only": True}, **retry_options)
+        save_job("failed", "WB продолжает ограничивать запросы", 100, "failed", error=str(exc)[:500], finishedAt=reports._utc_now_iso())
+        raise
+    except Retry:
+        raise
     except Exception as exc:
         save_job("failed", "Не удалось обновить данные отчета", 100, "failed", error=str(exc)[:500], finishedAt=reports._utc_now_iso())
         raise
+    finally:
+        active_report_read.reset(read_context)
 
 
 @celery_app.task(name="reports.build_report_for_org", bind=True, max_retries=240)
-def build_report_for_org(self, organization_id: int, user_id: str, report_id: str, date_from_iso: str, date_to_iso: str, group_by: str, source: str, finance_allowed: bool, wb_token: str | None) -> dict[str, Any]:
+@tax_consistent_report
+def build_report_for_org(self, organization_id: int, user_id: str, report_id: str, date_from_iso: str, date_to_iso: str, group_by: str, source: str, finance_allowed: bool, wb_token: str | None, *, source_refresh: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build a heavy report outside the HTTP request and persist its exact response."""
     from datetime import date as date_type
     from app.routers import wb_reports_bff as reports
@@ -295,7 +756,14 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
     date_from = date_type.fromisoformat(date_from_iso)
     date_to = date_type.fromisoformat(date_to_iso)
     date_range = {"preset": "custom", "from": date_from_iso, "to": date_to_iso}
-    job_key = reports._report_job_cache_key(report_id, date_from, date_to, group_by, source)
+    job_key = reports._report_job_cache_key(
+        report_id,
+        date_from,
+        date_to,
+        group_by,
+        source,
+        finance_allowed=finance_allowed,
+    )
     cache_key = reports._report_cache_key(
         report_id,
         date_from,
@@ -303,22 +771,29 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
         group_by,
         source,
         organization_id=organization_id,
+        finance_allowed=finance_allowed,
     )
+    refresh_context = {"kind": "report_source_refresh", "sync": source_refresh} if source_refresh is not None else {}
     started_at = reports._utc_now_iso()
     def progress(stage: str, label: str, percent: int, state: str = "running") -> None:
-        reports.save_source_cache(organization_id, job_key, {"state": state, "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "stage": stage, "label": label, "percent": percent, "startedAt": started_at, "updatedAt": reports._utc_now_iso()})
+        reports.save_source_cache(organization_id, job_key, {**refresh_context, "state": state, "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "stage": stage, "label": label, "percent": percent, "startedAt": started_at, "updatedAt": reports._utc_now_iso()})
     progress("queued", "Задача принята", 0)
     try:
         required_daily_sources = REPORT_DAILY_SOURCES_BY_ID.get(report_id, ())
         if required_daily_sources:
-            ready, missing_sources = _report_snapshot_sources_ready(organization_id, required_daily_sources, date_from, date_to)
+            source_from, source_to = reports._report_source_bounds(report_id, date_from, date_to)
+            ready, missing_sources = reports._report_daily_sources_ready(organization_id, required_daily_sources,
+                date_from=source_from, date_to=source_to, report_id=report_id,
+                finance_allowed=finance_allowed,
+                selected_date_from=date_from if report_id == "week-over-week" else None)
             if not ready:
-                label = "Ждем дневную детализацию WB"
+                label = "WB не вернул полные данные" if source_refresh is not None else "Ждем дневную детализацию WB"
                 if missing_sources:
                     label = f"{label}: {', '.join(missing_sources)}"
-                progress("waiting_daily_detail", label, 20, "waiting_daily_detail")
+                progress("partial" if source_refresh is not None else "waiting_daily_detail", label,
+                    100 if source_refresh is not None else 20, "failed" if source_refresh is not None else "waiting_daily_detail")
                 return reports.get_source_cache(organization_id, job_key, slim=False) or {
-                    "state": "waiting_daily_detail",
+                    "state": "failed" if source_refresh is not None else "waiting_daily_detail",
                     "reportId": report_id,
                     "dateFrom": date_from_iso,
                     "dateTo": date_to_iso,
@@ -336,7 +811,7 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
             report = reports._build_stock_report_payload(date_range, snapshot, organization_id=organization_id, wb_token=wb_token)
         elif report_id == "ads":
             progress("ads", "Собираем рекламу из WB sync cache", 20)
-            report = reports._build_ads_report_payload(actor=SimpleNamespace(organization_id=organization_id, user_id=user_id), date_from=date_from, date_to=date_to, date_range=date_range, wb_token=None, refresh=False)
+            report = reports._build_ads_report_payload(actor=SimpleNamespace(organization_id=organization_id, user_id=user_id), date_from=date_from, date_to=date_to, date_range=date_range, wb_token=None, refresh=True)
         elif report_id == "rnp":
             progress("rnp", "Собираем РНП из WB sync cache", 20)
             payload = reports.build_rnp_report(date_from=date_from, date_to=date_to, group_by=group_by, finance_allowed=finance_allowed, organization_id=organization_id, wb_token=None, force_refresh=False, progress_callback=progress)
@@ -362,25 +837,29 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
             }
         elif report_id == "pnl":
             cash_flow = reports.get_cash_flow_for_period(organization_id=organization_id, period_from=date_from, period_to=date_to, requested_by=user_id)
+            if source == "financial" and cash_flow.get("status") not in {"ready", "disabled"}:
+                # Financial WB data must not wait indefinitely for optional 1C.
+                # No external operating costs are fabricated; the report remains preliminary.
+                cash_flow = {"status": "unavailable", "reason": "optional_operating_costs_unavailable", "data": None}
             if cash_flow.get("status") in {"pending", "processing"}:
                 label = "1С забрала задачу, ждём операционные расходы" if cash_flow.get("status") == "processing" else "Ждём операционные расходы от 1С"
                 progress("waiting_1c", label, 20, "waiting_1c")
                 raise self.retry(countdown=3)
-            if cash_flow.get("status") != "ready":
+            if cash_flow.get("status") not in {"ready", "disabled"} and not (source == "financial" and cash_flow.get("status") == "unavailable"):
                 raise RuntimeError(f"Не удалось получить расходы из 1С: {cash_flow.get('status') or 'статус неизвестен'}")
-            progress("pnl", "Собираем P&L с расходами 1С", 35)
-            payload = reports.build_pnl_report(date_from=date_from, date_to=date_to, group_by=group_by, requested_state="final" if source == "financial" else "preliminary", finance_allowed=finance_allowed, organization_id=organization_id, wb_token=None, progress_callback=progress)
+            progress("pnl", "Собираем P&L из данных WB" if cash_flow.get("status") in {"disabled", "unavailable"} else "Собираем P&L с расходами 1С", 35)
+            payload = reports.build_pnl_report(date_from=date_from, date_to=date_to, group_by=group_by, requested_state="final" if source == "financial" and cash_flow.get("status") == "ready" else "preliminary", finance_allowed=finance_allowed, organization_id=organization_id, wb_token=None, progress_callback=progress)
             progress("pnl-map", "Готовим таблицу P&L", 97)
-            report = reports._map_pnl_to_report_response(payload, date_range, cash_flow)
+            report = reports._map_pnl_to_report_response(payload, date_range, cash_flow, finance_allowed=finance_allowed, financial_only=source == "financial")
         elif report_id == "expenses":
             cash_flow = reports.get_cash_flow_for_period(organization_id=organization_id, period_from=date_from, period_to=date_to, requested_by=user_id)
             if cash_flow.get("status") in {"pending", "processing"}:
                 label = "1С забрала задачу, ждём статьи ДДС" if cash_flow.get("status") == "processing" else "Ждём статьи ДДС от 1С"
                 progress("waiting_1c", label, 20, "waiting_1c")
                 raise self.retry(countdown=3)
-            if cash_flow.get("status") != "ready":
+            if cash_flow.get("status") not in {"ready", "disabled"}:
                 raise RuntimeError(f"Не удалось получить расходы из 1С: {cash_flow.get('status') or 'статус неизвестен'}")
-            progress("expenses", "Собираем статьи ДДС из 1С", 80)
+            progress("expenses", "Операционные расходы недоступны" if cash_flow.get("status") == "disabled" else "Собираем статьи ДДС из 1С", 80)
             report = reports._map_cash_flow_to_expenses_response(cash_flow, date_range, group_by)
         elif report_id == "week-over-week":
             previous_from, previous_to = reports._previous_period(date_from, date_to)
@@ -458,12 +937,22 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
             )
             current_rows = reports._week_rows_with_funnel_metrics(current_rows, current_funnel_metrics)
             previous_rows = reports._week_rows_with_funnel_metrics(previous_rows, previous_funnel_metrics)
-            rows = reports._week_rows_from_abc_rows(current_rows, previous_rows)
+            rows = reports._week_rows_from_abc_rows(current_rows, previous_rows, organization_id=organization_id, snapshot_date=date_to)
+            if finance_allowed:
+                current_pnl = reports._week_pnl_values(organization_id, date_from, date_to)
+                previous_pnl = reports._week_pnl_values(organization_id, previous_from, previous_to)
+                for row in rows:
+                    current = current_pnl.get(reports._int_value(row.get("nmId")), {})
+                    previous = previous_pnl.get(reports._int_value(row.get("nmId")), {})
+                    row["profit"] = {"kopecks": current.get("profit"), "deltaPct": reports._delta_pct(current.get("profit"), previous.get("profit"))}
+                    row["marginPct"] = {"percent": current.get("margin"), "deltaPct": reports._delta_pct(current.get("margin"), previous.get("margin"))}
             report = reports._week_over_week_shell(
                 date_range,
                 rows,
                 source_status=str(getattr(current_payload, "sourceStatus", None) or "partial"),
             )
+            report = reports._week_financial_columns(report, organization_id, date_from, date_to, finance_allowed,
+                current_pnl=current_pnl if finance_allowed else {}, previous_pnl=previous_pnl if finance_allowed else {})
             report["cache"] = {
                 "status": "background-abc",
                 "requestedRange": date_range,
@@ -497,19 +986,23 @@ def build_report_for_org(self, organization_id: int, user_id: str, report_id: st
                 group_by,
                 source,
                 organization_id=organization_id,
+                finance_allowed=finance_allowed,
             )
-        cached_report = {"report": report, "completedAt": reports._utc_now_iso()}
-        reports.save_source_cache(organization_id, cache_key, cached_report)
+        reports._save_exact_report_payload_cache(
+            organization_id=organization_id, report_id=report_id,
+            date_from=date_from, date_to=date_to, group_by=group_by, source=source,
+            report=report, finance_allowed=finance_allowed,
+        )
         persisted_report = reports.get_source_cache(organization_id, cache_key, slim=False)
         if not isinstance(persisted_report, dict) or not isinstance(persisted_report.get("report"), dict):
             raise RuntimeError(f"Background report payload was not persisted: {cache_key}")
-        result = {"state": "completed", "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "source": source, "stage": "completed", "label": "Отчёт готов", "percent": 100, "finishedAt": reports._utc_now_iso()}
+        result = {**refresh_context, "state": "completed", "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "source": source, "stage": "completed", "label": "Отчёт готов", "percent": 100, "finishedAt": reports._utc_now_iso()}
         reports.save_source_cache(organization_id, job_key, result)
         return result
     except Retry:
         raise
     except Exception as exc:
-        result = {"state": "failed", "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "finishedAt": reports._utc_now_iso(), "error": str(exc)[:500]}
+        result = {**refresh_context, "state": "failed", "stage": "failed", "taskId": self.request.id, "reportId": report_id, "dateFrom": date_from_iso, "dateTo": date_to_iso, "groupBy": group_by, "finishedAt": reports._utc_now_iso(), "error": str(exc)[:500]}
         reports.save_source_cache(organization_id, job_key, result)
         raise
 
@@ -528,8 +1021,10 @@ def _scheduler_wb_token(organization_id: int) -> str | None:
 def _report_refresh_wb_token(organization_id: int, user_id: str, wb_token: str | None) -> str | None:
     return (
         _normalize_scheduler_token(wb_token)
+        # Reports and their source caches are organization-scoped. Resolve
+        # the same connection as the read-only financial projection.
+        or _normalize_scheduler_token(_scheduler_wb_token(organization_id))
         or _normalize_scheduler_token(get_user_wb_token_secret(user_id))
-        or _scheduler_wb_token(organization_id)
     )
 
 
@@ -972,8 +1467,8 @@ RANGED_SYNC_SOURCE_PREFIXES: dict[str, str] = {
 
 
 REPORT_DAILY_SOURCES_BY_ID: dict[str, tuple[str, ...]] = {
-    "abc": ("period-stats", "finance", "ads", "baskets"),
-    "rnp": ("baskets", "ads"),
+    "abc": ("period-stats", "finance", "ads", "baskets-summary"),
+    "rnp": ("baskets-summary", "finance", "ads"),
     "ads": ("ads",),
     "stock": ("period-stats", "finance"),
     "pnl": ("finance", "ads"),
@@ -1034,8 +1529,11 @@ def _range_source_ready(
     }
     available_dates: set[str] = set()
     for cache in caches:
-        if isinstance(cache, dict):
-            available_dates |= _daily_aggregate_dates(cache)
+        if not isinstance(cache, dict):
+            continue
+        if source == "finance" and require_current_finance_basis and not finance_cache_uses_current_revenue_basis(cache):
+            continue
+        available_dates |= _daily_aggregate_dates(cache)
     return bool(required_dates) and required_dates.issubset(available_dates)
 
 
@@ -1082,12 +1580,8 @@ def _report_snapshot_source_ready(organization_id: int, source: str, date_from: 
 
 
 def _report_snapshot_sources_ready(organization_id: int, sources: tuple[str, ...], date_from: Any, date_to: Any) -> tuple[bool, list[str]]:
-    missing = [
-        source
-        for source in sources
-        if not _report_snapshot_source_ready(organization_id, source, date_from, date_to)
-    ]
-    return not missing, missing
+    from app.routers.wb_reports_bff import _report_daily_sources_ready
+    return _report_daily_sources_ready(organization_id, sources, date_from=date_from, date_to=date_to)
 
 
 def _source_ready_for_profile(organization_id: int, profile: WbSyncProfile, source: str) -> bool:
@@ -1309,6 +1803,7 @@ def _extra_report_snapshot_profiles(profile: WbSyncProfile) -> list[WbSyncProfil
     ]
 
 
+@tax_consistent_report
 def _materialize_report_snapshots_for_profile(organization_id: int, profile: WbSyncProfile, *, persist_progress: bool = True) -> dict[str, Any]:
     if profile.period_days > 31:
         return {"skipped": True, "reason": "profile_window_too_large", "periodDays": profile.period_days}
@@ -1406,7 +1901,7 @@ def _materialize_report_snapshots_for_profile(organization_id: int, profile: WbS
                     progress_callback=abc_progress,
                 )
                 abc_report = reports._apply_report_rules_to_payload(reports._map_abc_to_report_response(abc_payload, date_range), organization_id)
-                reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="abc", date_from=date_from, date_to=date_to, group_by="sku", source="operational", report=abc_report)
+                reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="abc", date_from=date_from, date_to=date_to, group_by="sku", source="operational", report=abc_report, finance_allowed=True)
                 saved.append("abc")
                 progress("Снапшоты отчетов: ABC готов", 4)
             else:
@@ -1426,7 +1921,7 @@ def _materialize_report_snapshots_for_profile(organization_id: int, profile: WbS
         if "ads" in profile.sources or profile.window_kind == "onboarding":
             progress("Снапшоты отчетов: собираем рекламу", max(1, len(saved)))
             if sources_ready("ads", ("ads",)):
-                ads_report = reports._apply_report_rules_to_payload(reports._build_ads_report_payload(actor=actor, date_from=date_from, date_to=date_to, date_range=date_range, wb_token=None, refresh=False), organization_id)
+                ads_report = reports._apply_report_rules_to_payload(reports._build_ads_report_payload(actor=actor, date_from=date_from, date_to=date_to, date_range=date_range, wb_token=None, refresh=True), organization_id)
                 reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="ads", date_from=date_from, date_to=date_to, group_by="campaign", source="operational", report=ads_report)
                 saved.append("ads")
                 progress("Снапшоты отчетов: реклама готова", 6)
@@ -1445,12 +1940,20 @@ def _materialize_report_snapshots_for_profile(organization_id: int, profile: WbS
                 organization_id=organization_id,
                 wb_token=None,
             )
-            pnl_report = reports._apply_report_rules_to_payload(reports._map_pnl_to_report_response(pnl_payload, date_range, cash_flow), organization_id)
-            pnl_cache = reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="pnl", date_from=date_from, date_to=date_to, group_by="sku", source="operational", report=pnl_report)
-            reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="pnl", date_from=date_from, date_to=date_to, group_by="sku", source="financial", report=pnl_report)
+            pnl_report = reports._apply_report_rules_to_payload(reports._map_pnl_to_report_response(pnl_payload, date_range, cash_flow, finance_allowed=True), organization_id)
+            pnl_cache = reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="pnl", date_from=date_from, date_to=date_to, group_by="sku", source="operational", report=pnl_report, finance_allowed=True)
+            financial_pnl_report = reports._apply_report_rules_to_payload(reports._map_pnl_to_report_response(
+                pnl_payload, date_range, cash_flow, finance_allowed=True, financial_only=True), organization_id)
+            reports._save_exact_report_payload_cache(organization_id=organization_id, report_id="pnl", date_from=date_from, date_to=date_to, group_by="sku", source="financial", report=financial_pnl_report, finance_allowed=True)
             reports.save_source_cache(
                 organization_id,
-                reports._report_job_cache_key("pnl", date_from, date_to, "sku"),
+                reports._report_job_cache_key(
+                    "pnl",
+                    date_from,
+                    date_to,
+                    "sku",
+                    finance_allowed=True,
+                ),
                 reports._completed_report_job_from_cache("pnl", date_from, date_to, "sku", pnl_cache, {"source": "report-snapshots"}),
             )
             saved.append("pnl")
@@ -1897,6 +2400,39 @@ def _period_source_aggregates(
     return _source_aggregates(organization_id, f"{prefix}_{period_days}")
 
 
+@celery_app.task(name="repricer.prepare_strategy_sources", max_retries=0)
+def prepare_strategy_sources(organization_id: int, fingerprint: str, requests: list) -> dict[str, Any]:
+    """Read-only source preparation; never runs strategy execution or uploads."""
+    from app.repricer_sync import wb_token_fingerprint, _period_cache_suffix
+    from app.wb_api.source_freshness import source_is_fresh
+    token = _scheduler_wb_token(organization_id)
+    if not token or wb_token_fingerprint(token) != fingerprint:
+        return {"state": "blocked", "reason": "credential_binding_changed"}
+    results = []
+    for prefix, start_text, end_text in requests:
+        if prefix not in {"baskets", "period_stats", "stocks", "finance"}:
+            raise ValueError("STRATEGY_SOURCE_NOT_ALLOWED")
+        start, end = date.fromisoformat(start_text), date.fromisoformat(end_text)
+        days = (end - start).days + 1
+        if days < 1:
+            raise ValueError("STRATEGY_SOURCE_RANGE_INVALID")
+        if is_wb_sync_running(organization_id):
+            return {"state": "pending", "reason": "wb_sync_running", "items": results}
+        key = "stocks" if prefix == "stocks" else f"{prefix}_{_period_cache_suffix(days, date_from=start, date_to=end)}"
+        existing = get_source_cache(organization_id, key, slim=False) or {}
+        if (existing.get("strategyTokenFingerprint") == fingerprint and source_is_fresh(existing)
+            and existing.get("coverageState", "ok") in {"ok", "complete"}
+            and existing.get("aggregateComplete", True) is True):
+            continue
+        result = refresh_wb_data_sources(organization_id=organization_id, wb_token=token,
+            period_days=days, date_from=start, date_to=end, trigger="strategy_sources",
+            sources=["period-stats" if prefix == "period_stats" else prefix], _parallelize=False)
+        results.append({"source": prefix, "state": result.get("state")})
+        if result.get("state") != "completed":
+            break
+    return {"state": "completed" if all(item["state"] == "completed" for item in results) else "partial", "items": results}
+
+
 @celery_app.task(name="repricer.execute_assigned_for_org", bind=True, max_retries=2)
 def execute_assigned_for_org(self, organization_id: int, scenario: str = "complete") -> dict[str, Any]:
     settings = get_settings()
@@ -1935,8 +2471,12 @@ def execute_assigned_for_org(self, organization_id: int, scenario: str = "comple
 
         cached_goods = list_cached_goods(organization_id)
         sync_status = get_wb_sync_status(organization_id)
-        period_days = int(sync_status.get("periodDays") or getattr(settings, "repricer_wb_sync_period_days", 30) or 30)
-        period_suffix = str(sync_status.get("periodCacheSuffix") or period_days)
+        # The report most recently opened/synchronized is not a pricing config.
+        period_days = int(getattr(settings, "repricer_wb_sync_period_days", 30) or 30)
+        from app.repricer_sync import _period_cache_suffix
+        last_day = datetime.now(ZoneInfo("Europe/Moscow")).date() - timedelta(days=1)
+        first_day = last_day - timedelta(days=period_days - 1)
+        period_suffix = _period_cache_suffix(period_days, date_from=first_day, date_to=last_day)
         cached_period_stats, _period_cache_loaded = _period_source_aggregates(
             organization_id,
             "period_stats",
@@ -1949,6 +2489,9 @@ def execute_assigned_for_org(self, organization_id: int, scenario: str = "comple
             period_suffix=period_suffix,
             period_days=period_days,
         )
+        baskets_metadata = get_source_cache(organization_id, f"baskets_{period_suffix}", slim=True) or {}
+        if not baskets_metadata.get("fetchedAt") and period_suffix != str(period_days):
+            baskets_metadata = get_source_cache(organization_id, f"baskets_{period_days}", slim=True) or {}
         cached_finance_aggregates, _finance_cache_loaded = _period_source_aggregates(
             organization_id,
             "finance",
@@ -1973,6 +2516,7 @@ def execute_assigned_for_org(self, organization_id: int, scenario: str = "comple
             cached_ads_aggregates=cached_ads_aggregates,
             cached_baskets_aggregates=cached_baskets_aggregates,
             baskets_cache_loaded=baskets_cache_loaded,
+            cached_baskets_observed_at=baskets_metadata.get("fetchedAt"),
             period_days=period_days,
             include_promotions=False,
             include_content=False,

@@ -151,7 +151,7 @@ def test_avito_reviews_endpoint_uses_saved_credentials_and_caches_payload(monkey
     assert payload["summary"]["unanswered"] == 1
     assert payload["rating"]["score"] == 4.3
     assert payload["reviews"][0]["reviewId"] == "92312343"
-    assert saved[0][1] == "avito_reviews:50:0"
+    assert saved[0][1].startswith("avito_reviews:50:0:")
 
 
 def test_avito_reviews_ai_draft_uses_review_prompt_settings(monkeypatch):

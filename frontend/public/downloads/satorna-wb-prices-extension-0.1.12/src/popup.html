@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satorna — цены WB</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="connection.js" defer></script>
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <header><span class="brand">SATORNA</span><h1>Цены Wildberries</h1></header>
+  <p class="intro">Наблюдаемые цены покупателя из обычных страниц WB.</p>
+  <form id="connect-form">
+    <label for="token">Токен расширения из Satorna</label>
+    <input id="token" type="password" placeholder="Вставьте токен, скопированный в Satorna" autocomplete="off" spellcheck="false" maxlength="12288" required>
+    <p class="note">Скопируйте весь токен в профиле Satorna → «Расширение WB: цены и СПП». Адрес определяется автоматически. Токен Авито или API-ключ WB сюда не подходит.</p>
+    <button id="connect" type="submit">Проверить подключение</button>
+  </form>
+  <section id="destination-confirmation" class="status-panel" hidden>
+    <p>Токен указывает на другой сервер Satorna:</p>
+    <b id="destination-origin"></b>
+    <p class="note">Продолжайте только если это ваш сервер. Токен будет отправлен только по этому адресу.</p>
+    <button id="confirm-destination" type="button">Подключиться к этому серверу</button>
+    <button id="cancel-destination" class="secondary" type="button">Отмена</button>
+  </section>
+  <section class="status-panel" aria-live="polite">
+    <h2 id="status">Проверяем состояние…</h2>
+    <p id="reason" class="reason"></p>
+    <dl>
+      <div><dt>Свежие наблюдения / размеры</dt><dd id="coverage">0 / 0</dd></div>
+      <div><dt>Без наблюдения</dt><dd id="missing">0</dd></div>
+      <div><dt>Принято Satorna за запуск</dt><dd id="accepted">0</dd></div>
+      <div><dt>Пропущено Satorna</dt><dd id="ignored">0</dd></div>
+      <div><dt>Частично просмотрено магазинов</dt><dd id="partial">0</dd></div>
+      <div><dt>Обработано товаров за проход</dt><dd id="processed">0 / 0</dd></div>
+    </dl>
+    <p id="last-ack" class="muted">Подтверждений сохранения пока нет.</p>
+    <p id="performance" class="muted"></p>
+    <p id="next-run" class="muted">Автоповтор — через 20 минут после завершения прохода.</p>
+  </section>
+  <div class="actions">
+    <button id="start" type="button" disabled>Начать сбор</button>
+    <button id="resume" type="button" disabled>Продолжить</button>
+    <button id="stop" class="secondary" type="button" disabled>Остановить</button>
+    <button id="show-tab" class="secondary" type="button" disabled>Показать вкладку WB</button>
+    <button id="disconnect" class="secondary" type="button">Забыть ключ</button>
+  </div>
+  <p class="note">Один запуск автоматически проходит каталог: пакетные запросы, затем магазины и оставшиеся карточки в одной вкладке WB. Временные ошибки повторяются с задержкой до трёх раз. «Продолжить» требуется после ручной остановки или устранения блокировки WB; CAPTCHA не обходится.</p>
+  <p class="note">Каталог магазина прокручивается автоматически. Оставьте вкладку сборщика WB видимой: скрытые вкладки WB может перестать подгружать. После возвращения во вкладку сбор продолжится сам, без «Продолжить». Проверки доступа WB нужно выполнять самостоятельно.</p>
+  <p class="note">Цена с кошельком пока не собирается. Отсутствующий размер остаётся неизвестным. Наблюдения старше 30 минут не входят в счётчик свежих.</p>
+  <p class="note">«Забыть ключ» удаляет его только из этого браузера. Отозвать доступ на сервере можно в Satorna.</p>
+  <p class="note">Для другого сервера или локального проекта скопируйте новый токен именно с нужной Satorna. Рабочее подключение заменяется после проверки; автоматического перебора серверов нет.</p>
+</body>
+</html>

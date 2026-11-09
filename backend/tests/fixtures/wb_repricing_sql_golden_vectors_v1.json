@@ -1,0 +1,200 @@
+{
+  "fixture_version": "wb-repricing-sql-golden/v1",
+  "domain_commit": "45f94a39627ebe2916903e9e5e0930844f3daaf5",
+  "producer": "CanonicalApplyRequest.canonical_bytes/checksum/provider_bytes; build_action_key; build_dispatch_key",
+  "synthetic_only": true,
+  "vectors": [
+    {
+      "name": "ascii_nulls",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-1"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "FBBT_42",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000001",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-1\",\"articleId\":\"FBBT_42\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 218,
+      "request_checksum": "8c0eda8621e2066f6aff7cac8a72d9051e6b5fa74e776da3099d7bbd095ae000",
+      "action_key": "f8e2c7c2c347e516c8fa558cf00dd96a60bb127846040e673dbfd53d51b8fe28",
+      "dispatch_key": "03daed92af51a71b2b05bedc789f7d380d878b512300400f0992390f069c70ba",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "cyrillic_all_optionals",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "\u0421\u043e\u0433\u043b\u0430\u0441\u043e\u0432\u0430\u043d\u0438\u0435-\u0401"
+      },
+      "request": {
+        "catalog_sku_id": 99,
+        "nm_id": 123,
+        "article_id": "\u0424\u0443\u0442\u0431\u043e\u043b\u043a\u0430-\u0401",
+        "price_kopecks": 129950,
+        "discount_pct": 12,
+        "size_id": 321,
+        "min_price_kopecks": 120050
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000002",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"\\u0421\\u043e\\u0433\\u043b\\u0430\\u0441\\u043e\\u0432\\u0430\\u043d\\u0438\\u0435-\\u0401\",\"articleId\":\"\\u0424\\u0443\\u0442\\u0431\\u043e\\u043b\\u043a\\u0430-\\u0401\",\"catalogSkuId\":99,\"discountPct\":12,\"minPriceKopecks\":120050,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":321}",
+      "request_byte_count": 335,
+      "request_checksum": "d60286e2905a3950e49b947378ecd17690d4080e6600a3ef0a4fbe81876bde5d",
+      "action_key": "d96934e8e1fb2a71d6c53c134c8197bf0df40065af69836607e0258ec80000dd",
+      "dispatch_key": "b16c4b6a996fec6b8469daed26db70312881b15639a899ceee65ab07898aceab",
+      "provider_request_ascii": "{\"data\":[{\"discount\":12,\"minPrice\":1201,\"nmID\":123,\"price\":1300,\"sizeID\":321}]}"
+    },
+    {
+      "name": "combining_decomposed",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-e\u0301"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "e\u0301",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000003",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-e\\u0301\",\"articleId\":\"e\\u0301\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 224,
+      "request_checksum": "3a311f926ed70068927ea38ab789224c849174013d4ecbc8054d398acb1fe999",
+      "action_key": "8f95879ab7204635b46e0b080c08f0e575951075412e54b17468445d9d3f3746",
+      "dispatch_key": "3322aeec0500d4e68c6b7774666967786c910cdf4ad4904c3a8b5c4ad8266139",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "combining_precomposed",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-\u00e9"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "\u00e9",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000004",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-\\u00e9\",\"articleId\":\"\\u00e9\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 222,
+      "request_checksum": "e06e02a2a259ea7b8b03753f1d2942f28cc9b7b5785773bd03e073ac4eeab554",
+      "action_key": "a454498727741b6c738ef1f2218b921e84e96d2cea2a4d71bd5f3f700aea64ed",
+      "dispatch_key": "a6c172e3db86f36ac6c4e78e091419306f90d695cc6c15994448c7e7714d402a",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "supplementary_emoji",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-\ud83d\ude80"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "F\ud83d\ude80\ud83d\ude00",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000005",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-\\ud83d\\ude80\",\"articleId\":\"F\\ud83d\\ude80\\ud83d\\ude00\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 247,
+      "request_checksum": "7aad6c9b70f48c959d6d8af62e4a4aac2fdb77aef1737423ccbd527828b44f08",
+      "action_key": "da2710b9c0d51967be4ec97d8cb913205b4219182f76af066e70fb5391e5f426",
+      "dispatch_key": "f95f17e34062b13073cbd87289480a20071dd15306c85711adb0f3effac098e3",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "quotes_backslash_slash",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-\"\\/"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "F\"\\/B",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000006",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-\\\"\\\\/\",\"articleId\":\"F\\\"\\\\/B\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 222,
+      "request_checksum": "cfd08eeb5d6b80d4223277047054e1e84eb651e5ace7b15ae464f41401095bd7",
+      "action_key": "993c87d7abd9844b4668434468ebb49eae3c03eda5429b26744bd507e08faa01",
+      "dispatch_key": "c92ae1578c241c270a86cf2fd537ecfc941591efc834c54efe09a52b6cb629bd",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "approval_interior_controls",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "a\b\f\n\r\t\u0001\u001f\u007f\u0085\u2028z"
+      },
+      "request": {
+        "catalog_sku_id": null,
+        "nm_id": 123,
+        "article_id": "F/B",
+        "price_kopecks": 129950,
+        "discount_pct": 0,
+        "size_id": null,
+        "min_price_kopecks": null
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000007",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"a\\b\\f\\n\\r\\t\\u0001\\u001f\\u007f\\u0085\\u2028z\",\"articleId\":\"F/B\",\"catalogSkuId\":null,\"discountPct\":0,\"minPriceKopecks\":null,\"nmId\":123,\"organizationId\":7,\"priceKopecks\":129950,\"schema\":\"wb-price-apply/v1\",\"sizeId\":null}",
+      "request_byte_count": 246,
+      "request_checksum": "24efe69e9729052875106696d0ead781c81a388ec4756ff1c77cb804b8224ef9",
+      "action_key": "e14921be250b311a6e6326c9892d4344ed3099b91499d076ef51a3f0e4712d83",
+      "dispatch_key": "3a2b841cbef48c46de34aa2a275a397e7abe7699b05503695095a7ab1e723e77",
+      "provider_request_ascii": "{\"data\":[{\"discount\":0,\"nmID\":123,\"price\":1300}]}"
+    },
+    {
+      "name": "business_integers_above_bigint",
+      "scope": {
+        "organization_id": 7,
+        "marketplace_account_id": 42,
+        "approval_id": "approval-big"
+      },
+      "request": {
+        "catalog_sku_id": 99,
+        "nm_id": 4722366482869645213697,
+        "article_id": "FBBT_42",
+        "price_kopecks": 1208925819614629174706227,
+        "discount_pct": 1,
+        "size_id": 1180591620717411303425,
+        "min_price_kopecks": 604462909807314587353138
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000008",
+      "canonical_request_ascii": "{\"accountId\":42,\"approvalId\":\"approval-big\",\"articleId\":\"FBBT_42\",\"catalogSkuId\":99,\"discountPct\":1,\"minPriceKopecks\":604462909807314587353138,\"nmId\":4722366482869645213697,\"organizationId\":7,\"priceKopecks\":1208925819614629174706227,\"schema\":\"wb-price-apply/v1\",\"sizeId\":1180591620717411303425}",
+      "request_byte_count": 294,
+      "request_checksum": "2c209e369d219a9b786f2951f73794d0324d1899ff918efd1bd7d5881a385036",
+      "action_key": "85e4a0f0f8a6eb851b513eba34407829faaeefa4325fa4dccbace6fac29db989",
+      "dispatch_key": "94309d6bb718e87cadb169cb108709b52f516e9e77a95fb310aaf818f2201b37",
+      "provider_request_ascii": "{\"data\":[{\"discount\":1,\"minPrice\":6044629098073145873531,\"nmID\":4722366482869645213697,\"price\":12089258196146291747062,\"sizeID\":1180591620717411303425}]}"
+    }
+  ]
+}

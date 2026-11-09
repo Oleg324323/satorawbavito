@@ -1,0 +1,10 @@
+{
+  "name": "satorna-wb-prices-extension",
+  "version": "0.1.12",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm test && node scripts/check.mjs",
+    "build": "npm run check && node scripts/build.mjs"
+  }
+}

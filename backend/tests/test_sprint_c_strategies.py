@@ -1,13 +1,52 @@
 from __future__ import annotations
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+from app.routers.auth import router as auth_router
+from app.routers.control_plane import router as control_plane_router
+from app.routers.wb_repricer_sprint_c import router as sprint_c_router
+from app.wb_api.client import FakeWbApiClient
 from tests.auth_helpers import auth_headers
 
 
 def client() -> TestClient:
-    return TestClient(create_app())
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(control_plane_router)
+    app.include_router(sprint_c_router)
+    return TestClient(app)
+
+
+def current_price_client() -> FakeWbApiClient:
+    return FakeWbApiClient(
+        fixtures={
+            "/api/v2/list/goods/filter": {
+                "data": {
+                    "listGoods": [
+                        {
+                            "nmID": 123456,
+                            "vendorCode": "FBBT_42",
+                            "brand": "Satorna",
+                            "subjectName": "Футболки",
+                            "discount": 12,
+                            "sizes": [
+                                {
+                                    "sizeID": 654321,
+                                    "price": 139000,
+                                    "discountedPrice": 122320,
+                                    "buyerPriceNoWallet": 110088,
+                                    "techSizeName": "L",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "error": False,
+                "errorText": "",
+            }
+        }
+    )
 
 
 def economics_payload() -> dict:
@@ -86,7 +125,11 @@ def test_4599_dry_run_is_explainable_and_versioned():
     assert item["sourceDependencies"]
 
 
-def test_4600_requires_mode_then_supports_percent_rub_floor():
+def test_4600_requires_mode_then_supports_percent_rub_floor(monkeypatch):
+    monkeypatch.setattr(
+        "app.routers.wb_repricer_sprint_c.build_wb_client",
+        lambda _scenario: current_price_client(),
+    )
     api = client()
 
     mode_missing = api.post(

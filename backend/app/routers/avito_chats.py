@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.avito.auth import resolve_user_avito_access_token
+from app.avito.auth import resolve_user_avito_access_token, scoped_avito_cache_key
 from app.avito.chats import AvitoChatsFetchRequest, AvitoChatsUpstreamError, AvitoChatRow, AvitoMessageRow, build_avito_chats_client
 from app.cabinet.store import get_organization_avito_credentials_secret, get_user_avito_credentials_secret
 from app.config import get_settings
@@ -26,9 +26,9 @@ class AvitoChatActionPayload(BaseModel):
     accountId: str = Field(min_length=1)
 
 
-def _cache_key(limit: int, offset: int, unread_only: bool, account_ids: list[str]) -> str:
+def _cache_key(limit: int, offset: int, unread_only: bool, account_ids: list[str], access_token: str) -> str:
     account_part = ",".join(sorted(account_ids)) if account_ids else "all"
-    return f"avito_chats:{limit}:{offset}:{'unread' if unread_only else 'all'}:{account_part}"
+    return scoped_avito_cache_key(f"avito_chats:{limit}:{offset}:{'unread' if unread_only else 'all'}:{account_part}", access_token)
 
 
 def _response_payload(
@@ -117,35 +117,17 @@ def get_avito_chats(
     account_id: list[str] = Query(default_factory=list, alias="accountId"),
     force_refresh: bool = Query(default=False, alias="forceRefresh"),
 ) -> dict[str, Any]:
-    actor = actor_from_request(request)
-    if not has_permission(actor, "cabinet:read"):
-        raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
-    source_key = _cache_key(limit, offset, unread_only, account_id)
+    actor, settings, access_token = _credentials_or_error(request)
+    source_key = _cache_key(limit, offset, unread_only, account_id, access_token)
     cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
     if not force_refresh and isinstance(cached, dict) and cached.get("chats"):
         return _cache_hit_payload(cached)
-
-    credentials = get_user_avito_credentials_secret(actor.user_id) or get_organization_avito_credentials_secret(actor.organization_id)
-    if credentials is None:
-        raise HTTPException(status_code=409, detail="AVITO_CREDENTIALS_REQUIRED")
-
-    settings = get_settings()
-    try:
-        access_token = resolve_user_avito_access_token(
-            user_id=actor.user_id,
-            credentials=credentials,
-            base_url=settings.avito_api_base_url,
-            timeout_seconds=settings.avito_api_timeout_seconds,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail="AVITO_OAUTH_FAILED") from exc
 
     client = build_avito_chats_client(access_token=access_token, base_url=settings.avito_api_base_url, timeout_seconds=settings.avito_api_timeout_seconds)
     result = client.fetch_chats(AvitoChatsFetchRequest(limit=limit, offset=offset, unreadOnly=unread_only, accountIds=account_id))
     diagnostics = {
         **(result.diagnostics or {}),
         "dateFiltering": "disabled",
-        "cacheKey": source_key,
         "requested": {"limit": limit, "offset": offset, "unreadOnly": unread_only, "accountIds": account_id},
     }
     payload = _response_payload(

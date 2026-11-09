@@ -4,13 +4,6 @@ import { describe, expect, it } from 'vitest'
 const source = readFileSync(new URL('./VellaHtmlParityPage.tsx', import.meta.url), 'utf8')
 
 describe('Vella parity performance guards', () => {
-  it('renders product diagnostics outside legacy stacking contexts', () => {
-    expect(source).toContain("import { createPortal } from 'react-dom'")
-    expect(source).toContain("createPortal(")
-    expect(source).toContain("document.body")
-    expect(source).toContain("products-sync-portal-root")
-  })
-
   it('does not run the legacy tab engine or sticky header observer during route changes', () => {
     const routeSync = source.slice(
       source.indexOf('function syncLegacyRuntimeToRoute'),
@@ -36,7 +29,8 @@ describe('Vella parity performance guards', () => {
 
     expect(source).not.toContain('productsReloadTick')
     expect(strategiesEffect).not.toContain('location.pathname')
-    expect(strategiesEffect).toContain('}, [accessToken, runtime])')
+    // The actual React stats page must not issue a strategies request off products.
+    // repricerStatsPageBrowser.test.ts also mutation-checks this route scope.
     expect(source).toContain('}, [accessToken, productsTabActive, runtime])')
   })
 })

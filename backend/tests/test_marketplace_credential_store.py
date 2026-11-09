@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.cabinet.orm import LkAuditEventRow, LkOrganizationRow
+from app.cabinet.orm import LkAuditEventRow, LkOrganizationRow, LkUserRow
 from app.config import Settings, validate_security_settings
 from app.infra.models import Base
 from app.platform.integrations import credential_store
@@ -41,7 +41,16 @@ def store_db(monkeypatch):
     def _sqlite_functions(dbapi_connection, _connection_record) -> None:
         dbapi_connection.create_function("octet_length", 1, lambda value: len(value) if value is not None else None)
 
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            LkOrganizationRow.__table__,
+            LkUserRow.__table__,
+            MarketplaceAccountRow.__table__,
+            MarketplaceAccountCredentialRow.__table__,
+            LkAuditEventRow.__table__,
+        ],
+    )
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as session:
         session.add_all(
@@ -104,7 +113,14 @@ def test_put_and_resolve_use_exact_account_identity_and_redacted_types(store_db)
         audit = session.scalars(select(LkAuditEventRow).order_by(LkAuditEventRow.event_id)).all()
         assert [row.action for row in audit] == ["integration.marketplace_credential.put"]
         assert CANARY not in repr(audit[0].details)
-        assert set(audit[0].details) == {"credentialKind", "generation", "operation", "resultCode"}
+        assert set(audit[0].details) == {
+            "credentialKind",
+            "generation",
+            "marketplaceAccountId",
+            "operation",
+            "provider",
+            "resultCode",
+        }
 
 
 def test_put_rotates_atomically_and_only_new_row_is_active(store_db) -> None:
@@ -136,6 +152,25 @@ def test_revoke_removes_active_resolution_without_deleting_ciphertext(store_db) 
         row = session.scalars(select(MarketplaceAccountCredentialRow)).one()
         assert row.ciphertext
         assert row.revocation_reason_code == "operator_revoked"
+
+
+def test_put_after_explicit_revoke_keeps_generation_monotonic(store_db) -> None:
+    put_marketplace_credential(_wb_owner(), "wb_api", {"token": CANARY})
+    revoke_marketplace_credential(_wb_owner(), "wb_api", "operator_revoked")
+
+    replaced = put_marketplace_credential(
+        _wb_owner(),
+        "wb_api",
+        {"token": CANARY + "-new"},
+    )
+
+    assert replaced.generation == 2
+
+
+def test_unknown_kind_is_contract_error_even_when_no_row_exists(store_db) -> None:
+    with pytest.raises(CredentialStoreError) as caught:
+        resolve_marketplace_credential(_wb_owner(), "unknown_kind")
+    assert caught.value.code == "credential_contract_invalid"
 
 
 def test_expired_access_credential_fails_closed(store_db) -> None:
@@ -182,7 +217,8 @@ def test_reencrypt_uses_fresh_nonce_verifies_and_cas_updates(store_db) -> None:
     event.listen(engine, "before_cursor_execute", _capture)
 
     try:
-        rotated = reencrypt_credential(created.credential_id, expected_generation=1, target_key_version=8)
+        rotated = reencrypt_credential(created.credential_id, expected_generation=1, target_key_version=8,
+                                       account_identity=_wb_owner())
     finally:
         event.remove(engine, "before_cursor_execute", _capture)
     assert rotated.generation == 2
@@ -202,7 +238,8 @@ def test_reencrypt_uses_fresh_nonce_verifies_and_cas_updates(store_db) -> None:
         assert after.ciphertext != old_ciphertext
 
     with pytest.raises(CredentialStoreError) as caught:
-        reencrypt_credential(created.credential_id, expected_generation=1, target_key_version=8)
+        reencrypt_credential(created.credential_id, expected_generation=1, target_key_version=8,
+                             account_identity=_wb_owner())
     assert caught.value.code == "credential_concurrent_update"
 
 
@@ -212,6 +249,62 @@ def test_reason_and_owner_errors_are_safe(store_db) -> None:
     assert caught.value.code == "credential_reason_invalid"
     assert CANARY not in str(caught.value)
     assert CANARY not in repr(caught.value)
+
+
+def test_reencrypt_missing_owner_denies_before_io(monkeypatch) -> None:
+    from uuid import uuid4
+
+    def forbidden():
+        raise AssertionError("rekey must validate before I/O")
+
+    monkeypatch.setattr(credential_store, "_load_keyring", forbidden)
+    monkeypatch.setattr(credential_store, "get_session_factory", forbidden)
+    with pytest.raises(CredentialStoreError, match="^credential_contract_invalid$"):
+        reencrypt_credential(uuid4(), 1, 8)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("account_identity", None), ("account_identity", object()),
+    *[(field, value) for field in ("organization_id", "marketplace_account_id")
+      for value in (True, False, 0, -1, 2147483648, "1", None)],
+    *[("provider", value) for value in (None, [], {}, "unknown")],
+    *[("credential_id", value) for value in (None, True, "not-a-uuid")],
+    *[(field, value) for field in ("expected_generation", "target_key_version")
+      for value in (True, False, 0, -1, "1", None)],
+    ("expected_generation", 9223372036854775807),
+    ("expected_generation", 9223372036854775808),
+    ("target_key_version", 2147483648),
+])
+def test_reencrypt_invalid_contract_denies_before_io(monkeypatch, field, value) -> None:
+    from dataclasses import replace
+    from uuid import uuid4
+
+    def forbidden():
+        raise AssertionError("rekey must validate before I/O")
+
+    monkeypatch.setattr(credential_store, "_load_keyring", forbidden)
+    monkeypatch.setattr(credential_store, "get_session_factory", forbidden)
+    args = {"credential_id": uuid4(), "expected_generation": 1, "target_key_version": 8,
+            "account_identity": _wb_owner()}
+    if field in {"organization_id", "marketplace_account_id", "provider"}:
+        args["account_identity"] = replace(args["account_identity"], **{field: value})
+    else:
+        args[field] = value
+    with pytest.raises(CredentialStoreError, match="^credential_contract_invalid$"):
+        reencrypt_credential(**args)
+
+
+def test_reencrypt_maximum_schema_shape_reaches_key_policy(monkeypatch) -> None:
+    from uuid import uuid4
+
+    def no_configured_key():
+        raise CredentialStoreError("credential_configuration_invalid")
+
+    monkeypatch.setattr(credential_store, "_load_keyring", no_configured_key)
+    with pytest.raises(CredentialStoreError, match="^credential_configuration_invalid$"):
+        reencrypt_credential(uuid4(), 9223372036854775806, 2147483647,
+                             account_identity=MarketplaceAccountCredentialOwner(
+                                 2147483647, 2147483647, "wb"))
 
 
 @pytest.mark.parametrize("mode", ["missing", "malformed", "unreadable"])

@@ -1,0 +1,137 @@
+x-runtime: &runtime
+  build: ../backend
+  image: satorna-backend:vps
+  environment: &environment
+    VELLA_ENV: production
+    VELLA_DATABASE_URL: postgresql+psycopg://satorna:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/satorna
+    VELLA_REDIS_URL: redis://redis:6379/0
+    VELLA_CELERY_BROKER_URL: redis://redis:6379/0
+    VELLA_CELERY_RESULT_BACKEND: redis://redis:6379/1
+    VELLA_AUTH_SECRET: ${VELLA_AUTH_SECRET:?Set a random auth secret in deploy/.env}
+    VELLA_AUTH_COOKIE_SECURE: 'true'
+    VELLA_CORS_ALLOWED_ORIGINS: https://${SATORNA_DOMAIN:?Set SATORNA_DOMAIN in deploy/.env}
+    VELLA_WB_API_MODE: real
+    VELLA_1C_ENABLED: 'false'
+    VELLA_API_DOCS_ENABLED: 'false'
+    VELLA_MARKETPLACE_CREDENTIALS_ENABLED: 'true'
+    VELLA_MARKETPLACE_CREDENTIAL_KEYRING_DIR: /run/marketplace-keys
+    VELLA_MARKETPLACE_CREDENTIAL_CURRENT_KEY_VERSION: '1'
+    VELLA_MARKETPLACE_CREDENTIAL_KEY_VERSIONS: '1'
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    VELLA_OPENAI_REVIEW_MODEL: ${VELLA_OPENAI_REVIEW_MODEL:-gpt-4o-mini}
+    VELLA_WB_LIVE_SYNC_ENABLED: ${VELLA_WB_LIVE_SYNC_ENABLED:-false}
+    VELLA_REPRICER_WB_SYNC_ENABLED: ${VELLA_REPRICER_WB_SYNC_ENABLED:-true}
+    VELLA_REPRICER_SCHEDULER_ENABLED: ${VELLA_REPRICER_SCHEDULER_ENABLED:-false}
+    VELLA_REAL_PRICE_APPLY_ENABLED: ${VELLA_REAL_PRICE_APPLY_ENABLED:-false}
+    VELLA_REPRICER_LOCAL_PRICE_APPLY_ENABLED: ${VELLA_REPRICER_LOCAL_PRICE_APPLY_ENABLED:-false}
+    VELLA_AVITO_REPRICER_PRICE_APPLY_ENABLED: ${VELLA_AVITO_REPRICER_PRICE_APPLY_ENABLED:-false}
+    VELLA_WB_FEEDBACKS_SEND_ENABLED: ${VELLA_WB_FEEDBACKS_SEND_ENABLED:-false}
+    VELLA_AVITO_RETURNS_SYNC_ENABLED: ${VELLA_AVITO_RETURNS_SYNC_ENABLED:-true}
+    VELLA_WB_API_TOKEN: ${VELLA_WB_API_TOKEN:-}
+    VELLA_WB_CONTENT_API_TOKEN: ${VELLA_WB_CONTENT_API_TOKEN:-}
+    VELLA_WB_STATISTICS_API_TOKEN: ${VELLA_WB_STATISTICS_API_TOKEN:-}
+    VELLA_WB_ADS_API_TOKEN: ${VELLA_WB_ADS_API_TOKEN:-}
+    VELLA_SPP_API_TOKEN: ${VELLA_SPP_API_TOKEN:-}
+  volumes:
+    - credential_keys:/run/marketplace-keys:ro
+  restart: unless-stopped
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    migrate: {condition: service_completed_successfully}
+    key-init: {condition: service_completed_successfully}
+    runtime-init: {condition: service_completed_successfully}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: satorna
+      POSTGRES_USER: satorna_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U satorna_admin -d satorna']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  key-init:
+    build: ../backend
+    image: satorna-backend:vps
+    command: python /init-keyring.py
+    volumes:
+      - credential_keys:/run/marketplace-keys
+      - ./init-keyring.py:/init-keyring.py:ro
+    restart: 'no'
+  migrate:
+    build: ../backend
+    image: satorna-backend:vps
+    environment:
+      VELLA_DATABASE_URL: postgresql+psycopg://satorna_admin:${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}@postgres:5432/satorna
+    command: python -m alembic upgrade head
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: 'no'
+  runtime-init:
+    build: ../backend
+    image: satorna-backend:vps
+    command: python /init-runtime-role.py
+    environment:
+      DATABASE_ADMIN_DSN: postgresql://satorna_admin:${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}@postgres:5432/satorna
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: ['./init-runtime-role.py:/init-runtime-role.py:ro']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: 'no'
+  api:
+    <<: *runtime
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+  worker:
+    <<: *runtime
+    command: python -m celery -A app.infra.celery_app:celery_app worker --loglevel=info --concurrency=2 --queues=vella.default,vella.wb-live,vella.canonical-shadow
+  beat:
+    <<: *runtime
+    command: python -m celery -A app.infra.celery_app:celery_app beat --loglevel=info --schedule=/state/celerybeat
+    volumes:
+      - credential_keys:/run/marketplace-keys:ro
+      - beat_data:/state
+  web:
+    image: satorna-web:vps
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        SATORNA_DOMAIN: ${SATORNA_DOMAIN:?Set SATORNA_DOMAIN}
+    environment:
+      SATORNA_DOMAIN: ${SATORNA_DOMAIN:?Set SATORNA_DOMAIN}
+    ports: ['80:80', '443:443']
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  credential_keys:
+  beat_data:
+  caddy_data:
+  caddy_config:

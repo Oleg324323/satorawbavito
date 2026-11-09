@@ -398,7 +398,6 @@ export function WbRepricerSkuPage() {
                       <tr><td>Ожидаемые заказы</td><td>{estimatedOrders} шт</td><td>mock на основе корзин 7д</td></tr>
                       <tr><td>Производственное время</td><td>{estimatedProductionMin} мин</td><td>7 минут на полный цикл заказа</td></tr>
                       <tr><td>FBS дедлайн</td><td>120 часов</td><td>контроль штрафного риска</td></tr>
-                      <tr><td>КИЗ</td><td>{row.meta.status === 'warmup' ? 'не требуется' : 'проверить пул'}</td><td>будущий backend gate</td></tr>
                     </tbody>
                   </table>
                 </div>

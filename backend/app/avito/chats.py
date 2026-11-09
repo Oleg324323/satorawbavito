@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
@@ -121,30 +122,29 @@ def _content_text(content: Any, message_type: str) -> tuple[str, str | None]:
 
 
 def _raw_preview(payload: Any) -> dict[str, Any]:
-    if isinstance(payload, dict):
+    if type(payload) is dict:
         rows = payload.get("chats") or payload.get("result") or payload.get("messages") or []
-        first = rows[0] if isinstance(rows, list) and rows else None
         return {
             "type": "dict",
-            "keys": sorted(str(key) for key in payload.keys())[:20],
-            "rowCount": len(rows) if isinstance(rows, list) else None,
-            "firstRowKeys": sorted(str(key) for key in first.keys())[:20] if isinstance(first, dict) else None,
+            "rowCount": len(rows) if type(rows) is list else None,
         }
-    if isinstance(payload, list):
-        first = payload[0] if payload else None
+    if type(payload) is list:
         return {
             "type": "list",
             "rowCount": len(payload),
-            "firstRowKeys": sorted(str(key) for key in first.keys())[:20] if isinstance(first, dict) else None,
         }
-    return {"type": type(payload).__name__}
+    return {"type": "other"}
 
 
 def _debug_payload(label: str, payload: Any) -> None:
     try:
-        print(label, json.dumps(_raw_preview(payload), ensure_ascii=False), flush=True)
+        print("[AVITO_CHATS_BODY]", json.dumps(_raw_preview(payload), ensure_ascii=False), flush=True)
     except Exception:
-        print(label, _raw_preview(payload), flush=True)
+        pass  # Diagnostics failure must not print arbitrary fallback objects.
+
+
+def _safe_http_status(value: Any) -> int | None:
+    return value if type(value) is int and 100 <= value <= 599 else None
 
 
 class LiveAvitoChatsClient:
@@ -164,10 +164,12 @@ class LiveAvitoChatsClient:
                 return self._fetch_chats_with_client(request, http_client)
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 return self._fetch_chats_with_client(request, client)
+        except AvitoChatsUpstreamError as exc:
+            return AvitoChatsFetchResult(status="blocked", error=exc.error)
         except httpx.HTTPStatusError as exc:
             return AvitoChatsFetchResult(status="blocked", error=self._http_error(exc))
-        except Exception as exc:
-            return AvitoChatsFetchResult(status="blocked", error=AvitoChatsFetchError(code="transport_error", message=str(exc), retryable=True, blockerIds=["AVITO_CHATS"]))
+        except Exception:
+            return AvitoChatsFetchResult(status="blocked", error=AvitoChatsFetchError(code="transport_error", message="Avito transport error", retryable=True, blockerIds=["AVITO_CHATS"]))
 
     def _fetch_chats_with_client(self, request: AvitoChatsFetchRequest, client: Any) -> AvitoChatsFetchResult:
         account_id, account_name = self._account(client, request.accountIds)
@@ -180,17 +182,22 @@ class LiveAvitoChatsClient:
         _debug_payload("[AVITO_CHATS_BODY]", payload)
         chats = [self._chat_row(raw, account_id, account_name) for raw in self._chat_rows(payload)]
         messages: dict[str, list[AvitoMessageRow]] = {}
-        message_diagnostics: dict[str, Any] = {}
-        message_failures: dict[str, Any] = {}
+        message_failures: list[dict[str, Any]] = []
         if request.includeMessages:
             for chat in chats:
                 try:
-                    messages[chat.chatId] = self._messages(client, account_id, chat.chatId, message_diagnostics)
+                    messages[chat.chatId] = self._messages(client, account_id, chat.chatId)
                 except httpx.HTTPStatusError as exc:
                     messages[chat.chatId] = self._fallback_messages_from_chat(chat)
                     failure = self._http_error(exc).model_dump(mode="json")
-                    failure["httpStatus"] = exc.response.status_code
-                    message_failures[chat.chatId] = failure
+                    failure["httpStatus"] = _safe_http_status(exc.response.status_code)
+                    message_failures.append(failure)
+                except (httpx.RequestError, RuntimeError, ValueError, TypeError):
+                    # One failed conversation must not erase the successfully
+                    # fetched chat list. Never expose raw transport errors/URLs.
+                    messages[chat.chatId] = self._fallback_messages_from_chat(chat)
+                    message_failures.append({"code": "messages_unavailable", "retryable": True,
+                                             "message": "Conversation messages could not be loaded"})
         return AvitoChatsFetchResult(
             status="synced",
             accountId=account_id,
@@ -201,23 +208,33 @@ class LiveAvitoChatsClient:
                 "chatsCount": len(chats),
                 "messagesCount": sum(len(rows) for rows in messages.values()),
                 "rawChats": _raw_preview(payload),
-                "rawMessages": message_diagnostics,
+                "rawMessages": None,
                 "messagesFailed": message_failures,
             },
         )
 
     def _account(self, client: Any, account_ids: list[str]) -> tuple[str, str]:
-        if account_ids:
-            account_id = str(account_ids[0])
-            return account_id, account_id
+        if len(account_ids) > 1 or any(re.fullmatch(r"[1-9][0-9]{0,19}", value) is None for value in account_ids):
+            raise self._account_scope_error()
         response = client.get(f"{self.base_url}/core/v1/accounts/self", headers=self._headers())
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Avito account response is invalid")
         account_id = str(payload.get("id") or payload.get("user_id") or payload.get("userId") or "")
-        if not account_id:
+        if re.fullmatch(r"[1-9][0-9]{0,19}", account_id) is None:
             raise ValueError("Avito account response does not include account id")
+        if account_ids and account_ids[0] != account_id:
+            raise self._account_scope_error()
         account_name = str(payload.get("name") or payload.get("profile", {}).get("name") or account_id)
         return account_id, account_name
+
+    @staticmethod
+    def _account_scope_error() -> AvitoChatsUpstreamError:
+        return AvitoChatsUpstreamError(AvitoChatsFetchError(
+            code="account_scope_denied", message="Аккаунт Авито не совпадает с подключенным.",
+            retryable=False, blockerIds=["AVITO_SCOPE"],
+        ), 403)
 
     @staticmethod
     def _chat_rows(payload: Any) -> list[dict[str, Any]]:
@@ -271,8 +288,7 @@ class LiveAvitoChatsClient:
         response = client.get(f"{self.base_url}/messenger/v3/accounts/{account_id}/chats/{chat_id}/messages/", params={"limit": 99, "offset": 0}, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
-        if diagnostics is not None and len(diagnostics) < 5:
-            diagnostics[chat_id] = _raw_preview(payload)
+        # Never index debug output by provider-derived chat identity.
         rows = payload if isinstance(payload, list) else payload.get("messages") if isinstance(payload, dict) else []
         return [self._message_row(chat_id, row) for row in rows if isinstance(row, dict)]
 
@@ -296,28 +312,37 @@ class LiveAvitoChatsClient:
         body = {"type": "text", "message": {"text": text}}
         try:
             if http_client is not None:
+                self._account(http_client, [account_id])
                 response = http_client.post(f"{self.base_url}/messenger/v1/accounts/{account_id}/chats/{chat_id}/messages", json=body, headers=self._headers())
             else:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
+                    self._account(client, [account_id])
                     response = client.post(f"{self.base_url}/messenger/v1/accounts/{account_id}/chats/{chat_id}/messages", json=body, headers=self._headers())
             response.raise_for_status()
             return self._message_row(chat_id, response.json())
         except httpx.HTTPStatusError as exc:
-            raise AvitoChatsUpstreamError(self._http_error(exc), exc.response.status_code) from exc
+            raise AvitoChatsUpstreamError(self._http_error(exc), _safe_http_status(exc.response.status_code) or 502) from None
 
-    def mark_chat_read(self, account_id: str, chat_id: str) -> bool:
+    def mark_chat_read(self, account_id: str, chat_id: str, http_client: Any | None = None) -> bool:
         try:
-            with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.post(f"{self.base_url}/messenger/v1/accounts/{account_id}/chats/{chat_id}/read", headers=self._headers())
+            if http_client is not None:
+                self._account(http_client, [account_id])
+                response = http_client.post(f"{self.base_url}/messenger/v1/accounts/{account_id}/chats/{chat_id}/read", headers=self._headers())
+            else:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    self._account(client, [account_id])
+                    response = client.post(f"{self.base_url}/messenger/v1/accounts/{account_id}/chats/{chat_id}/read", headers=self._headers())
             response.raise_for_status()
             payload = response.json()
             return bool(payload.get("ok", True)) if isinstance(payload, dict) else True
         except httpx.HTTPStatusError as exc:
-            raise AvitoChatsUpstreamError(self._http_error(exc), exc.response.status_code) from exc
+            raise AvitoChatsUpstreamError(self._http_error(exc), _safe_http_status(exc.response.status_code) or 502) from None
 
     @staticmethod
     def _http_error(exc: Any) -> AvitoChatsFetchError:
-        status_code = exc.response.status_code
+        status_code = _safe_http_status(exc.response.status_code)
+        if status_code is None:
+            return AvitoChatsFetchError(code="avito_request_failed", message="Avito request failed", retryable=True, blockerIds=["AVITO_CHATS"])
         if status_code == 401:
             return AvitoChatsFetchError(code="auth_required", message="Avito HTTP 401", retryable=False, blockerIds=["AVITO_AUTH"])
         if status_code == 403:

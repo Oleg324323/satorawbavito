@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.avito.auth import resolve_user_avito_access_token
+from app.avito.auth import resolve_user_avito_access_token, scoped_avito_cache_key
 from app.avito.reviews import AvitoReviewsFetchRequest, AvitoReviewsUpstreamError, AvitoReviewRow, build_avito_reviews_client
 from app.cabinet.store import get_organization_avito_credentials_secret, get_user_avito_credentials_secret
 from app.config import get_settings
@@ -230,11 +230,6 @@ def get_avito_reviews(
     actor = actor_from_request(request)
     if not has_permission(actor, "cabinet:read"):
         raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
-    source_key = _cache_key(limit, offset)
-    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
-    if not force_refresh and isinstance(cached, dict) and cached.get("reviews"):
-        return _cache_hit_payload(cached)
-
     credentials = get_user_avito_credentials_secret(actor.user_id) or get_organization_avito_credentials_secret(actor.organization_id)
     if credentials is None:
         raise HTTPException(status_code=409, detail="AVITO_CREDENTIALS_REQUIRED")
@@ -248,6 +243,11 @@ def get_avito_reviews(
         )
     except Exception as exc:
         raise HTTPException(status_code=409, detail="AVITO_OAUTH_FAILED") from exc
+
+    source_key = scoped_avito_cache_key(_cache_key(limit, offset), access_token)
+    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
+    if not force_refresh and isinstance(cached, dict) and cached.get("reviews"):
+        return _cache_hit_payload(cached)
 
     client = build_avito_reviews_client(access_token=access_token, base_url=settings.avito_api_base_url, timeout_seconds=settings.avito_api_timeout_seconds)
     result = client.fetch_reviews(AvitoReviewsFetchRequest(limit=limit, offset=offset))

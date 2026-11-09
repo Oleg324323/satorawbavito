@@ -9,6 +9,7 @@ description = "Vella WB Sprint A backend skeleton"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.124",
+  "python-multipart>=0.0.20,<0.1",
   "pydantic>=2.12",
   "sqlalchemy>=2.0",
   "alembic>=1.13",
@@ -18,20 +19,31 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "httpx>=0.28",
   "uvicorn>=0.38",
+  "pypdfium2>=4.30,<6",
+  "zxing-cpp>=2.3,<3",
+  "Pillow>=11,<13",
 ]
 
 [project.optional-dependencies]
 test = [
+  "reportlab>=4,<5",
+  "setuptools>=69",
+  "wheel",
   "httpx>=0.28",
   "pytest>=8.4",
   "datamodel-code-generator>=0.58",
 ]
 
-[tool.setuptools]
-packages = ["app", "app.avito", "app.contracts", "app.discovery", "app.routers", "app.wb_api", "app.source_registry", "app.control_plane", "app.account_health", "app.cabinet", "app.repricer_cache", "app.repricer_persistence", "app.reviews", "app.modules", "app.modules.wb_reports", "app.platform", "app.platform.advertising", "app.platform.catalog", "app.platform.economics", "app.platform.finance", "app.platform.identity", "app.platform.integrations", "app.security", "vella_wb_19_05", "app.infra"]
+[tool.setuptools.packages.find]
+where = [".", "backend_contracts"]
+include = ["app", "app.*", "vella_wb_19_05", "vella_wb_19_05.*"]
+namespaces = true
 
 [tool.setuptools.package-dir]
 vella_wb_19_05 = "backend_contracts/vella_wb_19_05"
+
+[tool.setuptools.package-data]
+"app.wb_api" = ["*.pem"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

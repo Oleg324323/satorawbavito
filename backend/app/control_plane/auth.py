@@ -197,6 +197,8 @@ def register_with_email_password(
     user_agent: str | None,
     ip_address: str | None,
 ) -> tuple[ActorContext, AuthTokenBundle]:
+    if get_settings().wb_live_sync_enabled and wb_token:
+        raise HTTPException(409, detail={"code": "WB_USE_ACCOUNT_CONNECTION"})
     ensure_defaults()
     password_hash = hash_password(password)
     _org, user_view = register_organization_owner(

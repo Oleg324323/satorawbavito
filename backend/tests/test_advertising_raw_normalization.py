@@ -7,6 +7,7 @@ import pytest
 
 from app.platform.advertising.raw import (
     AdvertisingNormalizationError,
+    _validate_hierarchy,
     normalize_raw_advertising,
 )
 from app.platform.period import Period
@@ -21,16 +22,26 @@ def raw_bundle() -> dict[str, object]:
     )
 
 
-def test_raw_hierarchy_preserves_scope_app_and_exact_totals(raw_bundle):
+@pytest.mark.parametrize("app_type", [0, 1])
+def test_raw_hierarchy_preserves_scope_app_and_exact_totals(raw_bundle, app_type):
+    raw_bundle["fullstats"][0]["payload"][0]["days"][0]["apps"][0]["appType"] = app_type
     evidence = normalize_raw_advertising(PERIOD, raw_bundle)
     assert evidence.source_total_spend_kopecks == 200
     assert evidence.document_total_spend_kopecks == 200
     assert len(evidence.spend_documents) == 2
     leaves = [fact for fact in evidence.facts if fact.fact_scope == "source_sku"]
-    assert [(fact.app_type, fact.spend_kopecks) for fact in leaves] == [(1, 110), (32, 40)]
+    assert [(fact.app_type, fact.spend_kopecks) for fact in leaves] == [(app_type, 110), (32, 40)]
+    assert leaves[0].source_identity.endswith(f"|{app_type}|2001")
     assert leaves[1].clicks == 1
     assert leaves[1].cart_adds == 0
     assert leaves[1].cancel_count == 1
+
+
+@pytest.mark.parametrize("app_type", [None, True, -1, 1.5])
+def test_raw_rejects_invalid_platform_codes(raw_bundle, app_type):
+    raw_bundle["fullstats"][0]["payload"][0]["days"][0]["apps"][0]["appType"] = app_type
+    with pytest.raises(AdvertisingNormalizationError, match="appType"):
+        normalize_raw_advertising(PERIOD, raw_bundle)
 
 
 def test_raw_metrics_distinguish_missing_from_explicit_zero(raw_bundle):
@@ -117,6 +128,29 @@ def test_raw_hierarchy_rejects_money_beyond_one_kopeck(raw_bundle, field, parent
         normalize_raw_advertising(PERIOD, raw_bundle)
 
 
+@pytest.mark.parametrize("field", ["sum", "sum_price"])
+def test_raw_hierarchy_allows_independently_rounded_daily_money(field):
+    _validate_hierarchy(
+        {field: 1.42},
+        [{field: value} for value in (0.36, 0.36, 0.36, 0.36, 0)],
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "parent", "values"),
+    [
+        ("sum", 1.40, [0.36, 0.36, 0.36, 0.36, 0]),
+        ("sum_price", 1.40, [0.36, 0.36, 0.36, 0.36, 0]),
+        ("sum", 1.4299, [0.36, 0.36, 0.36, 0.36, 0]),
+        ("views", 142, [36, 36, 36, 36, 0]),
+        ("sum", None, [0.36] * 5),
+    ],
+)
+def test_raw_hierarchy_keeps_rounding_bounded(field, parent, values):
+    with pytest.raises(AdvertisingNormalizationError, match="hierarchy"):
+        _validate_hierarchy({field: parent}, [{field: value} for value in values])
+
+
 def test_raw_upd_preserves_signed_correction(raw_bundle):
     raw_bundle["upd"][0]["payload"][1]["updSum"] = -2
 
@@ -141,13 +175,14 @@ def test_raw_accepts_contained_source_subwindows(raw_bundle):
     }
 
 
-def test_raw_rejects_dates_outside_their_source_subwindow(raw_bundle):
+def test_raw_excludes_spend_documents_outside_their_source_subwindow(raw_bundle):
     period = Period(date(2026, 9, 1), date(2026, 9, 2))
     raw_bundle["period"] = {"dateFrom": "2026-09-01", "dateTo": "2026-09-02"}
     raw_bundle["upd"][0]["payload"][0]["updTime"] = "2026-09-02T12:00:00+03:00"
 
-    with pytest.raises(AdvertisingNormalizationError, match="outside period"):
-        normalize_raw_advertising(period, raw_bundle)
+    evidence = normalize_raw_advertising(period, raw_bundle)
+    assert all(document.business_date == date(2026, 9, 1) for document in evidence.spend_documents)
+    assert len(evidence.spend_documents) == len(raw_bundle["upd"][0]["payload"]) - 1
 
 
 def test_empty_complete_bundle_does_not_require_unmade_fullstats_request(raw_bundle):

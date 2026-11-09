@@ -1501,6 +1501,19 @@ tr:hover .acts, tr.sel .acts { opacity: 1; }
 /* MODAL */
 .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.45); z-index: 200; opacity: 0; pointer-events: none; transition: opacity 0.18s; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.open { opacity: 1; pointer-events: all; }
+dialog.modal-overlay { width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; background: transparent; color: inherit; }
+dialog.modal-overlay:not([open]) { display: none; }
+dialog.modal-overlay::backdrop { background: rgba(15,23,42,0.45); }
+body:has(dialog.modal-overlay[open]) { overflow: hidden; }
+dialog.modal-overlay .modal { max-height: 100%; display: flex; flex-direction: column; min-height: 0; }
+dialog.modal-overlay .modal-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+dialog.modal-overlay .modal-head, dialog.modal-overlay .modal-foot { flex-shrink: 0; }
+dialog.modal-overlay .modal-foot { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  dialog.modal-overlay { padding: 12px; }
+  dialog.modal-overlay .modal-head, dialog.modal-overlay .modal-body, dialog.modal-overlay .modal-foot { padding: 12px; }
+  #m-bulkAssignManager .manager-assignment-fields { grid-template-columns: 1fr !important; }
+}
 .modal { background: var(--white); border-radius: 14px; box-shadow: var(--shadow-xl); max-width: 440px; width: 100%; transform: translateY(8px) scale(0.97); transition: transform 0.18s; }
 .modal.lg { max-width: 540px; }
 .modal.xl { max-width: 860px; }
@@ -1521,6 +1534,7 @@ tr:hover .acts, tr.sel .acts { opacity: 1; }
 
 /* TOAST */
 .toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 250; pointer-events: none; }
+.modal-overlay > .toast-container { top: 20px; bottom: auto; z-index: 1; max-width: calc(100vw - 40px); }
 .toast { background: var(--gray-900); color: white; border-radius: 10px; padding: 11px 14px 11px 12px; font-size: 13px; display: flex; align-items: center; gap: 10px; min-width: 280px; max-width: 380px; box-shadow: var(--shadow-xl); transform: translateX(20px); opacity: 0; transition: all 0.2s; pointer-events: all; }
 .toast.show { transform: translateX(0); opacity: 1; }
 .toast-icon { width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
@@ -2361,8 +2375,22 @@ body.avito-popup-open { overflow: hidden; }
 .avito-period-group-title b { display: block; color: var(--gray-900); font-size: 14px; line-height: 1.25; font-weight: 850; }
 .avito-period-group-title span { display: block; margin-top: 2px; color: var(--gray-500); font-size: 11.5px; line-height: 1.35; font-weight: 650; }
 .avito-period-group .report-period { flex-shrink: 0; }
-.avito-period-group-grid { padding: 12px; display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 12px; }
+.avito-period-group-grid { padding: 12px; }
 .avito-period-group-grid > .report-panel { box-shadow: none; }
+.avito-overview-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 10px; padding: 12px 20px 0; overflow: visible; border: 0; background: transparent; }
+.vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] .stat { min-width: 0; padding: 14px 16px; border: 1px solid var(--gray-200); border-radius: 12px; background: var(--white); box-shadow: var(--shadow-sm); }
+.vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] .stat-label { font-size: 12px; }
+.vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] .stat-val { font-size: 24px; }
+.vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] .stat-delta { font-size: 12px; }
+#tab-avito-overview .avito-overview-item-modal .modal { width: min(760px, 100%); max-height: calc(100dvh - 48px); overflow: hidden; }
+#tab-avito-overview .avito-overview-item-modal .modal-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) 32px; gap: 12px; align-items: start; }
+#tab-avito-overview .avito-overview-item-modal .modal-icon { margin: 0; }
+#tab-avito-overview .avito-overview-item-modal .modal-head h2 { font-size: 19px; line-height: 1.3; }
+#tab-avito-overview .avito-overview-item-modal .modal-head .icon-btn { border: 1px solid var(--gray-200); }
+#tab-avito-overview .avito-overview-item-modal .avito-detail-grid.five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#tab-avito-privacy { min-height: 0; }
+#tab-avito-privacy iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 #tab-avito-overview .report-grid { grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); }
 #tab-avito-overview .avito-period-group + .report-panel { grid-column: 1 / -1; }
 .avito-inspector-hint { display: none; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--gray-200); border-radius: 9px; background: var(--gray-50); color: var(--gray-600); font-size: 12px; font-weight: 650; }
@@ -2380,7 +2408,9 @@ body.avito-popup-open { overflow: hidden; }
   .avito-funnel-insights { grid-template-columns: 1fr; }
 }
 @media (max-width: 980px){
-  .avito-period-group-grid { grid-template-columns: 1fr; }
+  .avito-overview-items { grid-template-columns: 1fr; }
+  .vella-html-parity-root [data-vella-island="avito-overview-kpi-strip"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  #tab-avito-overview .avito-overview-item-modal .avito-detail-grid.five { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1500px){
   .avito-inbox-shell { grid-template-columns: 330px minmax(420px, 1fr) 300px; }
@@ -2621,16 +2651,17 @@ body.avito-popup-open { overflow: hidden; }
 #tab-avito-repricer .avito-title-cell {
   display: grid;
   gap: 4px;
-  min-width: 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 #tab-avito-repricer .avito-title-cell b {
   line-height: 1.25;
 }
 #tab-avito-repricer .avito-item-cell {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 66px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 310px;
 }
 #tab-avito-repricer .avito-row-photo {
@@ -3094,6 +3125,23 @@ body.avito-popup-open { overflow: hidden; }
 #tab-notifications .notif-page {
   grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
   align-items: start;
+}
+#tab-notifications .avito-notifications-page { grid-template-columns: minmax(0, 1fr); }
+#tab-notifications .avito-notifications-page .notif-side { display: none; }
+#tab-notifications .avito-notifications-page.detail-open { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
+#tab-notifications .avito-notifications-page.detail-open .notif-side { display: block; }
+#tab-notifications .avito-notifications-page .notif-table { width: 100%; table-layout: fixed; }
+#tab-notifications .avito-notifications-page .notif-table th:first-child { width: 42%; }
+#tab-notifications .avito-notifications-page .notif-table th:nth-child(2),
+#tab-notifications .avito-notifications-page .notif-table th:nth-child(3) { width: 10%; }
+#tab-notifications .avito-notifications-page .notif-table th:nth-child(4) { width: 18%; }
+#tab-notifications .avito-notifications-page .notif-table th:nth-child(5) { width: 11%; }
+#tab-notifications .avito-notifications-page .notif-table th:nth-child(6) { width: 9%; }
+#tab-notifications .avito-notifications-page .notif-event-title,
+#tab-notifications .avito-notifications-page .notif-event-sub { max-width: none; }
+#tab-notifications .avito-notifications-page #notifCategoryChips { flex-wrap: wrap; overflow: visible; }
+@media (max-width: 1500px) {
+  #tab-notifications .avito-notifications-page.detail-open { grid-template-columns: minmax(0, 1fr); }
 }
 #tab-settings-access .access-shell {
   padding: 18px 22px 28px;
@@ -5415,15 +5463,15 @@ body.avito-popup-open { overflow: hidden; }
   <div class="nav-sub nav-sub-open" data-nav-group="repricer" aria-hidden="false">
     <div class="nav-item nav-sub-active" data-tab="products" onclick="goSubtab('products')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
-      <span class="nav-label">Все товары</span><span class="nav-badge">0</span>
+      <span class="nav-label">Репрайсер</span>
     </div>
     <div class="nav-item" data-tab="repricer-stats" onclick="goSubtab('repricer-stats')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-      <span class="nav-label">Статистика</span><span class="nav-badge warn">черновик</span>
+      <span class="nav-label">Статистика</span>
     </div>
     <div class="nav-item" data-tab="templates" onclick="goSubtab('templates')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-      <span class="nav-label">Стратегии</span><span class="nav-badge">0</span>
+      <span class="nav-label">Стратегии</span>
     </div>
     <div class="nav-item" data-tab="history" onclick="goSubtab('history')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -5431,11 +5479,11 @@ body.avito-popup-open { overflow: hidden; }
     </div>
     <div class="nav-item" data-tab="liq" onclick="goSubtab('liq')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
-      <span class="nav-label">Ликвидация</span><span class="nav-badge alert">8</span>
+      <span class="nav-label">Ликвидация</span>
     </div>
     <div class="nav-item" data-tab="promos" onclick="goSubtab('promos')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 5L5 19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>
-      <span class="nav-label">Акции WB</span><span class="nav-badge alert">2</span>
+      <span class="nav-label">Акции WB</span>
     </div>
     <div class="nav-item" data-tab="algo" onclick="goSubtab('algo')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></svg>
@@ -5465,10 +5513,6 @@ body.avito-popup-open { overflow: hidden; }
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7H14.5a3.5 3.5 0 010 7H6"/></svg>
       <span class="nav-label">P&amp;L</span>
     </div>
-    <div class="nav-item" data-tab="expenses" onclick="goSubtab('expenses')">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 9h8"/><path d="M8 13h5"/><path d="M8 17h7"/></svg>
-      <span class="nav-label">Расходы</span><span class="nav-badge warn">черновик</span>
-    </div>
     <div class="nav-item" data-tab="ads" onclick="goSubtab('ads')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-5v12L3 13z"/><path d="M11 14v5a2 2 0 01-2 2H8a2 2 0 01-2-2v-4"/></svg>
       <span class="nav-label">Реклама</span>
@@ -5488,29 +5532,27 @@ body.avito-popup-open { overflow: hidden; }
   </div>
   <div class="nav-item" data-module="data" data-tab="sources" data-tip="Источники и загрузки" onclick="goSubtab('sources')">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
-    <span class="nav-label">Источники и загрузки</span><span class="nav-badge warn">8</span>
+    <span class="nav-label">Источники и загрузки</span>
   </div>
   <div class="nav-item" data-module="reviews" data-tab="reviews" data-tip="Отзывы WB: очередь AI-ответов" onclick="goSubtab('reviews')">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-    <span class="nav-label">Отзывы WB</span><span class="nav-badge alert" id="navReviewsCount">17</span>
+    <span class="nav-label">Отзывы WB</span>
   </div>
 
   <div class="nav-section">Авито</div>
-  <div class="nav-item" data-module="avito" data-tip="Авито" onclick="goSubtab('avito-overview')">
+  <div class="nav-item" data-module="avito" data-tip="Авито" onclick="goSubtab('avito-repricer')">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
     <span class="nav-label">Авито</span>
     <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
   </div>
   <div class="nav-sub" data-nav-group="avito" aria-hidden="true">
-    <div class="nav-item" data-tab="avito-overview" onclick="goSubtab('avito-overview')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span class="nav-label">Обзор</span><span class="nav-badge warn">12</span></div>
-    <div class="nav-item" data-tab="avito-inbox" onclick="goSubtab('avito-inbox')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg><span class="nav-label">Сообщения</span><span class="nav-badge alert">3</span></div>
-    <div class="nav-item" data-tab="avito-reviews" onclick="goSubtab('avito-reviews')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span class="nav-label">Отзывы</span><span class="nav-badge alert" id="avitoReviewsNavCount">14</span></div>
+    <div class="nav-item" data-tab="avito-inbox" onclick="goSubtab('avito-inbox')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg><span class="nav-label">Сообщения</span></div>
+    <div class="nav-item" data-tab="avito-reviews" onclick="goSubtab('avito-reviews')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span class="nav-label">Отзывы</span></div>
     <div class="nav-item" data-tab="orders-avito" onclick="goSubtab('orders-avito')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/></svg><span class="nav-label">Заказы</span></div>
-    <div class="nav-item" data-tab="avito-listings" onclick="goSubtab('avito-listings')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg><span class="nav-label">Объявления</span><span class="nav-badge warn">7!</span></div>
-    <div class="nav-item" data-tab="avito-repricer" onclick="goSubtab('avito-repricer')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6 4 4 6-8"/><path d="M14 7h6v6"/></svg><span class="nav-label">Репрайсер</span><span class="nav-badge">чат</span></div>
-    <div class="nav-item" data-tab="avito-stats" onclick="goSubtab('avito-stats')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><span class="nav-label">Статистика</span><span class="nav-badge">30д</span></div>
-    <div class="nav-item" data-tab="avito-notifications" onclick="goSubtab('avito-notifications')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg><span class="nav-label">Уведомления</span><span class="nav-badge alert" id="avitoNavNotifCount">5</span></div>
-    <a class="nav-item nav-item-link" href="/avito-privacy.html" target="_blank" rel="noopener noreferrer" data-tip="Политика конфиденциальности" aria-label="Политика конфиденциальности"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg><span class="nav-label">Конфиденциальность</span></a>
+    <div class="nav-item" data-tab="avito-repricer" onclick="goSubtab('avito-repricer')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6 4 4 6-8"/><path d="M14 7h6v6"/></svg><span class="nav-label">Репрайсер</span></div>
+    <div class="nav-item" data-tab="avito-stats" onclick="goSubtab('avito-stats')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><span class="nav-label">Статистика</span></div>
+    <div class="nav-item" data-tab="avito-notifications" onclick="goSubtab('avito-notifications')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg><span class="nav-label">Уведомления</span></div>
+    <div class="nav-item" data-tab="avito-privacy" onclick="goSubtab('avito-privacy')"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg><span class="nav-label">Конфиденциальность</span></div>
   </div>
   <div class="nav-section">Система</div>
   <div class="nav-item" data-module="system" data-tab="settings-profile" data-tip="Профиль" onclick="goSubtab('settings-profile')">
@@ -5523,7 +5565,7 @@ body.avito-popup-open { overflow: hidden; }
   </div>
   <div class="nav-item" data-module="system" data-tab="notifications" data-tip="Уведомления" onclick="goSubtab('notifications')">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
-    <span class="nav-label">Уведомления</span><span class="nav-badge alert" id="navNotifCount">4</span>
+    <span class="nav-label">Уведомления</span>
   </div>
   <div class="nav-item" data-module="system" data-tab="settings-access" data-tip="Команда и доступы" onclick="goSubtab('settings-access')">
     <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
@@ -5683,11 +5725,11 @@ body.avito-popup-open { overflow: hidden; }
   <div class="module-panel active" data-module-panel="repricer">
   <div class="subtab active" data-tab="products" onclick="goSubtab('products')">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
-    Все товары <span class="subtab-count">0</span>
+    Репрайсер <span class="subtab-count">0</span>
   </div>
   <div class="subtab" data-tab="repricer-stats" onclick="goSubtab('repricer-stats')">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-    Статистика <span class="subtab-count">черновик</span>
+    Статистика
   </div>
   <div class="subtab" data-tab="templates" onclick="goSubtab('templates')">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
@@ -5738,37 +5780,29 @@ body.avito-popup-open { overflow: hidden; }
   <div class="module-panel" data-module-panel="reviews">
     <div class="subtab active" data-tab="reviews" onclick="goSubtab('reviews')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      Очередь ответов <span class="subtab-count" style="background:#FEE2E2;color:#991B1B">17</span>
+      Очередь ответов <span class="subtab-count" id="subtabReviewsCount" style="background:#FEE2E2;color:#991B1B">—</span>
     </div>
   </div>
 	  <div class="module-panel" data-module-panel="avito">
-	    <div class="subtab active" data-tab="avito-overview" onclick="goSubtab('avito-overview')">
-	      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
-	      Обзор <span class="subtab-count">12</span>
-    </div>
-    <div class="subtab" data-tab="avito-inbox" onclick="goSubtab('avito-inbox')">
+    <div class="subtab active" data-tab="avito-inbox" onclick="goSubtab('avito-inbox')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-      Сообщения <span class="subtab-count" style="background:#FEE2E2;color:#991B1B">3 новых</span>
+      Сообщения
     </div>
     <div class="subtab" data-tab="avito-reviews" onclick="goSubtab('avito-reviews')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      Отзывы <span class="subtab-count" style="background:#FEE2E2;color:#991B1B">14</span>
+      Отзывы
     </div>
     <div class="subtab" data-tab="orders-avito" onclick="goSubtab('orders-avito')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>
       Заказы
     </div>
-    <div class="subtab" data-tab="avito-listings" onclick="goSubtab('avito-listings')">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-      Объявления <span class="subtab-count" style="background:#FEF3C7;color:#92400E">7!</span>
-    </div>
     <div class="subtab" data-tab="avito-repricer" onclick="goSubtab('avito-repricer')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6 4 4 6-8"/><path d="M14 7h6v6"/></svg>
-      Репрайсер <span class="subtab-count">чат</span>
+      Репрайсер
     </div>
     <div class="subtab" data-tab="avito-stats" onclick="goSubtab('avito-stats')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-      Статистика <span class="subtab-count">30 дней</span>
+      Статистика
     </div>
 	    <div class="subtab" data-tab="avito-notifications" onclick="goSubtab('avito-notifications')">
 	      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
@@ -5910,7 +5944,6 @@ body.avito-popup-open { overflow: hidden; }
               <th>Возврат</th>
               <th>Стикер</th>
               <th>Баркод</th>
-              <th>КИЗ</th>
               <th>QR/Barcode Авито</th>
               <th>Статус</th>
             </tr>
@@ -7114,6 +7147,10 @@ body.avito-popup-open { overflow: hidden; }
   </div>
 </div>
 
+<div class="tab-content" id="tab-avito-privacy">
+  <iframe src="/avito-privacy.html?embedded=1" title="Политика конфиденциальности Авито" loading="lazy"></iframe>
+</div>
+
 <!-- ========================================================== -->
 <!-- TAB: ЛИЧНЫЙ КАБИНЕТ                                       -->
 <!-- ========================================================== -->
@@ -7328,7 +7365,7 @@ body.avito-popup-open { overflow: hidden; }
     </div>
   </aside>
 
-  <div class="modal-overlay" id="settingsInviteModal" onclick="if(event.target===this)closeSettingsInvite()">
+  <dialog class="modal-overlay" id="settingsInviteModal" onclick="if(event.target===this)closeSettingsInvite()">
     <div class="modal" style="max-width:560px">
       <div class="modal-head">
         <h3>Пригласить пользователя</h3>
@@ -7363,7 +7400,7 @@ body.avito-popup-open { overflow: hidden; }
         <button class="btn btn-primary" type="button" onclick="createSettingsInvite()">Сформировать ссылку</button>
       </div>
     </div>
-  </div>
+  </dialog>
 </div>
 
 <!-- ========================================================== -->
@@ -7393,27 +7430,22 @@ body.avito-popup-open { overflow: hidden; }
     <div class="stat">
       <div class="stat-label">Неотвеченные <span class="stat-tip" data-tip="Отзывы WB без опубликованного ответа">i</span></div>
       <div class="stat-val" id="reviewsKpiOpen">—</div>
-      <div class="stat-delta neutral">после загрузки backend</div>
     </div>
     <div class="stat alert">
       <div class="stat-label">Требуют проверки <span class="stat-tip" data-tip="AI подготовил черновик, но нужен человек">i</span></div>
       <div class="stat-val" id="reviewsKpiQueue">—</div>
-      <div class="stat-delta neutral">по правилам backend</div>
     </div>
     <div class="stat">
-      <div class="stat-label">Автоответы сегодня <span class="stat-tip" data-tip="Запланированные и отправленные безопасные ответы">i</span></div>
+      <div class="stat-label">Готовые черновики <span class="stat-tip" data-tip="Подготовленные ответы, которые ещё не опубликованы">i</span></div>
       <div class="stat-val" id="reviewsKpiAuto">—</div>
-      <div class="stat-delta neutral">draft-only режим</div>
     </div>
     <div class="stat">
       <div class="stat-label">Заблокировано <span class="stat-tip" data-tip="Низкая оценка, стоп-слово, конкурент, цена или компенсация">i</span></div>
       <div class="stat-val" id="reviewsKpiBlocked">—</div>
-      <div class="stat-delta neutral">по ответу backend</div>
     </div>
     <div class="stat">
       <div class="stat-label">Среднее время <span class="stat-tip" data-tip="От создания отзыва до ответа">i</span></div>
       <div class="stat-val" id="reviewsKpiAvgTime">—</div>
-      <div class="stat-delta neutral">нет данных</div>
     </div>
   </div>
 
@@ -7455,7 +7487,7 @@ body.avito-popup-open { overflow: hidden; }
       <aside class="reviews-queue">
         <div class="reviews-card-head">
           <div class="reviews-card-title">Требуют проверки</div>
-          <div class="reviews-card-meta">17 отзывов</div>
+          <div class="reviews-card-meta" id="reviewsQueueCount">—</div>
         </div>
         <div class="review-queue-list" id="reviewsQueueList"></div>
       </aside>
@@ -7588,10 +7620,6 @@ body.avito-popup-open { overflow: hidden; }
     <div class="chip" data-brand="aurora" onclick="setBrandFilter('aurora', this)"><span class="brand-chip aurora" style="margin-right:4px;padding:1px 6px;font-size:10.5px">Aurora</span><span class="chip-count">—</span></div>
   </div>
   <div class="toolbar-right">
-    <div class="density-toggle" aria-label="Плотность таблицы">
-      <button class="density-btn active" type="button" data-density="comfortable" onclick="setDensity('comfortable')">Комфортно</button>
-      <button class="density-btn" type="button" data-density="compact" onclick="setDensity('compact')">Компактно</button>
-    </div>
     <select id="managerSelect" class="adv-select" style="height:30px;padding:4px 8px;font-size:12px" onchange="setManagerFilter(this.value)" data-tip="Фильтр по менеджеру">
       <option value="all">Все менеджеры</option>
       <option value="mine">Мои SKU</option>
@@ -7708,8 +7736,8 @@ body.avito-popup-open { overflow: hidden; }
 <table id="mainTable">
 <colgroup>
   <col style="width:36px"><col class="col-sku"><col style="width:108px"><col class="col-stat">
-  <col style="width:58px"><col style="width:74px"><col style="width:128px"><col class="col-price"><col style="width:110px"><col style="width:104px"><col style="width:70px">
-  <col class="col-mg"><col style="width:72px"><col class="col-bsk"><col class="col-ord"><col style="width:70px"><col class="col-stk"><col class="col-tpl"><col style="width:56px"><col style="width:240px">
+  <col style="width:58px"><col style="width:74px"><col style="width:128px"><col class="col-price"><col style="width:180px"><col style="width:70px">
+  <col style="width:72px"><col style="width:142px"><col class="col-bsk"><col style="width:112px"><col style="width:132px"><col class="col-ord"><col style="width:132px"><col style="width:70px"><col class="col-stk"><col class="col-tpl"><col style="width:56px"><col style="width:240px">
 </colgroup>
 <thead><tr>
   <th><div class="cb indet" id="cbAll" onclick="toggleAll()"></div></th>
@@ -7720,14 +7748,16 @@ body.avito-popup-open { overflow: hidden; }
   <th><div class="th-tip tc">Акция <span class="tip-i">?</span><div class="tip-box">Статус участия в акции WB по загруженному XLSX-файлу и ценам акции.</div></div></th>
   <th><div class="th-tip tc">Ответственный <span class="tip-i">?</span><div class="tip-box">Менеджер, закреплённый за SKU. План-факт считается по текущему закреплению товара.</div></div></th>
   <th class="num sorted" onclick="sortBy('price')">Цена до СПП <span class="sort-arrow">↓</span></th>
-  <th class="num">С СПП</th>
-  <th class="num">С кошельком</th>
-  <th class="num">% СПП</th>
-  <th class="num"><div class="th-tip tc">Маржа <span class="tip-i">?</span><div class="tip-box">Маржинальность = (Цена − себестоимость − комиссия WB − логистика) / Цена × 100%</div></div></th>
+  <th>Себестоимость, ₽/шт.</th>
+  <th class="num" title="(Базовая цена − цена покупателя без кошелька) / базовая цена × 100%">% СПП</th>
   <th class="num">Комиссия</th>
+  <th class="num" onclick="sortBy('mg')" title="Фактическая прибыль за выбранный период / выручка; ниже — прибыль на проданную единицу за вычетом возвратов">Маржа факт <span class="sort-arrow">↕</span></th>
   <th class="num" onclick="sortBy('bsk')"><div class="th-tip tc">Корзины <span class="tip-i">?</span><div class="tip-box">Добавлений в корзину за выбранный период. Алгоритм сравнивает с предыдущим периодом — главный сигнал для изменения цены.</div></div></th>
-  <th class="num">Заказы</th>
-  <th class="num"><div class="th-tip tc">Выкуп <span class="tip-i">?</span><div class="tip-box">Процент выкупа за 30 дней. Влияет на расчёт логистики WB и реальную маржу.</div></div></th>
+  <th class="num" title="Продажи по финансовым операциям WB, до вычитания возвратов">Продажи, шт.</th>
+  <th class="num" title="Сумма продаж по операциям WB до вычитания возвратов, не текущая цена × количество">Продажи, ₽</th>
+  <th class="num">Заказы, шт.</th>
+  <th class="num" title="Сумма заказов WB Sales Funnel за выбранный период">Заказы, ₽</th>
+  <th class="num"><div class="th-tip tc">Выкуп <span class="tip-i">?</span><div class="tip-box">Процент WB Sales Funnel за выбранный период по дате заказа. Товары в пути не учитываются; это не продажи / заказы.</div></div></th>
   <th class="num"><div class="th-tip tc">Остаток WB <span class="tip-i">?</span><div class="tip-box">Физический остаток на складах WB. Разрез по конкретным складам и индексам КТР/локализации — во вкладке Отчёты → Остатки.</div></div></th>
   <th><div class="th-tip tr">Стратегия <span class="tip-i">?</span><div class="tip-box">Набор правил, по которым алгоритм меняет цену: Агрессивный — быстрый рост корзин, Консервативный — приоритет марже, Ночная медиана — только ночные данные. «— нет —» означает ручное управление.</div></div></th>
   <th></th>
@@ -7790,7 +7820,7 @@ body.avito-popup-open { overflow: hidden; }
   </div>
   <button class="bulk-btn" onclick="openModal('bulkPmin')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>Задать P_min</button>
   <button class="bulk-btn" onclick="openBulkAssignManager()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/></svg>Назначить менеджера</button>
-  <button class="bulk-btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>Перевести в ручной</button>
+  <button class="bulk-btn" data-repricer-manual><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>Перевести в ручной</button>
   <button class="bulk-btn danger" onclick="openModal('bulkLiq')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/></svg>Ликвидировать</button>
   <button class="bulk-btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/></svg>Экспорт</button>
   <button class="bulk-close" onclick="clearSelection()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
@@ -8745,11 +8775,10 @@ body.avito-popup-open { overflow: hidden; }
     </nav>
     <div class="settings-cards threshold-cards">
       <div class="settings-card" id="thr-profile">
-        <div class="card-title">Профиль правил <span class="card-title-help">Глобальные пороги отчётов и автоматики</span></div>
+        <div class="card-title">Профиль правил</div>
         <div class="threshold-profile-head">
           <div>
             <div class="threshold-profile-title" id="thresholdProfileTitle">Стандартный профиль</div>
-            <div class="threshold-profile-meta" id="thresholdProfileMeta">версия 3 · действует · обновлено 08.05.2026 08:55</div>
           </div>
           <span class="report-tag ok">действует</span>
         </div>
@@ -8758,10 +8787,6 @@ body.avito-popup-open { overflow: hidden; }
           <button class="threshold-preset active" type="button" data-preset="standard" onclick="setThresholdPreset('standard')">Стандартный</button>
           <button class="threshold-preset" type="button" data-preset="conservative" onclick="setThresholdPreset('conservative')">Осторожный</button>
           <button class="threshold-preset" type="button" data-preset="aggressive" onclick="setThresholdPreset('aggressive')">Агрессивный</button>
-        </div>
-        <div class="threshold-warning">
-          <span>!</span>
-          <div>Пороги меняют классификацию, статусы правил, алерты и отбор в автоматику. Сохранение не запускает мгновенное массовое изменение цен: репрайсер и ликвидация используют правила со следующего планового цикла.</div>
         </div>
       </div>
 
@@ -8876,26 +8901,21 @@ body.avito-popup-open { overflow: hidden; }
 </div>
 
 <div class="tab-content" id="tab-repricer-stats">
-  <div class="stats">
-    <div class="stat"><div class="stat-label">Добавили в корзину <span class="stat-tip" data-tip="Главный сигнал спроса: рост корзин важнее разовой продажи.">?</span></div><div class="stat-val">472</div><div class="stat-delta up">↑ +9.1% к периоду</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,18 6,15 12,13 18,14 24,10 30,11 36,8 44,6" fill="none" stroke="#10B981" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">Готовы к пересчёту</div><div class="stat-val">18 товаров</div><div class="stat-delta up">без ограничений цены</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,16 7,15 14,12 21,10 28,11 35,8 44,7" fill="none" stroke="#2563EB" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">Нужна настройка цены <span class="stat-tip" data-tip="Цена не меняется, если не хватает минимальной цены, комиссии, цены покупателя или финансов.">?</span></div><div class="stat-val">7 товаров</div><div class="stat-delta down">проверьте данные WB</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,10 6,11 12,14 18,13 24,15 30,17 36,16 44,18" fill="none" stroke="#EF4444" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">Данные WB <span class="stat-tip" data-tip="Показывает, достаточно ли данных Wildberries для расчёта цены.">?</span></div><div class="stat-val">частично готово</div><div class="stat-delta neutral">цены не применяются автоматически</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,12 6,12 12,11 18,13 24,12 30,11 36,12 44,10" fill="none" stroke="#F59E0B" stroke-width="1.5"/></svg></div>
-  </div>
+  <div class="stats stats-overview" id="repricerStatsCards"></div>
+  <div class="stats-freshness" id="repricerStatsFreshness" aria-live="polite"></div>
   <div class="toolbar">
     <div class="search"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="text" placeholder="Артикул, товар или статус..."></div>
-    <div class="chips" role="group" aria-label="Фильтры статистики репрайсера">
-      <button class="chip active" type="button" aria-pressed="true">Все товары</button><button class="chip" type="button" aria-pressed="false">готово к пересчёту</button><button class="chip" type="button" aria-pressed="false">Цена заблокирована</button><button class="chip" type="button" aria-pressed="false">данные требуют внимания</button><button class="chip" type="button" aria-pressed="false">корзины растут</button><button class="chip" type="button" aria-pressed="false">корзины падают</button><button class="chip" type="button" aria-pressed="false">риск закончиться на складе</button><button class="chip" type="button" aria-pressed="false">В акции</button><button class="chip" type="button" aria-pressed="false">В рекламе</button>
-    </div>
-    <div class="toolbar-right"><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('report-rules')">Планы менеджеров</button><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('rnp')">РНП</button><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('abc')">ABC</button><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('pnl')">P&amp;L</button></div>
+    <div class="chips products-filter-compact"><button class="btn btn-default btn-sm products-filter-trigger" id="repricerStatsFiltersTrigger" type="button" aria-expanded="false" aria-controls="repricerStatsFilters">Фильтры <span class="products-filter-trigger-count">0</span></button><span class="products-filter-summary" id="repricerStatsFilterLabel">Все · Все бренды · Все акции</span></div>
   </div>
-  <div class="report-filter-summary" data-filter-summary><span>Показано <b>—</b> · фильтры: все товары</span><button class="btn btn-ghost btn-sm" type="button" onclick="resetGenericReportFilters(this)">Сбросить</button></div>
+  <div id="repricerStatsFilters" hidden></div>
+  <div class="report-filter-summary" data-filter-summary><span>Показано <b>—</b> · фильтры: все товары</span><button class="btn btn-ghost btn-sm" type="button" id="repricerStatsReset">Сбросить</button></div>
   <div class="report-table-wrap">
     <table class="report-wide">
-      <thead><tr><th class="report-sticky">Товар</th><th><div class="th-tip tl">Действие <span class="tip-i">?</span><div class="tip-box">Что сейчас делать с товаром: пересчитать цену, проверить данные или оставить без изменения.</div></div></th><th><div class="th-tip tl">Ответственный <span class="tip-i">?</span><div class="tip-box">Менеджер, закреплённый за товаром.</div></div></th><th class="num">Показы</th><th class="num">Клики / вовлеченность</th><th class="num"><div class="th-tip tc">Корзины <span class="tip-i">?</span><div class="tip-box">Главный сигнал спроса; сравниваем с прошлым периодом.</div></div></th><th class="num"><div class="th-tip tc">Конверсия <span class="tip-i">?</span><div class="tip-box">Доля корзин, которые дошли до заказа.</div></div></th><th class="num">Заказы</th><th class="num">Реклама</th><th class="num">Остаток</th><th class="num"><div class="th-tip tc">Цена-ориентир <span class="tip-i">?</span><div class="tip-box">Ориентир цены за выбранный период для защиты от резких скачков.</div></div></th><th><div class="th-tip tl">Проверка цены <span class="tip-i">?</span><div class="tip-box">Почему изменение цены разрешено или остановлено.</div></div></th><th><div class="th-tip tl">Данные WB <span class="tip-i">?</span><div class="tip-box">Показывает, достаточно ли данных Wildberries для расчёта.</div></div></th></tr></thead>
+      <thead><tr><th class="report-sticky" data-stats-column="product">Товар</th><th data-stats-column="action" title="Что сейчас делать с товаром">Действие</th><th data-stats-column="manager">Ответственный</th><th class="num" data-stats-column="totalImpressions" data-stats-trend="totalImpressions" title="Все показы товара по данным WB; при отсутствии поля в API — прочерк">Показы</th><th class="num" data-stats-column="impressions" data-stats-trend="impressions" title="Показы рекламных кампаний WB">Показы рекламы</th><th class="num" data-stats-column="totalClicks" data-stats-trend="totalClicks" title="Все переходы в карточку товара, включая рекламу">Общие клики</th><th class="num" data-stats-column="clicks" data-stats-trend="clicks" title="Клики по рекламе">Клики рекламы</th><th class="num" data-stats-column="adCartAdds" data-stats-trend="adCartAdds" title="Добавления в корзину из рекламы">Корзины рекламы</th><th class="num" data-stats-column="baskets" data-stats-trend="baskets">Корзины</th><th class="num" data-stats-column="ctrPct" data-stats-trend="ctrPct" title="CTR рекламы: клики рекламы / показы рекламы">CTR</th><th class="num" data-stats-column="cartToOrderCrPct" data-stats-trend="cartToOrderCrPct" title="CR: заказы / корзины">CR</th><th class="num" data-stats-column="orders" data-stats-trend="orders">Заказы</th><th class="num" data-stats-column="adSpendKopecks" data-stats-trend="adSpendKopecks">Реклама, ₽</th><th class="num" data-stats-column="drrPct" data-stats-trend="drrPct" title="ДРР: расходы рекламы / рекламные заказы">DRR</th><th class="num" data-stats-column="averagePriceKopecks" data-stats-trend="averagePriceKopecks" title="Средняя цена заказа за выбранный период">Средняя цена за период</th></tr></thead>
       <tbody id="repricerStatsBody"></tbody>
     </table>
   </div>
+  <nav class="stats-pager" id="repricerStatsPager" aria-label="Страницы статистики"></nav>
 </div>
 
 <div class="tab-content" id="tab-expenses">
@@ -8927,34 +8947,7 @@ body.avito-popup-open { overflow: hidden; }
   </div>
 </div>
 
-<div class="tab-content" id="tab-sources">
-  <div class="stats">
-    <div class="stat"><div class="stat-label">Источников под контролем</div><div class="stat-val">9</div><div class="stat-delta up">WB + 1С + fallback</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,12 6,11 12,12 18,10 24,10 30,9 36,9 44,8" fill="none" stroke="#2563EB" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">1С ДДС live <span class="stat-tip" data-tip="Статус подключения к отчёту 1С «Движение денежных средств» и правилам статей.">?</span></div><div class="stat-val">требует правил</div><div class="stat-delta down">2 строки на проверке</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,9 6,11 12,12 18,13 24,14 30,15 36,16 44,17" fill="none" stroke="#F59E0B" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">Fallback-загрузки</div><div class="stat-val">Excel</div><div class="stat-delta neutral">аварийный импорт</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,13 6,13 12,12 18,12 24,11 30,11 36,10 44,10" fill="none" stroke="#64748B" stroke-width="1.5"/></svg></div>
-    <div class="stat"><div class="stat-label">Зависимые отчёты</div><div class="stat-val">P&amp;L / РНП / ABC</div><div class="stat-delta neutral">переходы из строк</div><svg class="stat-spark" width="44" height="22" viewBox="0 0 44 22"><polyline points="0,16 6,14 12,14 18,12 24,12 30,10 36,9 44,8" fill="none" stroke="#10B981" stroke-width="1.5"/></svg></div>
-  </div>
-  <div class="report-source-strip report-source-compact">
-    <div class="source-state-card fresh">
-      <div><div class="source-state-kicker"><span>источники и загрузки</span><span class="source-state-chip">9 источников</span><span class="source-state-chip">1С ДДС</span><span class="source-state-chip">1 статья без правила</span></div><div class="source-state-title">1С ДДС live · WB-источники свежие · Excel только fallback</div><div class="source-state-meta">Блокер: 1 статья ДДС ждёт правило перед пересчётом P&amp;L/SKU.</div></div>
-      <button class="btn btn-default btn-sm source-state-action" type="button" onclick="openFinanceDrawer('connector')">Подключение 1С</button>
-    </div>
-  </div>
-  <div class="toolbar">
-    <div class="search"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="text" placeholder="Источник, отчёт или действие..."></div>
-    <div class="chips" role="group" aria-label="Фильтры источников">
-      <button class="chip active" type="button" aria-pressed="true">Все источники</button><button class="chip" type="button" aria-pressed="false">Требует действия</button><button class="chip" type="button" aria-pressed="false">Свежее</button><button class="chip" type="button" aria-pressed="false">Устарело</button><button class="chip" type="button" aria-pressed="false">1С</button><button class="chip" type="button" aria-pressed="false">Ручная загрузка</button><button class="chip" type="button" aria-pressed="false">Есть ошибка</button><button class="chip" type="button" aria-pressed="false">P&amp;L</button><button class="chip" type="button" aria-pressed="false">РНП/ABC</button><button class="chip" type="button" aria-pressed="false">Репрайсер</button><button class="chip" type="button" aria-pressed="false">Реклама</button><button class="chip" type="button" aria-pressed="false">Ответственный</button>
-    </div>
-    <div class="toolbar-right"><button class="btn btn-default btn-sm" type="button" onclick="openFinanceDrawer('connector')">Подключение 1С</button><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('expenses')">Расходы</button><button class="btn btn-default btn-sm" type="button">Шаблон Excel</button></div>
-  </div>
-  <div class="report-filter-summary" data-filter-summary><span>Показано <b>—</b> · фильтры: Все источники</span><button class="btn btn-ghost btn-sm" type="button" onclick="resetGenericReportFilters(this)">Сбросить</button></div>
-  <div class="report-table-wrap">
-    <table class="report-mid">
-      <thead><tr><th class="report-sticky">Источник</th><th>Данные</th><th>Период</th><th><div class="th-tip tl">Синхронизация <span class="tip-i">?</span><div class="tip-box">Когда источник последний раз успешно обновил данные.</div></div></th><th>Статус</th><th>Отчёты</th><th>Ответственный</th><th>Действие</th></tr></thead>
-      <tbody id="sourcesBody"></tbody>
-    </table>
-  </div>
-</div>
+<div class="tab-content" id="tab-sources"><div role="status">Состояние источников ещё не прочитано.</div></div>
 
 <div class="tab-content" id="tab-abc">
   <div class="stats">
@@ -9135,7 +9128,7 @@ body.avito-popup-open { overflow: hidden; }
   </div>
   <div class="report-source-strip report-source-compact">
     <div class="source-state-card fresh">
-      <div><div class="source-state-kicker"><span>здоровье остатков</span><span class="source-state-chip">WB-14</span><span class="source-state-chip">WB-15</span><span class="source-state-chip">KIZ/returns</span></div><div class="source-state-title">Официальный складской слой · платное хранение рядом · 12 SKU с риском OOS</div><div class="source-state-meta">Фото, габариты, скрытие, маркировка и возвраты идут в очередь действий, а не отдельными warning-карточками.</div></div>
+      <div><div class="source-state-kicker"><span>здоровье остатков</span><span class="source-state-chip">WB-14</span><span class="source-state-chip">WB-15</span><span class="source-state-chip">Возвраты</span></div><div class="source-state-title">Официальный складской слой · платное хранение рядом · 12 SKU с риском OOS</div><div class="source-state-meta">Фото, габариты, скрытие и возвраты идут в очередь действий, а не отдельными warning-карточками.</div></div>
       <button class="btn btn-default btn-sm source-state-action" type="button" onclick="showHelp('table-fields')">Источники</button>
     </div>
   </div>
@@ -10588,6 +10581,9 @@ body.avito-popup-open { overflow: hidden; }
       line-height: 1.5;
       color: var(--gray-500);
     }
+    .mobile-repricer-nav { display: grid; gap: 6px; margin-top: 16px; font-size: 12px; color: var(--gray-600); }
+    .mobile-repricer-nav[hidden] { display: none; }
+    .mobile-repricer-nav select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--white); color: var(--gray-900); font: inherit; }
     .desktop-only-card a {
       display: inline-flex;
       align-items: center;
@@ -10611,7 +10607,7 @@ body.avito-popup-open { overflow: hidden; }
 </style>
 
 <!-- PROBLEM QUEUE -->
-<div class="modal-overlay" id="m-problemQueue" onclick="if(event.target===this)closeModal('problemQueue')">
+<dialog class="modal-overlay" id="m-problemQueue" onclick="if(event.target===this)closeModal('problemQueue')">
   <div class="modal xl">
     <div class="modal-head">
       <div class="modal-icon warn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 2 5-7"/><circle cx="7" cy="14" r="1"/><circle cx="10" cy="11" r="1"/><circle cx="13" cy="13" r="1"/><circle cx="18" cy="6" r="1"/></svg></div>
@@ -10695,9 +10691,9 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="showToast('Очередь выгружена в XLSX', 'success')">Экспорт XLSX</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div class="modal-overlay" id="m-planfactManagers" onclick="if(event.target===this)closeModal('planfactManagers')" aria-hidden="true">
+<dialog class="modal-overlay" id="m-planfactManagers" onclick="if(event.target===this)closeModal('planfactManagers')" aria-hidden="true">
   <div class="modal xl">
     <div class="modal-head">
       <div class="modal-icon fin"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 2 5-7"/></svg></div>
@@ -10710,10 +10706,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-default" type="button" onclick="closeModal('planfactManagers'); goSubtab('report-rules')">Настроить планы</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- THRESHOLD PROFILE PREVIEW -->
-<div class="modal-overlay" id="m-thresholdPreview" onclick="if(event.target===this)closeModal('thresholdPreview')">
+<dialog class="modal-overlay" id="m-thresholdPreview" onclick="if(event.target===this)closeModal('thresholdPreview')">
   <div class="modal xl">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 2 5-7"/></svg></div>
@@ -10738,10 +10734,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="applyThresholdProfile()">Применить профиль</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- APPLY (UNCHANGED) -->
-<div class="modal-overlay" id="m-apply">
+<dialog class="modal-overlay" id="m-apply">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
@@ -10774,10 +10770,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="closeModal('apply'); openModal('applyProgress'); runApplyProgress();">Применить 47 цен</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- APPLY PROGRESS (NEW — UX-3) -->
-<div class="modal-overlay" id="m-applyProgress">
+<dialog class="modal-overlay" id="m-applyProgress">
   <div class="modal lg">
     <!-- Progress state -->
     <div id="applyProgressView">
@@ -10848,10 +10844,10 @@ body.avito-popup-open { overflow: hidden; }
       </div>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- NIGHT MEDIAN (UNCHANGED) -->
-<div class="modal-overlay" id="m-night">
+<dialog class="modal-overlay" id="m-night">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
@@ -10868,10 +10864,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-default" onclick="goSubtab('algo'); closeModal('night')">Открыть в настройках</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- BULK PMIN PREVIEW -->
-<div class="modal-overlay" id="m-bulkPmin">
+<dialog class="modal-overlay" id="m-bulkPmin">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
@@ -10897,18 +10893,18 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="applyBulkPminPreview()">Применить после preview</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- BULK MANAGER ASSIGNMENT -->
-<div class="modal-overlay" id="m-bulkAssignManager" onclick="if(event.target===this)closeModal('bulkAssignManager')">
+<dialog class="modal-overlay" id="m-bulkAssignManager" onclick="if(event.target===this)closeModal('bulkAssignManager')">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/></svg></div>
       <h2>Назначить менеджера для <span id="bulkAssignCount">0</span> SKU</h2>
-      <p>Будет создано одно групповое действие и отдельные записи по затронутым SKU. Причина обязательна.</p>
+      <p>Ответственный изменится только у выбранных товаров. Укажите причину назначения.</p>
     </div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="manager-assignment-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:flex;flex-direction:column;gap:6px"><span class="s-desc">Новый ответственный</span><select id="bulkAssignManagerSelect" class="adv-select" onchange="renderBulkAssignPreview()"></select></label>
         <label style="display:flex;flex-direction:column;gap:6px"><span class="s-desc">Причина</span><input id="bulkAssignReason" class="s-input" style="width:100%;text-align:left" placeholder="Например: перераспределение SKU на май"></label>
       </div>
@@ -10918,18 +10914,16 @@ body.avito-popup-open { overflow: hidden; }
           <tbody id="bulkAssignRows"></tbody>
         </table>
       </div>
-      <div class="bulk-preview-note"><span>!</span><div>XLSX назначения ожидает колонки: SKU, номенклатура, ID менеджера и имя менеджера. Ошибочные строки импорта не блокируют валидные.</div></div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="closeModal('bulkAssignManager')">Отмена</button>
-      <button class="btn btn-default" onclick="showManagerImportResult('assignments')">Показать пример ошибок XLSX</button>
       <button class="btn btn-primary" onclick="applyBulkManagerAssignment()">Назначить</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- BULK STRATEGY PREVIEW -->
-<div class="modal-overlay" id="m-bulkStrategy">
+<dialog class="modal-overlay" id="m-bulkStrategy">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg></div>
@@ -10954,10 +10948,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="applyBulkStrategyPreview()">Применить стратегию</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- BULK LIQUIDATE (TWO-STEP — TZ-1) -->
-<div class="modal-overlay" id="m-bulkLiq" data-step="1">
+<dialog class="modal-overlay" id="m-bulkLiq" data-step="1">
   <div class="modal lg">
 
     <!-- STEP 1: General confirmation -->
@@ -11031,10 +11025,10 @@ body.avito-popup-open { overflow: hidden; }
     </div>
 
   </div>
-</div>
+</dialog>
 
 <!-- P_MIN WARNING (NEW — TZ-1.5) -->
-<div class="modal-overlay" id="m-pminWarning">
+<dialog class="modal-overlay" id="m-pminWarning">
   <div class="modal">
     <div class="modal-head">
       <div class="modal-icon warn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
@@ -11071,10 +11065,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="closeModal('pminWarning'); showToast('Решение применено к FBBT_29', 'success')">Применить решение</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- CREATE / EDIT STRATEGY -->
-<div class="modal-overlay" id="m-createTpl">
+<dialog class="modal-overlay" id="m-createTpl">
   <div class="modal lg">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
@@ -11108,10 +11102,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" id="strategySaveBtn" onclick="saveStrategyFromForm()">Создать</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- SAVE VIEW -->
-<div class="modal-overlay" id="m-saveView">
+<dialog class="modal-overlay" id="m-saveView">
   <div class="modal">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></div>
@@ -11136,10 +11130,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="saveCurrentView(false)">Сохранить</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- SEGMENT DETAILS -->
-<div class="modal-overlay" id="m-segmentDetails">
+<dialog class="modal-overlay" id="m-segmentDetails">
   <div class="modal">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18"/><path d="M7 12h10"/><path d="M10 20h4"/></svg></div>
@@ -11157,10 +11151,10 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" id="segmentDetailsUpdateBtn" onclick="updateActiveSavedView()">Обновить сегмент</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- SHORTCUTS HELP -->
-<div class="modal-overlay" id="m-shortcuts">
+<dialog class="modal-overlay" id="m-shortcuts">
   <div class="modal">
     <div class="modal-head">
       <div class="modal-icon brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h8M9 16h6"/></svg></div>
@@ -11181,7 +11175,7 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="closeModal('shortcuts')">Понятно</button>
     </div>
   </div>
-</div>
+</dialog>
 <div class="drawer-overlay" id="reviewDrawerOverlay" onclick="closeReviewDrawer()" aria-hidden="true"></div>
 <aside class="drawer" id="reviewDrawer" aria-hidden="true" aria-label="Карточка отзыва WB">
   <div class="drawer-header">
@@ -11253,7 +11247,7 @@ body.avito-popup-open { overflow: hidden; }
   </div>
 </aside>
 
-<div class="modal-overlay" id="m-reviewSettings" onclick="if(event.target===this)closeModal('reviewSettings')" aria-hidden="true">
+<dialog class="modal-overlay" id="m-reviewSettings" onclick="if(event.target===this)closeModal('reviewSettings')" aria-hidden="true">
   <div class="modal xl" role="dialog" aria-modal="true" aria-labelledby="reviewSettingsTitle">
     <div class="modal-head">
       <h2 id="reviewSettingsTitle">Настройки правил автоответов WB</h2>
@@ -11310,7 +11304,7 @@ body.avito-popup-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="applyReviewSettingsPreview()">Пересчитать очередь</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- TOAST CONTAINER -->
 <div class="toast-container" id="toastContainer"></div>
@@ -11369,6 +11363,7 @@ syncAdvancedStrategyOptions();
 
 // type: F-футболка/H-худи/L-лонгслив; color: B-белый/C-чёрный
 const PRODUCTS = [];
+window.PRODUCTS = PRODUCTS;
 
 // =========================================================
 // THRESHOLD PROFILE — Reports rules + automation levels
@@ -11880,30 +11875,28 @@ function productTypeToken(p){
   if (/лонг|long|^l/.test(raw)) return 'longsleeve';
   if (/шорт|short/.test(raw)) return 'shorts';
   if (/балак|balaclava/.test(raw)) return 'balaclava';
-  return 'shirt';
+  return /футбол|\b(?:t-?shirt|shirt)\b|\bf[bc]/.test(raw) ? 'shirt' : '';
 }
 
 function productAttrTokens(p){
   const raw = [p.type, p.sku, p.name, p.color, p.gender].map(v => String(v || '').toLowerCase()).join(' ');
   const attrs = [];
-  if (/жен|female|woman|wmn/.test(raw)) attrs.push('female');
-  if (/муж|male|men/.test(raw)) attrs.push('male');
+  if (/жен|\b(?:female|woman|women|wmn|unisex)\b|унисекс/.test(raw)) attrs.push('female');
+  if (/муж|\b(?:male|man|men|unisex)\b|унисекс/.test(raw)) attrs.push('male');
   if (/бел|white|\bwb|\bfb|\bhb|\blb/.test(raw)) attrs.push('white');
   if (/чер|чёр|black|\bbc|\bfc|\bhc|\blc/.test(raw)) attrs.push('black');
-  return attrs.length ? attrs : ['female', 'male', 'white', 'black'];
+  return attrs;
 }
 
 function productMatchesAdvancedState(p, f = advancedFilters){
-  if (f.marginFrom !== null && Number(p.mg ?? 0) < f.marginFrom) return false;
-  if (f.marginTo !== null && Number(p.mg ?? 0) > f.marginTo) return false;
-  if (f.basketsFrom !== null && Number(p.bsk ?? 0) < f.basketsFrom) return false;
-  if (f.basketsTo !== null && Number(p.bsk ?? 0) > f.basketsTo) return false;
-  if (f.ordersFrom !== null && Number(p.ordersPeriod ?? 0) < f.ordersFrom) return false;
-  if (f.ordersTo !== null && Number(p.ordersPeriod ?? 0) > f.ordersTo) return false;
-  if (f.priceFrom !== null && Number(p.price ?? 0) < f.priceFrom) return false;
-  if (f.priceTo !== null && Number(p.price ?? 0) > f.priceTo) return false;
-  if (Array.isArray(f.types) && f.types.length && !f.types.includes(productTypeToken(p))) return false;
-  if (Array.isArray(f.attrs) && f.attrs.length) {
+  for (const [key, value] of [['margin', p.mg], ['baskets', p.basketsState === 'no_data' ? null : p.bsk], ['orders', p.ordersPeriod], ['price', p.price]]) {
+    const from = f[key + 'From'], to = f[key + 'To'];
+    if (from == null && to == null) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || from != null && value < from || to != null && value > to) return false;
+  }
+  const defaultTypes = Array.isArray(f.types) && f.types.length === 3 && ['shirt','hoodie','longsleeve'].every(value => f.types.includes(value));
+  if (Array.isArray(f.types) && f.types.length && f.types.length !== 5 && !defaultTypes && !f.types.includes(productTypeToken(p))) return false;
+  if (Array.isArray(f.attrs) && f.attrs.length && f.attrs.length !== 4) {
     const attrs = productAttrTokens(p);
     if (!attrs.some(attr => f.attrs.includes(attr))) return false;
   }
@@ -11997,11 +11990,11 @@ function managerLabel(manager){
 function periodLabel(period){ return PERIOD_LABELS?.[period] || period || '7 дней'; }
 function sortLabel(sort){
   const item = Array.isArray(sort) && sort.length ? sort[0] : { key:'price', dir:'desc' };
-  const labels = { sku:'SKU', nmId:'WB-арт.', status:'статус', abc:'ABC', promo:'акция', price:'цена', avgPriceSpp:'с СПП', priceWithWallet:'с кошельком', spp:'% СПП', mg:'маржа', commissionPct:'комиссия', bsk:'корзины', ordersPeriod:'заказы', buyout:'выкуп', stock:'остаток', tpl:'стратегия' };
+  const labels = { sku:'SKU', nmId:'WB-арт.', status:'статус', abc:'ABC', promo:'акция', price:'цена', avgPriceSpp:'с СПП', priceWithWallet:'с кошельком', spp:'% СПП', mg:'маржа', commissionPct:'комиссия', bsk:'корзины', grossSalesUnits:'продажи, шт.', salesRub:'продажи, ₽', ordersPeriod:'заказы, шт.', ordersRub:'заказы, ₽', buyout:'выкуп', stock:'остаток', tpl:'стратегия' };
   return (labels[item.key] || item.key || 'цена') + ' ' + (item.dir === 'asc' ? 'по возрастанию' : 'по убыванию');
 }
 function columnLabel(column){
-  const labels = { sku:'Фото / артикул', nmId:'WB-арт.', status:'статус', abc:'ABC', promo:'акция', manager:'ответственный', price:'цена', avgPriceSpp:'с СПП', priceWithWallet:'с кошельком', spp:'% СПП', mg:'маржа', commissionPct:'комиссия', bsk:'корзины', ordersPeriod:'заказы', buyout:'выкуп', stock:'остаток', tpl:'стратегия', comment:'комментарий', pmin:'P_min' };
+  const labels = { sku:'Фото / артикул', nmId:'WB-арт.', status:'статус', abc:'ABC', promo:'акция', manager:'ответственный', price:'цена', avgPriceSpp:'с СПП', priceWithWallet:'с кошельком', spp:'% СПП', mg:'маржа', commissionPct:'комиссия', bsk:'корзины', grossSalesUnits:'продажи, шт.', salesRub:'продажи, ₽', ordersPeriod:'заказы, шт.', ordersRub:'заказы, ₽', buyout:'выкуп', stock:'остаток', tpl:'стратегия', comment:'комментарий', pmin:'P_min' };
   return labels[column] || column;
 }
 function safeSavedViewId(name){
@@ -12343,17 +12336,8 @@ function deleteActiveSavedView(){
   showToast('Сегмент удалён: ' + view.name, 'success');
 }
 restoreSavedViews();
-function setDensity(mode){
-  const compact = mode === 'compact';
-  document.body.classList.toggle('density-compact', compact);
-  try { localStorage.setItem('vella-density', compact ? 'compact' : 'comfortable'); } catch (e) {}
-  document.querySelectorAll('.density-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.density === (compact ? 'compact' : 'comfortable')));
-}
-function restoreDensity(){
-  let mode = 'comfortable';
-  try { mode = localStorage.getItem('vella-density') || 'comfortable'; } catch (e) {}
-  setDensity(mode);
-}
+function setDensity(){ document.body.classList.remove('density-compact'); }
+function restoreDensity(){ setDensity(); }
 const ABC_LABELS = { loko:'Локомотив', profit:'Прибыльный', persp:'Перспективный', weak:'Слабый', loss:'Убыточный', new:'Новинка' };
 const BRAND_LABELS = { anomie:'Anomie', aurora:'Aurora' };
 const CAT_LETTER = { fb:'F', fc:'F', hb:'H', hc:'H', lb:'L', lc:'L' };
@@ -12850,18 +12834,20 @@ function managerCellHTML(p){
   return '<span style="display:inline-flex;align-items:center;gap:6px"><span class="mgr-avatar">' + escapeHtml(manager?.code || p.manager || '—') + '</span><span style="min-width:0"><b style="font-size:12px;color:var(--gray-800)">' + escapeHtml(manager?.shortName || p.managerName || p.manager) + '</b><span class="sub">' + escapeHtml(source) + '</span></span></span>';
 }
 function priceCellHTML(p){
+  const displayed = Object.prototype.hasOwnProperty.call(p, 'tableBuyerPrice') ? p.tableBuyerPrice : p.price;
+  const known = displayed != null && Number.isFinite(Number(displayed)) && Number(displayed) > 0;
   let hint = '';
-  if (p.prevPrice !== p.price) {
+  if (known && p.price != null && Number.isFinite(Number(p.price)) && Number(p.price) > 0 && p.prevPrice != null && Number.isFinite(Number(p.prevPrice)) && Number(p.prevPrice) > 0 && p.prevPrice !== p.price) {
     const diff = p.price - p.prevPrice;
     const cls = diff > 0 ? 'c-up' : 'c-dn';
     const arr = diff > 0 ? '↑' : '↓';
     hint = '<div class="price-hint ' + cls + '">' + arr + ' с ' + fmt(p.prevPrice) + ' ₽</div>';
-  } else if (p.status === 'manual') {
+  } else if (known && p.status === 'manual') {
     hint = '<div class="price-hint" style="color:#9CA3AF">ручной режим</div>';
-  } else {
+  } else if (known) {
     hint = '<div class="price-hint" style="color:#D1D5DB">без изм.</div>';
   }
-  return `<div class="price-cell" role="button" tabindex="0" aria-label="Изменить цену SKU ${p.sku}" data-tip="Клик — ручное изменение цены" onclick="editInline(this,'${p.sku}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();editInline(this,'${p.sku}')}"><svg class="price-edit-i" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><div class="price">${fmt(p.price)} ₽</div>${hint}</div>`;
+  return `<div class="price-cell" role="button" tabindex="0" aria-label="Изменить цену SKU ${p.sku}" data-tip="Цена покупателя без WB Кошелька; клик — ручное изменение цены продавца" onclick="editInline(this,'${p.sku}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();editInline(this,'${p.sku}')}"><svg class="price-edit-i" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><div class="price">${displayed == null ? 'нет данных' : fmt(displayed) + ' ₽'}</div>${hint}</div>`;
 }
 function statusCellHTML(p){
   const s = STATUS[p.status];
@@ -12870,16 +12856,18 @@ function statusCellHTML(p){
   return '<div class="cell-drop-wrap" onclick="openCellDrop(event,this,\'status\',\'' + p.sku + '\')">' + inner + '</div>';
 }
 function marginHTML(p){
-  if (p.mg == null && p.mgRub == null) return '<span class="metric-main" data-tip="Маржа появится после загрузки цены и себестоимости SKU">нет данных</span>';
+  const tip = escapeHtml(p.marginReason || 'Фактический расчёт за выбранный период');
+  if (p.mg == null && p.mgRub == null) return '<span class="metric-main" title="' + tip + '">—</span><span class="mg-rub">' + (p.marginBeforeAllocationRub == null ? 'нет данных' : Number(p.marginBeforeAllocationRub).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽/шт. до общих расходов') + '</span>' + (p.marginBeforeAllocationRub != null && p.marginAssumed ? '<span class="metric-sub">примерная с/с</span>' : '');
   let cls = 'mg-mid';
   if (p.mg < 0) cls = 'mg-neg';
   else if (p.mg <= 10) cls = 'mg-low';
   else if (p.mg >= 25) cls = 'mg-high';
   const sign = p.mg > 0 ? '+' : '';
-  return '<span class="' + cls + '">' + sign + p.mg + '%</span><span class="mg-rub">' + (p.mgRub > 0 ? '+' : '') + fmt(p.mgRub) + ' ₽</span>';
+  return '<span title="' + tip + '"><span class="' + cls + '">' + (p.mg == null ? '—' : sign + p.mg + '%') + '</span><span class="mg-rub">' + (p.mgRub == null ? '—' : (p.mgRub > 0 ? '+' : '') + fmt(p.mgRub) + ' ₽/шт.') + '</span>' + (p.marginIsSubtotal ? '<span class="metric-sub">до общих расходов</span>' : '') + (p.marginAssumed ? '<span class="metric-sub">примерная с/с</span>' : '') + '</span>';
 }
 function bskCellHTML(p){
   if (p.basketsState === 'no_data') return '<span class="metric-main" data-tip="Корзины появятся после успешного обновления WB Analytics Sales Funnel">нет данных</span>';
+  if (p.basketsState === 'partial') return '<div class="metric-stack" data-tip="' + escapeHtml(p.basketsReason || 'Не все дни выбранного периода загружены') + '"><span class="metric-main">' + fmt(p.bsk) + '</span><span class="metric-sub">частично</span></div>';
   const arr = p.bskTrend === 'up' ? '<span class="up">↑</span>' : (p.bskTrend === 'down' ? '<span class="down">↓</span>' : '');
   let sparkCls = '';
   if (p.bsk <= 5) sparkCls = ' low';
@@ -12893,16 +12881,16 @@ function bskCellHTML(p){
   return '<div class="bsk"><span class="bsk-num">' + p.bsk + ' ' + arr + '</span><div class="bsk-spark' + sparkCls + '">' + bars + '</div></div>';
 }
 function stockCellHTML(p){
-  if (p.stockState === 'no_data') return '<span class="metric-main" data-tip="Остатки появятся после успешного обновления WB Analytics stocks">нет данных</span>';
+  if (p.circulationStock == null) return '<span class="metric-main" data-tip="Не получены все составляющие: склад, в пути к покупателю и от покупателя">нет данных</span>';
   let cls = '';
-  if (p.stock === 0) cls = 'zero';
-  else if (p.stock <= 5) cls = 'crit';
-  else if (p.stock <= 20) cls = 'low';
-  return '<div class="metric-stack"><span class="stock ' + cls + '">' + p.stock + '</span><span class="metric-sub">' + fmt(p.stockRub) + ' ₽</span></div>';
+  if (p.circulationStock === 0) cls = 'zero';
+  else if (p.circulationStock <= 5) cls = 'crit';
+  else if (p.circulationStock <= 20) cls = 'low';
+  return '<div class="metric-stack" data-tip="Текущий снимок, не история выбранного периода. Склад: ' + p.stockWarehouse + '; к покупателю: ' + p.stockToBuyer + '; от покупателя: ' + p.stockFromBuyer + '. Сумма в рублях — оценка по текущей цене."><span class="stock ' + cls + '">' + p.circulationStock + '</span><span class="metric-sub">' + fmt(p.circulationStockRub) + ' ₽</span></div>';
 }
 function tplHTML(p){
   let inner;
-  if (!p.tpl) inner = '<span class="tpl-none">— нет —</span>';
+  if (!p.tpl) inner = '<span class="tpl-none">Не назначена</span>';
   else {
     const t = TPL[p.tpl];
     inner = '<span class="tpl-chip ' + t.cls + '"><span class="tpl-color-dot" style="background:' + t.dot + ';width:6px;height:6px"></span>' + t.label + '</span>';
@@ -12923,8 +12911,9 @@ function buyoutHTML(p){
 }
 function abcHTML(p){
   if (p.financeState === 'no_data' || !p.abcCode) return '<span class="abc-badge new" data-tip="ABC появится после загрузки финансового отчёта WB">нет данных</span>';
-  const code = (p.abcCode || 'CC').toUpperCase();
-  return '<span class="abc-badge ' + code.toLowerCase() + '" data-tip="1-я буква — продажи, 2-я — чистая прибыль">' + code + '</span>';
+  const code = String(p.abcCode).toUpperCase();
+  const partial = code.includes('—');
+  return '<span class="abc-badge ' + (partial ? 'new' : code.toLowerCase()) + '" data-tip="' + escapeHtml(p.abcReason || '1-я буква — продажи, 2-я — чистая прибыль') + '">' + escapeHtml(code) + '</span>';
 }
 function wbLinkHTML(p){
   return '<a class="wb-link" href="https://www.wildberries.ru/catalog/' + p.nmId + '/detail.aspx" target="_blank">' + p.nmId + '</a>';
@@ -12965,12 +12954,12 @@ function promoHTML(p){
   return promoStateHTML(Boolean(p.promoActive), p.promoActive ? 'Участвует в акции, цена акции ' + fmt(p.promoPrice) + ' ₽' : 'Не участвует в акции');
 }
 function avgPriceHTML(p){
-  const value = p.avgPriceSpp == null ? '—' : fmt(p.avgPriceSpp) + ' ₽';
+  const value = p.priceWithSpp == null ? '—' : fmt(p.priceWithSpp) + ' ₽';
   return '<div class="metric-stack"><span class="metric-main">' + value + '</span><span class="metric-sub">с СПП</span></div>';
 }
 function walletPriceHTML(p){
-  const value = p.priceWithWallet ?? p.accountedBuyerPrice ?? (p.wbWallet != null ? p.priceFinal : null);
-  if (value == null) return '<span class="metric-main" data-tip="Цена с WB кошельком считается отдельно от цены с СПП.">нет данных</span>';
+  const value = p.priceWithWallet;
+  if (value == null) return '<span class="metric-main" data-tip="Источник ещё не передал текущую цену покупателя с WB кошельком.">нет данных</span>';
   return '<div class="metric-stack"><span class="metric-main">' + fmt(value) + ' ₽</span><span class="metric-sub">с кошельком</span></div>';
 }
 function formatPercentValue(value, digits){
@@ -12978,20 +12967,18 @@ function formatPercentValue(value, digits){
   return Number(value).toFixed(digits).replace('.', ',') + ' %';
 }
 function sppHTML(p){
-  if (p.spp == null) return '<span class="metric-main" data-tip="СПП считается как (цена продавца до СПП − цена покупателя без WB кошелька) / цена продавца до СПП. Нужен live-price источник покупательской цены.">нет данных</span>';
-  const wallet = p.wbWallet != null ? '<span class="metric-sub">кошелёк ' + formatPercentValue(p.wbWallet, 0) + '</span>' : '';
-  return '<div class="metric-stack"><span class="metric-main">' + formatPercentValue(p.spp, 2) + '</span>' + wallet + '</div>';
+  const value = p.tableSppPct;
+  if (value == null) return '<span class="metric-main" data-tip="СПП = (базовая цена − цена покупателя без кошелька) / базовая цена × 100%. Нужны обе актуальные цены.">нет данных</span>';
+  return '<span class="metric-main">' + Number(value).toFixed(1) + '%</span>';
 }
 function commissionHTML(p){
   if (p.commissionPct == null) {
-    const source = p.commissionSource || 'tariffs.commission';
-    const reason = p.commissionReason || (source.indexOf('fallback.') === 0 ? 'fallback скрыт: нет подтверждённого тарифа WB' : 'нет подтверждённого тарифа WB');
-    return '<div class="metric-stack" data-tip="' + escapeHtml(reason + ' · source: ' + source) + '"><span class="metric-main">нет тарифа</span><span class="metric-sub">' + escapeHtml(source) + '</span></div>';
+    return '<span class="metric-main" data-tip="Тариф WB для категории товара ещё не загружен. Фактическая комиссия сохраняется в финансовом отчёте.">нет тарифа</span>';
   }
   return '<span class="metric-main" data-tip="Тариф категории + эквайринг">' + p.commissionPct + '%</span>';
 }
 function ordersCellHTML(p){
-  if (p.periodStatsState === 'no_data') return '<span class="metric-main" data-tip="Заказы появятся после обновления периода WB Statistics">нет данных</span>';
+  if (p.ordersPeriod == null) return '<span class="metric-main" data-tip="Нет наблюдения WB за выбранный период">нет данных</span>';
   const trend = p.ordersPeriod >= 10 ? '<span class="up">↑</span>' : (p.ordersPeriod <= 3 ? '<span class="down">↓</span>' : '');
   return '<div class="bsk"><span class="bsk-num">' + p.ordersPeriod + ' ' + trend + '</span><div class="bsk-spark mid">' + p.bskBars.map(v => '<span style="height:' + (v * 2 + 3) + 'px;opacity:' + (v ? 0.9 : 0.18) + '"></span>').join('') + '</div></div>';
 }
@@ -13118,13 +13105,15 @@ function renderTable(){
       <td>${promoHTML(p)}</td>
       <td data-tip="Ответственный менеджер по закреплению SKU">${managerCellHTML(p)}</td>
       <td class="num">${priceCellHTML(p)}</td>
-      <td class="num">${avgPriceHTML(p)}</td>
-      <td class="num">${walletPriceHTML(p)}</td>
+      <td data-column-id="currentCost">Себестоимость недоступна</td>
       <td class="num">${sppHTML(p)}</td>
-      <td class="num">${marginHTML(p)}</td>
       <td class="num">${commissionHTML(p)}</td>
+      <td class="num">${marginHTML(p)}</td>
       <td class="num">${bskCellHTML(p)}</td>
+      <td class="num">${p.grossSalesUnits == null ? '—' : fmt(p.grossSalesUnits)}</td>
+      <td class="num">${p.salesRub == null ? '—' : p.salesRub.toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:2}) + ' ₽'}</td>
       <td class="num">${ordersCellHTML(p)}</td>
+      <td class="num">${p.ordersRub == null ? '—' : p.ordersRub.toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:2}) + ' ₽'}</td>
       <td class="num">${buyoutHTML(p)}</td>
       <td class="num">${stockCellHTML(p)}</td>
       <td>${tplHTML(p)}</td>
@@ -13352,12 +13341,13 @@ function productMatchesSearch(p, term) {
 }
 
 function filterProducts(opts = {}) {
+  if (window.__vellaProductsCacheMeta?.serverFiltersApplied && Object.keys(opts).length === 0) return PRODUCTS.slice();
   const term = (document.getElementById('searchTable')?.value || '').toLowerCase().trim();
   const status = opts.status !== undefined ? opts.status : currentStatus;
   const brand = opts.brand !== undefined ? opts.brand : currentBrand;
   const manager = opts.manager !== undefined ? opts.manager : currentManager;
   const view = savedViewById(activeSavedViewId);
-  return PRODUCTS.filter(p => {
+  return (opts.rows || PRODUCTS).filter(p => {
     const identityHit = productIdentityMatchesSearch(p, term);
     if (!identityHit) {
       if (opts.ignoreSavedView !== true && typeof view.predicate === 'function' && !matchesSavedView(p, view)) return false;
@@ -13412,6 +13402,7 @@ function setManagerFilter(mgr) {
 
 function applyFilters(){
   renderTable();
+  window.__vellaReloadProductsForFilters?.();
 }
 
 function onSearchInput(){
@@ -13430,7 +13421,7 @@ const selectedDigestBrands = new Set(['all']);
 
 function digestBrandLabel() {
   if (selectedDigestBrands.has('all') || selectedDigestBrands.size === 0) return 'Бренды: Все';
-  const labels = [...selectedDigestBrands].map(id => DIGEST_BRANDS[id]).filter(Boolean);
+  const labels = [...selectedDigestBrands].map(id => DIGEST_BRANDS[id] || id).filter(Boolean);
   if (labels.length === 1) return 'Бренд: ' + labels[0];
   return 'Бренды: ' + labels.join(' + ');
 }
@@ -13462,9 +13453,11 @@ function setDigestBrandSelection(brand, event) {
     if (selectedDigestBrands.size === 0) selectedDigestBrands.add('all');
   }
   renderDigestBrandFilter();
-  const scope = selectedDigestBrands.has('all') ? 'всем брендам' : [...selectedDigestBrands].map(id => DIGEST_BRANDS[id]).join(' + ');
-  showToast('Воронка продаж пересчитана по scope: ' + scope, 'info');
+  window.dispatchEvent(new CustomEvent('vella:sales-brands-updated'));
+  window.__vellaLoadLiveDigestReport?.();
 }
+window.__vellaDigestBrandSelection = () => selectedDigestBrands.has('all') ? [] : [...selectedDigestBrands].sort();
+window.__vellaResetDigestBrands = () => { selectedDigestBrands.clear(); selectedDigestBrands.add('all'); renderDigestBrandFilter(); };
 
 document.addEventListener('click', (event) => {
   const filter = document.getElementById('digestBrandFilter');
@@ -13557,6 +13550,21 @@ function hasActiveAdvancedFilters(filters = advancedFilters){
     f.attrs.length !== 4 || !['female','male','white','black'].every(value => f.attrs.includes(value));
 }
 
+// Applied state only; reading the open panel would leak draft values into requests.
+window.__vellaProductsAdvancedSnapshot = function(){
+  const f = advancedFiltersSnapshot();
+  const result = {};
+  for (const key of ['marginFrom','marginTo','basketsFrom','basketsTo','ordersFrom','ordersTo','priceFrom','priceTo']) if (f[key] != null) result[key] = f[key];
+  const types = [...new Set(f.types)].sort();
+  if (types.length && types.length !== 5 && !(types.length === 3 && ['shirt','hoodie','longsleeve'].every(value => types.includes(value)))) result.types = types;
+  const attrs = [...new Set(f.attrs)].sort();
+  if (attrs.length && attrs.length !== 4) result.attrs = attrs;
+  if (f.strategy !== 'all') result.strategy = f.strategy;
+  if (f.stock !== 'all') result.stock = f.stock;
+  if (['problem','nopmin','loss','changes24h','illiquid'].includes(activeSavedViewId)) result.segment = activeSavedViewId;
+  return result;
+};
+
 function setAdvancedInputValue(id, value){
   const el = document.getElementById(id);
   if (el) el.value = value === null || value === undefined ? '' : String(value);
@@ -13595,8 +13603,8 @@ function applyAdvancedFiltersSnapshot(filters){
 // =========================================================
 let sortField = 'demand', sortDir = 'desc';
 let productSortStack = [{ key: 'demand', dir: 'desc' }];
-const PRODUCT_SORT_KEYS = [null, 'sku', 'nmId', 'status', 'abc', 'promo', null, 'price', 'avgPriceSpp', 'priceWithWallet', 'spp', 'mg', 'commissionPct', 'bsk', 'ordersPeriod', 'buyout', 'stock', 'tpl', null, null];
-const PRODUCT_COLUMN_KEYS = ['select', 'sku', 'nmId', 'status', 'abc', 'promo', 'manager', 'price', 'avgPriceSpp', 'priceWithWallet', 'spp', 'mg', 'commissionPct', 'bsk', 'ordersPeriod', 'buyout', 'stock', 'tpl', 'actions', 'comment'];
+const PRODUCT_SORT_KEYS = [null, 'sku', 'nmId', 'status', 'abc', 'promo', null, 'price', null, 'spp', 'commissionPct', 'mg', 'bsk', 'grossSalesUnits', 'salesRub', 'ordersPeriod', 'ordersRub', 'buyout', 'stock', 'tpl', null, null];
+const PRODUCT_COLUMN_KEYS = ['select', 'sku', 'nmId', 'status', 'abc', 'promo', 'manager', 'price', 'currentCost', 'spp', 'commissionPct', 'mg', 'bsk', 'grossSalesUnits', 'salesRub', 'ordersPeriod', 'ordersRub', 'buyout', 'stock', 'tpl', 'actions', 'comment'];
 function productDemandScore(p){
   const orders = Number(p.ordersPeriod ?? 0);
   const baskets = Number(p.bsk ?? 0);
@@ -13611,16 +13619,19 @@ function productSortValue(p, key){
     status: () => STATUS[p.status]?.label || p.status,
     abc: () => p.abc || '',
     promo: () => p.promoActive ? 1 : 0,
-    price: () => p.price ?? 0,
-    avgPriceSpp: () => p.avgPriceSpp ?? 0,
-    priceWithWallet: () => p.priceWithWallet ?? p.priceFinal ?? 0,
-    spp: () => p.spp ?? 0,
+    price: () => Object.prototype.hasOwnProperty.call(p, 'tableBuyerPrice') ? p.tableBuyerPrice ?? -1 : p.price ?? 0,
+    avgPriceSpp: () => p.priceWithSpp ?? 0,
+    priceWithWallet: () => p.priceWithWallet ?? 0,
+    spp: () => p.tableSppPct ?? -1,
     mg: () => p.mg ?? 0,
     commissionPct: () => p.commissionPct ?? 0,
     bsk: () => p.bsk ?? 0,
     ordersPeriod: () => p.ordersPeriod ?? 0,
+    grossSalesUnits: () => p.grossSalesUnits ?? -1,
+    salesRub: () => p.salesRub ?? -1,
+    ordersRub: () => p.ordersRub ?? -1,
     buyout: () => p.buyout ?? -1,
-    stock: () => p.stock ?? 0,
+    stock: () => p.circulationStock ?? -1,
     tpl: () => TPL[p.tpl]?.label || 'нет',
     __vellaBackendOrder: () => p.__vellaBackendOrder ?? 0,
   };
@@ -13644,6 +13655,14 @@ function sortBy(field, event){
   sortDir = productSortStack[0]?.dir || 'desc';
   renderTable();
 }
+// Reuse precisely the table's filters/sort on all fetched pages, without
+// replacing the rendered PRODUCTS array or touching row selection.
+window.__vellaRepricerExportRows = rows => sortProductRows(filterProducts({rows}));
+window.__vellaRepricerExportState = () => ({
+  search: document.getElementById('searchTable')?.value || '',
+  status: currentStatus, brand: currentBrand, manager: currentManager,
+  advanced: advancedFilters, savedView: activeSavedViewId, sort: productSortStack
+});
 function setProductSort(field, dir = 'desc'){
   productSortStack = [{ key: field, dir }];
   sortField = field;
@@ -13690,9 +13709,13 @@ function enhanceProductTableInteractions(){
     th.removeAttribute('onclick');
     th.tabIndex = 0;
     th.setAttribute('data-tip', 'Клик — сортировка по одному столбцу');
-    th.addEventListener('click', event => sortBy(key, event));
+    th.addEventListener('click', event => {
+      if (event.target.closest('.tip-i, .tip-box, .stat-tip')) return;
+      sortBy(key, event);
+    });
     th.addEventListener('keydown', event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target.closest('.tip-i, .tip-box, .stat-tip')) return;
       event.preventDefault();
       sortBy(key, event);
     });
@@ -14341,7 +14364,15 @@ function confirmApply(){
 // TOASTS
 // =========================================================
 function showToast(text, type='info', undo=false){
-  const existingToast = [...document.querySelectorAll('#toastContainer .toast .toast-title')]
+  const dialog = [...document.querySelectorAll('dialog:modal')].at(-1);
+  let container = dialog?.querySelector('.toast-container');
+  if (dialog && !container) {
+    container = document.createElement('div');
+    container.className = 'toast-container';
+    dialog.appendChild(container);
+  }
+  container = container || document.getElementById('toastContainer');
+  const existingToast = [...container.querySelectorAll('.toast .toast-title')]
     .some(el => el.textContent === text);
   if (existingToast) return;
   const ICONS = {
@@ -14351,8 +14382,9 @@ function showToast(text, type='info', undo=false){
   };
   const t = document.createElement('div');
   t.className = 'toast ' + type;
+  t.setAttribute('role', type === 'warn' ? 'alert' : 'status');
   t.innerHTML = '<div class="toast-icon">' + (ICONS[type] || ICONS.info) + '</div><div class="toast-body"><div class="toast-title">' + text + '</div></div>' + (undo ? '<span class="toast-undo">↶ Отменить</span>' : '');
-  document.getElementById('toastContainer').appendChild(t);
+  container.appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 3500);
 }
@@ -14478,7 +14510,9 @@ function renderReviews(){
 function renderReviewsQueue(){
   const list = document.getElementById('reviewsQueueList');
   if (!list) return;
-  const queue = REVIEWS.filter(r => ['pending_review','blocked','error'].includes(r.status));
+  const queue = filteredReviews().filter(r => ['pending_review','blocked','error','new'].includes(r.status));
+  const count = document.getElementById('reviewsQueueCount');
+  if(count) count.textContent = `${queue.length} отзывов`;
   list.innerHTML = queue.map(r => `
     <button class="review-queue-item" data-review-id="${r.id}" onclick="openReviewDrawer('${r.id}')">
       <div class="review-queue-top"><span class="review-stars">${reviewStars(r.rating)}</span><span class="review-brand">${r.brand}</span><span class="review-age">${r.age}</span></div>
@@ -14488,16 +14522,18 @@ function renderReviewsQueue(){
   `).join('');
 }
 function updateReviewsKpi(){
-  const open = REVIEWS.filter(r => !['sent','sent_pending_verify'].includes(r.status)).length;
-  const queue = REVIEWS.filter(r => ['pending_review','blocked','error'].includes(r.status)).length;
-  const auto = REVIEWS.filter(r => ['scheduled','sent','sent_pending_verify'].includes(r.status)).length + 78;
-  const blocked = REVIEWS.filter(r => ['blocked','error'].includes(r.status)).length;
+  const rows = filteredReviews();
+  const open = rows.filter(r => !['sent','sent_pending_verify'].includes(r.status)).length;
+  const queue = rows.filter(r => ['pending_review','blocked','error','new'].includes(r.status)).length;
+  const drafts = rows.filter(r => !['sent','sent_pending_verify'].includes(r.status) && (r.draftId || r.draft?.trim())).length;
+  const blocked = rows.filter(r => ['blocked','error'].includes(r.status)).length;
   const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
   set('reviewsKpiOpen', open);
   set('reviewsKpiQueue', queue);
-  set('reviewsKpiAuto', auto);
+  set('reviewsKpiAuto', drafts);
   set('reviewsKpiBlocked', blocked);
   set('navReviewsCount', queue);
+  set('subtabReviewsCount', queue);
 }
 function setReviewsFilter(el){
   const group = el.dataset.reviewFilter;
@@ -14744,6 +14780,7 @@ function closeFloatingPopups() {
   if (typeof hideAvitoStatsChartTooltip === 'function') hideAvitoStatsChartTooltip();
 }
 function closeTopFloatingLayer() {
+  if (document.querySelector('dialog:modal')) return false;
   const openDd = document.querySelector('.dd.open');
   if (openDd) { openDd.classList.remove('open'); return true; }
   if (document.getElementById('calendarPopover')?.classList.contains('open')) { closeCalendarPopover(); return true; }
@@ -14771,8 +14808,7 @@ function openProfileSettings(){
 }
 function openInterfaceSettings(){
   toggleDD('ddUser');
-  document.body.classList.toggle('density-compact');
-  showToast(document.body.classList.contains('density-compact') ? 'Включена компактная плотность' : 'Включена обычная плотность', 'info');
+  setDensity();
 }
 function switchDemoRole(){
   toggleDD('ddUser');
@@ -15103,6 +15139,9 @@ function initTooltips(){
     el.dataset._tipBound = '1';
     el.addEventListener('mouseenter', () => showGlobalTip(el, el.getAttribute('data-tip')));
     el.addEventListener('mouseleave', hideGlobalTip);
+    el.addEventListener('focus', () => showGlobalTip(el, el.getAttribute('data-tip')));
+    el.addEventListener('blur', hideGlobalTip);
+    el.addEventListener('keydown', event => { if (event.key === 'Escape') hideGlobalTip(); });
   });
 }
 
@@ -15193,7 +15232,7 @@ const SETTINGS_ACCESS_USERS = [
     id: 'user-print-lead', name: 'Светлана В.', initials: 'СВ', email: 'print@ogni.example', role: 'production', status: 'active', last: 'сегодня, 08:02',
     access: { modules: ['production'], rights: ['orders_manual_create'] },
     scopes: [
-      { marketplace: 'WB', status: 'limited', modules: ['Заказы', 'Лист печати', 'КИЗ'], accounts: ['wb-ogni-main'], permissions: ['orders_manual_create'], blockers: ['Финансы скрыты'] },
+      { marketplace: 'WB', status: 'limited', modules: ['Заказы', 'Лист печати'], accounts: ['wb-ogni-main'], permissions: ['orders_manual_create'], blockers: ['Финансы скрыты'] },
       { marketplace: 'Avito', status: 'view_only', modules: ['Заказы', 'QR-возвраты'], accounts: ['avito-bless-msk', 'avito-anomie-msk'], permissions: [], blockers: ['Чаты и кошельки скрыты'] }
     ]
   },
@@ -15502,7 +15541,7 @@ const _navHist = [];
 let _navCursor = -1;
 
 const TAB_LABELS = {
-  products: 'Все товары',
+  products: 'Репрайсер',
   'repricer-stats': 'Статистика',
   algo: 'Правила',
   templates: 'Стратегии',
@@ -15528,6 +15567,7 @@ const TAB_LABELS = {
   'avito-repricer': 'Репрайсер Авито',
   'avito-stats': 'Статистика',
   'avito-notifications': 'Уведомления',
+  'avito-privacy': 'Конфиденциальность',
   sources: 'Источники и загрузки',
   'settings-profile': 'Личный кабинет',
   'settings-imports': 'Импорт данных',
@@ -15538,7 +15578,7 @@ const REPORT_TABS = ['digest', 'report-rules', 'abc', 'rnp', 'pnl', 'expenses', 
 const REPRICER_TABS = ['products', 'repricer-stats', 'algo', 'templates', 'history', 'liq', 'promos'];
 const REVIEWS_TABS = ['reviews'];
 const DATA_TABS = ['sources'];
-const AVITO_TABS = ['avito-overview', 'avito-inbox', 'avito-reviews', 'orders-avito', 'avito-listings', 'avito-repricer', 'avito-stats', 'avito-notifications'];
+const AVITO_TABS = ['avito-overview', 'avito-inbox', 'avito-reviews', 'orders-avito', 'avito-listings', 'avito-repricer', 'avito-stats', 'avito-notifications', 'avito-privacy'];
 const PRODUCTION_TABS = [];
 const SYSTEM_TABS = ['settings-profile', 'settings-imports', 'notifications', 'settings-access'];
 const PATH_TAB_MAP = {
@@ -15584,6 +15624,7 @@ const PATH_TAB_MAP = {
   '/avito/stats': 'avito-stats',
   '/avito/statistics': 'avito-stats',
   '/avito/notifications': 'avito-notifications',
+  '/avito/privacy': 'avito-privacy',
   '/settings/profile': 'settings-profile',
   '/settings/imports': 'settings-imports',
   '/notifications': 'notifications',
@@ -15621,7 +15662,7 @@ function syncContextControls(key){
   const showDigestMode = false;
   const showLiveStatus = normalizedKey === 'digest';
   const showPeriod = normalizedKey === 'products' || periodReportTabs.includes(normalizedKey) || periodDataTabs.includes(normalizedKey) || normalizedKey === 'digest' || normalizedKey === 'avito-stats' || normalizedKey === 'avito-repricer';
-  const showExport = normalizedKey === 'products' || periodReportTabs.includes(normalizedKey) || periodDataTabs.includes(normalizedKey) || normalizedKey === 'digest' || normalizedKey === 'avito-stats' || normalizedKey === 'avito-repricer';
+  const showExport = normalizedKey !== 'report-rules' && (normalizedKey === 'products' || periodReportTabs.includes(normalizedKey) || periodDataTabs.includes(normalizedKey) || normalizedKey === 'digest' || normalizedKey === 'avito-stats' || normalizedKey === 'avito-repricer');
   const visibility = {
     'digest-mode': showDigestMode,
     'digest-brand': normalizedKey === 'digest',
@@ -15718,6 +15759,7 @@ function pathForTab(key){
     'avito-reviews': '/avito/reviews',
     'avito-stats': '/avito/stats',
     'avito-notifications': '/avito/notifications',
+    'avito-privacy': '/avito/privacy',
     'settings-profile': '/settings/profile',
     'settings-imports': '/settings/imports',
     notifications: '/notifications',
@@ -17720,11 +17762,10 @@ let ordersManualAddMode = 'single';
 let ordersManualTableRowCount = 3;
 let ordersManualPhotoDataUrl = '';
 
-const ORDERS_EDITABLE_FIELDS = ['photoUrl', 'brand', 'name', 'size', 'color', 'sellerArticle', 'sticker', 'barcode', 'honestSign', 'avitoInternalBarcodeQr', 'quantity', 'status'];
+const ORDERS_EDITABLE_FIELDS = ['photoUrl', 'brand', 'name', 'size', 'color', 'sellerArticle', 'sticker', 'barcode', 'avitoInternalBarcodeQr', 'quantity', 'status'];
 const ORDERS_STATUS_OPTIONS = [
   { value: 'ready', label: 'Готов' },
   { value: 'missing_sticker', label: 'Нет стикера' },
-  { value: 'missing_honest_sign', label: 'Ожидает КИЗ' },
   { value: 'missing_avito_qr', label: 'Нет QR Авито' },
   { value: 'incomplete_data', label: 'Неполные данные' },
   { value: 'cancelled', label: 'Отменён' },
@@ -17884,7 +17925,7 @@ function ordersActionLabel(row){
   const status = String(row?.status || 'ready');
   if (status === 'ready' || status === 'new') return 'Готов';
   if (status === 'missing_sticker') return 'Нет стикера';
-  if (status === 'missing_honest_sign') return 'Ожидает КИЗ';
+  if (status === 'missing_honest_sign') return 'Исторический статус: требуется проверка';
   if (status === 'missing_avito_qr') return 'Нет QR Авито';
   if (status === 'incomplete_data') return 'Неполные данные';
   if (status === 'cancelled') return 'Отменён в источнике';
@@ -17895,7 +17936,7 @@ function ordersProblemCard(row){
   const status = String(row?.status || 'ready');
   const cards = {
     missing_sticker: ['Нет стикера', 'Заполните стикер вручную или обновите данные источника. После правки строка останется в этом же порядке.', 'warn'],
-    missing_honest_sign: ['Ожидает КИЗ', 'КИЗ подтянется из отдельного сервиса. При необходимости можно временно заполнить поле вручную.', 'warn'],
+    missing_honest_sign: ['Исторический статус', 'Сохранён исходный статус заказа. Проверьте данные перед явным изменением статуса; автоматического перевода в готовые нет.', 'warn'],
     missing_avito_qr: ['Нет QR Авито', 'Заполните QR/Barcode Авито вручную или дождитесь обновления источника.', 'warn'],
     incomplete_data: ['Неполные данные', 'Заполните обязательные поля строки: артикул, название, цвет, размер и код источника.', 'warn'],
     cancelled: ['Заказ отменён', 'Не печатать и не собирать. Строка сохранена для истории и сверки с внешним источником.', 'warn'],
@@ -17987,7 +18028,11 @@ function renderOrdersInlineInput(rowId, field, value, options = {}){
 
 function renderOrdersStatusSelect(value){
   const current = ordersNormalizeStatus(value);
-  const options = ORDERS_STATUS_OPTIONS.map(option => {
+  // Retain an existing legacy value without offering it for new orders.
+  const choices = current === 'missing_honest_sign'
+    ? [{ value: current, label: ordersActionLabel({ status: current }) }, ...ORDERS_STATUS_OPTIONS]
+    : ORDERS_STATUS_OPTIONS;
+  const options = choices.map(option => {
     return '<option value="' + escapeHtml(option.value) + '"' + (option.value === current ? ' selected' : '') + '>' + escapeHtml(option.label) + '</option>';
   }).join('');
   return '<select class="orders-inline-select" data-orders-edit-field="status" aria-label="Статус">' + options + '</select>';
@@ -18036,6 +18081,8 @@ function ordersInferProductionSku(row){
 
 function ordersNormalizeStatus(status){
   const raw = String(status || 'ready');
+  // Removing a UI feature must not silently promote persisted historical rows.
+  if (raw === 'missing_honest_sign') return raw;
   const deprecatedStatuses = [
     'needs_' + 'mapping',
     'missing_' + 'track',
@@ -18132,7 +18179,6 @@ function renderOrdersPrintRow(row){
   const sellerArticleCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'sellerArticle', row.sellerArticle, { code: true, label: 'Артикул продавца' }) : cell(row.sellerArticle);
   const stickerCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'sticker', row.sticker, { code: true, label: 'Стикер' }) : cell(row.sticker);
   const barcodeCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'barcode', row.barcode, { code: true, label: 'Баркод' }) : cell(row.barcode);
-  const honestSignCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'honestSign', row.honestSign, { code: true, label: 'КИЗ' }) : cell(row.honestSign);
   const avitoQrCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'avitoInternalBarcodeQr', row.avitoInternalBarcodeQr, { code: true, label: 'QR/Barcode Авито' }) : cell(row.avitoInternalBarcodeQr);
   const returnCell = renderOrdersReturnCell(row);
   const quantityCell = ordersEditRowId === rowId ? renderOrdersInlineInput(rowId, 'quantity', quantity, { type: 'number', label: 'Количество' }) : '<b>' + escapeHtml(String(quantity)) + '</b>';
@@ -18155,7 +18201,6 @@ function renderOrdersPrintRow(row){
       <td class="orders-return-cell">${returnCell}</td>
       <td>${stickerCell}</td>
       <td>${barcodeCell}</td>
-      <td>${honestSignCell}</td>
       <td>${avitoQrCell}</td>
       <td>${statusCell}${renderOrdersMappingControl(row)}</td>
     </tr>
@@ -18519,7 +18564,6 @@ function ordersManualSourceFields(source){
   return [
     ordersManualFieldHtml('sticker', 'Стикер'),
     ordersManualFieldHtml('barcode', 'Баркод'),
-    ordersManualFieldHtml('honestSign', 'КИЗ', { wide: true }),
   ].join('');
 }
 
@@ -18553,7 +18597,7 @@ function ordersManualTableRowHtml(index){
   const source = getOrdersActiveSource();
   const sourceCells = source === 'avito'
     ? '<td><input class="orders-manual-input" data-orders-manual-table-field="avitoInternalBarcodeQr" placeholder="QR"></td><td><input class="orders-manual-input" data-orders-manual-table-field="accountName" placeholder="Аккаунт"></td>'
-    : '<td><input class="orders-manual-input" data-orders-manual-table-field="sticker" placeholder="Стикер"></td><td><input class="orders-manual-input" data-orders-manual-table-field="barcode" placeholder="Баркод"></td><td><input class="orders-manual-input" data-orders-manual-table-field="honestSign" placeholder="КИЗ"></td>';
+    : '<td><input class="orders-manual-input" data-orders-manual-table-field="sticker" placeholder="Стикер"></td><td><input class="orders-manual-input" data-orders-manual-table-field="barcode" placeholder="Баркод"></td>';
   return `
     <tr data-orders-manual-table-row>
       <td class="num">${index + 1}</td>
@@ -18576,7 +18620,7 @@ function renderOrdersManualTableForm(){
   const source = getOrdersActiveSource();
   const sourceHeaders = source === 'avito'
     ? '<th>QR/Barcode Авито</th><th>Аккаунт</th>'
-    : '<th>Стикер</th><th>Баркод</th><th>КИЗ</th>';
+    : '<th>Стикер</th><th>Баркод</th>';
   return `
     <div class="orders-manual-form" data-orders-manual-form="table">
       <div class="orders-manual-table-wrap">
@@ -19108,6 +19152,8 @@ function renderOrdersPrintList(payload, options = {}){
 
 async function hydrateOrdersPrintList(options = {}){
   const source = options.source === 'avito' ? 'avito' : options.source === 'wb' ? 'wb' : getOrdersActiveSource();
+  // React owns this Avito screen's request scope and DOM. Preserve standalone/WB hydration.
+  if (source === 'avito' && document.querySelector('#tab-orders-print[data-vella-island="avito-orders"]')) return;
   const archive = typeof options.archive === 'boolean' ? options.archive : isOrdersArchiveMode();
   const date = String(options.date || getOrdersSelectedDate() || new Date().toISOString().slice(0, 10)).slice(0, 10);
   const loadKey = source + ':' + (archive ? 'archive' : 'current') + ':' + date;
@@ -19314,10 +19360,19 @@ function isSameDay(a, b){ return a && b && dateKey(a) === dateKey(b); }
 function isInsideRange(day, start, end){ return start && end && day >= start && day <= end; }
 function rangeFromPreset(preset){
   const days = preset === '1' ? 1 : preset === '14' ? 14 : preset === '30' ? 30 : 7;
-  return { start: addDays(CALENDAR_TODAY, -(days - 1)), end: cloneDate(CALENDAR_TODAY) };
+  const lastDay = isProductsCalendarBridgeActive() ? parseIsoDate(window.__vellaWbCalendarState?.maxIso) : null;
+  const anchor = lastDay || CALENDAR_TODAY;
+  return { start: addDays(anchor, -(days - 1)), end: cloneDate(anchor) };
+}
+function isCalendarDateAllowed(date){
+  if (!isProductsCalendarBridgeActive()) return true;
+  const bounds = window.__vellaWbCalendarState;
+  return Boolean(date && bounds && dateKey(date) >= bounds.minIso && dateKey(date) <= bounds.maxIso);
 }
 function syncCalendarPresetUI(){
   document.querySelectorAll('[data-cal-preset]').forEach(btn => btn.classList.toggle('active', btn.dataset.calPreset === calendarDraft.preset));
+  const oneDay = document.querySelector('[data-cal-preset="1"]');
+  if (oneDay) oneDay.textContent = isProductsCalendarBridgeActive() ? '1 день' : 'Сегодня';
 }
 function renderCalendar(){
   const host = document.getElementById('calendarMonths');
@@ -19340,7 +19395,8 @@ function renderCalendar(){
       if (inRange) classes.push('in-range');
       if (selectedStart) classes.push('range-start');
       if (selectedEnd) classes.push('range-end');
-      cells.push('<button class="' + classes.join(' ') + '" type="button" aria-label="' + day + ' ' + label + '" data-date="' + dateKey(date) + '" onclick="event.stopPropagation();selectCalendarDay(this.dataset.date)">' + day + '</button>');
+      const disabled = isCalendarDateAllowed(date) ? '' : ' disabled aria-disabled="true"';
+      cells.push('<button class="' + classes.join(' ') + '" type="button"' + disabled + ' aria-label="' + day + ' ' + label + '" data-date="' + dateKey(date) + '" onclick="event.stopPropagation();selectCalendarDay(this.dataset.date)">' + day + '</button>');
     }
     return '<div><div class="calendar-month-title"><span>' + label + '</span></div><div class="calendar-grid">' + cells.join('') + '</div></div>';
   }).join('');
@@ -19409,16 +19465,13 @@ function isProductsCalendarBridgeActive(){
 }
 function openCalendarPopover(anchor){
   calendarAnchor = anchor || document.getElementById('globalPeriodRange');
-  if (isProductsCalendarBridgeActive() && calendarAnchor?.dataset?.vellaReactHandlers && (calendarAnchor.id === 'globalPeriodRange' || calendarAnchor.id === 'globalPeriodRangeTo')) {
-    closeCalendarPopover();
-    return;
-  }
   if (isProductsCalendarBridgeActive()) {
-    const start = parseIsoDate(window.__vellaProductsPeriodFromIso);
-    const end = parseIsoDate(window.__vellaProductsPeriodToIso);
+    const applied = window.__vellaWbCalendarState;
+    const start = parseIsoDate(applied?.fromIso || window.__vellaProductsPeriodFromIso);
+    const end = parseIsoDate(applied?.toIso || window.__vellaProductsPeriodToIso);
     if (start && end) {
-      const preset = window.__vellaProductsPeriodMode === 'preset'
-        ? String(window.__vellaProductsPeriodDays || 'custom')
+      const preset = (applied?.mode || window.__vellaProductsPeriodMode) === 'preset'
+        ? String(applied?.days || window.__vellaProductsPeriodDays || 'custom')
         : 'custom';
       calendarDraft = { preset, start, end, awaitingEnd: false };
     }
@@ -19473,6 +19526,7 @@ function selectCalendarPreset(preset){
 function selectCalendarDay(key){
   const [year, month, day] = key.split('-').map(Number);
   const selected = new Date(year, month - 1, day);
+  if (!isCalendarDateAllowed(selected)) return;
   if (!calendarDraft.start || !calendarDraft.awaitingEnd) {
     calendarDraft.start = selected;
     calendarDraft.end = selected;
@@ -19498,9 +19552,10 @@ function onCalendarManualInput(){
   const endInput = document.getElementById('calendarEndInput');
   const start = parseManualDate(startInput?.value);
   const end = parseManualDate(endInput?.value);
-  startInput?.classList.toggle('is-error', Boolean(startInput?.value && !start));
-  endInput?.classList.toggle('is-error', Boolean(endInput?.value && !end));
+  startInput?.classList.toggle('is-error', Boolean(startInput?.value && (!start || !isCalendarDateAllowed(start))));
+  endInput?.classList.toggle('is-error', Boolean(endInput?.value && (!end || !isCalendarDateAllowed(end))));
   if (!start || !end) return;
+  if (!isCalendarDateAllowed(start) || !isCalendarDateAllowed(end)) return;
   if (start > end) {
     startInput?.classList.add('is-error');
     endInput?.classList.add('is-error');
@@ -19534,6 +19589,12 @@ function applyCalendarRange(){
   const endInput = document.getElementById('calendarEndInput');
   const manualStart = parseManualDate(startInput?.value);
   const manualEnd = parseManualDate(endInput?.value);
+  if (isProductsCalendarBridgeActive() && (!manualStart || !manualEnd || !isCalendarDateAllowed(manualStart) || !isCalendarDateAllowed(manualEnd))) {
+    startInput?.classList.toggle('is-error', !manualStart || !isCalendarDateAllowed(manualStart));
+    endInput?.classList.toggle('is-error', !manualEnd || !isCalendarDateAllowed(manualEnd));
+    showToast('Укажите обе даты завершённых дней по Москве в формате дд.мм.гггг', 'warn');
+    return;
+  }
   if ((startInput?.value && !manualStart) || (endInput?.value && !manualEnd)) {
     startInput?.classList.toggle('is-error', Boolean(startInput.value && !manualStart));
     endInput?.classList.toggle('is-error', Boolean(endInput.value && !manualEnd));
@@ -19552,8 +19613,8 @@ function applyCalendarRange(){
   }
   const label = formatRangeLabel(calendarDraft.start, calendarDraft.end);
   if (typeof window.__vellaApplyProductsCalendarRange === 'function') {
-    window.__vellaApplyProductsCalendarRange(dateKey(calendarDraft.start), dateKey(calendarDraft.end), calendarDraft.preset || 'custom');
-    closeCalendarPopover();
+    const accepted = window.__vellaApplyProductsCalendarRange(dateKey(calendarDraft.start), dateKey(calendarDraft.end), calendarDraft.preset || 'custom');
+    if (accepted !== false) closeCalendarPopover();
     return;
   }
   currentPeriod = calendarDraft.preset || 'custom';
@@ -19671,6 +19732,7 @@ document.addEventListener('change', (event) => {
 });
 document.addEventListener('click', (event) => {
   if (event.target?.classList?.contains('modal-overlay') && event.target.classList.contains('open')) {
+    if (event.target.hasAttribute('data-vella-react-modal')) return;
     const modalName = event.target.id?.startsWith('m-') ? event.target.id.slice(2) : '';
     if (modalName) closeModal(modalName);
     return;
@@ -20672,6 +20734,7 @@ function syncNotifFilterUi() {
   if (page) page.style.gridTemplateColumns = eventMode ? '' : '1fr';
   const side = document.querySelector('#tab-notifications .notif-side');
   if (side) side.style.display = eventMode ? '' : 'none';
+  if (page?.classList.contains('avito-notifications-page')) return;
   const stats = document.querySelectorAll('#tab-notifications .notif-kpis .stat');
   if (stats.length >= 4) {
     const modePrefix = notifRouteContext === 'avito' ? 'Авито' : notifRouteContext === 'wb' ? 'WB' : '';
@@ -21025,9 +21088,7 @@ function repricerPhotoUrlByNm(nmId){
 
 function repricerProductPhotoUrl(p){
   if (!p) return '';
-  const wbUrl = repricerPhotoUrlByNm(p.nmId || p.wb || p.wbId || p.sku);
-  const backendUrl = p.photoUrl || p.imageUrl || '';
-  return backendUrl && !/\/\/basket-\d+\.wbbasket\.ru\//i.test(backendUrl) ? backendUrl : (wbUrl || backendUrl);
+  return p.photoUrl || p.imageUrl || repricerPhotoUrlByNm(p.nmId || p.wb || p.wbId || p.sku);
 }
 function wbPhotoUrlByNm(nmId){
   const id = parseInt(String(nmId || '').replace(/\D/g, ''), 10);
@@ -21038,36 +21099,25 @@ function wbPhotoUrlByNm(nmId){
 }
 function reportPhotoUrl(row){
   if (!row) return '';
-  const wbUrl = wbPhotoUrlByNm(row.wb || row.nmId);
-  const backendUrl = row.photoUrl || row.imageUrl || '';
-  return backendUrl && !/\/\/basket-\d+\.wbbasket\.ru\//i.test(backendUrl) ? backendUrl : (wbUrl || backendUrl);
-}
-function wbPhotoFallbackUrl(nmId, basket){
-  const id = parseInt(String(nmId || '').replace(/\D/g, ''), 10);
-  if (!id || id <= 0) return '';
-  const vol = Math.floor(id / 100000);
-  const part = Math.floor(id / 1000);
-  return 'https://basket-' + String(basket).padStart(2, '0') + '.wbbasket.ru/vol' + vol + '/part' + part + '/' + id + '/images/c516x688/1.webp';
+  return row.photoUrl || row.imageUrl || wbPhotoUrlByNm(row.wb || row.nmId);
 }
 function repairWbProductImage(img){
-  const id = img?.dataset?.wbNm;
-  if (!id) return;
-  let current = Number(img.dataset.wbImgAttempt || 0);
-  const vol = Math.floor(parseInt(String(id).replace(/\D/g, ''), 10) / 100000);
-  const preferred = [wbBasketNumber(vol), 44, 33, 27, 23, 20, 17];
-  const baskets = [...new Set(preferred.concat(Array.from({length: 80}, (_, index) => index + 1)))];
-  let nextUrl = '';
-  while (baskets[current]) {
-    nextUrl = wbPhotoFallbackUrl(id, baskets[current]);
-    current += 1;
-    if (nextUrl && img.src !== nextUrl) break;
-  }
-  if (!nextUrl || img.src === nextUrl) {
-    img.onerror = null;
+  if (!img || img.src.startsWith('data:image/svg+xml')) return;
+  const id = img.dataset.wbNm || img.src.match(/\/\/basket-\d+\.wbbasket\.ru\/vol\d+\/part\d+\/(\d+)\/images\//i)?.[1];
+  const fallback = wbPhotoUrlByNm(id);
+  if (fallback && img.src !== fallback) {
+    img.src = fallback;
     return;
   }
-  img.dataset.wbImgAttempt = String(current);
-  img.src = nextUrl;
+  img.alt = 'Фото недоступно';
+  img.title = 'Фото недоступно';
+  img.onload = () => {
+    if (img.src.startsWith('data:image/svg+xml')) return;
+    img.alt = '';
+    img.removeAttribute('title');
+    img.onload = null;
+  };
+  img.src = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="44" height="56" viewBox="0 0 44 56"><rect width="44" height="56" fill="#f0f2f5"/><path d="M14 28h16" stroke="#94a3b8" stroke-width="2"/></svg>');
 }
 function reportThumb(type, row){
   const photoUrl = reportPhotoUrl(row);
@@ -21239,7 +21289,7 @@ function renderReportCommentDrawer(sku) {
   const audit = document.getElementById('reportCommentAudit');
   if (audit) {
     audit.classList.add('report-comment-audit');
-    audit.innerHTML = `<div class="event-row"><div class="event-row-title">08.05, 16:50 · Авто · пересчёт отчётов</div><div class="event-row-meta"><span class="comment-source-badge">из ${escapeHtml(source)}</span>Система обновила ABC, РНП, рекламу и складской риск по ${escapeHtml(sku)}.</div></div><div class="event-row"><div class="event-row-title">08.05 · Ручное · комментарии</div><div class="event-row-meta">Журнал сохраняет автора, дату и источник отчёта.</div></div>`;
+    audit.innerHTML = '<div class="event-row"><div class="event-row-title">Общий журнал комментариев не подключён</div><div class="event-row-meta">Локальные заметки не являются сохранёнными событиями аудита.</div></div>';
   }
 }
 function renderDrawerComments(p = _currentDrawerProduct) {
@@ -21256,7 +21306,7 @@ function addReportComment() {
   const text = input?.value.trim();
   if (!sku || !text) return;
   const source = document.getElementById('reportCommentSource')?.textContent || 'отчёты';
-  REPORT_COMMENTS.push({ id:'rc-' + Date.now(), sku, author:'Мария', initials:'МФ', time:'08.05, сейчас', source, text });
+  REPORT_COMMENTS.push({ id:'rc-' + Date.now(), sku, author:'Локальная заметка', initials:'', time:new Date().toLocaleString('ru-RU'), source, text });
   input.value = '';
   renderReportCommentDrawer(sku);
   renderTable();
@@ -21270,7 +21320,7 @@ function addDrawerComment() {
   const input = document.getElementById('drawerCommentInput');
   const text = input?.value.trim();
   if (!p || !text) return;
-  REPORT_COMMENTS.push({ id:'rc-' + Date.now(), sku:p.sku, author:'Мария', initials:'МФ', time:'08.05, сейчас', source:'карточка SKU', text });
+  REPORT_COMMENTS.push({ id:'rc-' + Date.now(), sku:p.sku, author:'Локальная заметка', initials:'', time:new Date().toLocaleString('ru-RU'), source:'карточка SKU', text });
   input.value = '';
   renderDrawerComments(p);
   renderTable();
@@ -21835,29 +21885,7 @@ function renderWbPhase1Pages(){
     expensesBody.innerHTML = expenseRows.map(row => `<tr class="expense-row" ${phase1RowAttrs([row.article, row.direction, row.assignment, row.status, row.action, row.comment, row.driver, row.pnl, row.sku], row.tags)}><td class="report-sticky"><button class="expense-open-btn" type="button" onclick="openFinanceDrawer('${escapeHtml(row.drawer)}')"><span class="expense-article">${escapeHtml(row.article)}</span><span class="expense-article-sub">${escapeHtml(row.comment)}</span></button></td><td>${escapeHtml(row.direction)}</td><td class="num"><strong>${escapeHtml(row.amount)}</strong><span class="sub">сумма ДДС</span></td><td>${escapeHtml(row.assignment)}</td><td>${escapeHtml(row.driver)}</td><td>${escapeHtml(row.pnl)}</td><td>${escapeHtml(row.sku)}</td><td><span class="report-tag ${escapeHtml(row.statusCls)}">${escapeHtml(row.status)}</span></td><td><button class="btn btn-ghost btn-sm" type="button" onclick="openFinanceDrawer('${escapeHtml(row.drawer)}')">${escapeHtml(row.action)}</button></td></tr>`).join('');
   }
 
-  const sourceRows = [
-    { source:'1С · Движение денежных средств', pulls:'поступления и списания ДС по статьям, р/счёт и касса', period:'май 2026', status:'требует правил', freshness:'сегодня 09:10', quality:'7 строк в работе · 2 требуют сверки', surface:['Расходы','P&L','Планы'], owner:'Максим', action:'Открыть подключение 1С', route:'expenses', drawer:'connector', tags:['1С','Требует действия','P&L','Ответственный'] },
-    { source:'Правила статей ДДС', pulls:'назначение статьи, P&L, сверка, SKU-драйвер', period:'май 2026', status:'требует действия', freshness:'после файла статей ДДС', quality:'расходы компании · драйверы SKU · сверка поступлений', surface:['P&L','Расходы'], owner:'Максим', action:'Настроить правило статьи', route:'expenses', drawer:'ddsRule', tags:['1С','Требует действия','P&L','Ответственный'] },
-    { source:'Корзины и заказы WB', pulls:'корзины, заказы, CR', period:'7 дней', status:'свежее', freshness:'сегодня 08:15', quality:'готово для репрайсера', surface:['Репрайсер','РНП/ABC'], owner:'Мария', action:'Открыть статистику', route:'repricer-stats', tags:['Свежее','Репрайсер','РНП/ABC','Ответственный'] },
-    { source:'Реклама WB', pulls:'расходы, кампании, SKU-связка', period:'7 дней', status:'требует действия', freshness:'сегодня 07:50', quality:'часть кампаний без точной SKU-связки', surface:['Реклама','РНП/ABC','P&L'], owner:'Мария', action:'Проверить кампании без SKU', route:'ads', tags:['Требует действия','Реклама','РНП/ABC','P&L','Ответственный'] },
-    { source:'Остатки WB', pulls:'остатки, OOS, склады', period:'сегодня', status:'свежее', freshness:'сегодня 08:29', quality:'готово', surface:['Репрайсер','РНП/ABC'], owner:'Мария', action:'Открыть остатки', route:'stock', tags:['Свежее','Репрайсер','РНП/ABC','Ответственный'] },
-    { source:'Цены и СПП', pulls:'цены, СПП, медиана', period:'сегодня', status:'устарело', freshness:'обновить перед применением цен', quality:'только просмотр до синка', surface:['Репрайсер','P&L'], owner:'Мария', action:'Проверить защиту цены', route:'repricer-stats', tags:['Устарело','Требует действия','Репрайсер','P&L','Ответственный'] },
-    { source:'Планы менеджеров и брендов', pulls:'план маржинальной прибыли, SKU-владельцы', period:'май 2026', status:'свежее', freshness:'месяц 2026-05', quality:'компания + менеджеры + бренды', surface:['Дайджест','ABC','Планы'], owner:'Мария', action:'Открыть форму плана', route:'report-rules', drawer:'plan', tags:['Свежее','РНП/ABC','Ответственный'] },
-    { source:'Назначение SKU менеджеру', pulls:'менеджер, SKU, период действия', period:'май 2026', status:'требует действия', freshness:'42 SKU без владельца', quality:'нужно назначение для план-факта', surface:['ABC','Планы','Расходы'], owner:'Мария', action:'Назначить SKU', route:'report-rules', drawer:'assignment', tags:['Требует действия','РНП/ABC','Ответственный'] },
-    { source:'Excel fallback', pulls:'аварийная загрузка расходов', period:'по файлу', status:'черновик', freshness:'готов к заполнению', quality:'не основной источник', surface:['Расходы','P&L'], owner:'Максим', action:'Загрузить только если 1С недоступна', route:'expenses', tags:['Ручная загрузка','P&L','Ответственный'] },
-  ];
-  window.WB_SOURCE_ROWS = sourceRows;
-  const routeMap = { pnl:'pnl', expenses:'expenses', 'repricer-stats':'repricer-stats', ads:'ads', stock:'stock', abc:'abc', 'report-rules':'report-rules' };
-  const sourceSurfaceRoute = wbSourceSurfaceRoute;
-  const sourcesBody = document.getElementById('sourcesBody');
-  if (sourcesBody) {
-    sourcesBody.innerHTML = sourceRows.map(row => {
-      const chips = row.surface.map(item => `<button class="report-tag neutral" type="button" onclick="event.stopPropagation();goSubtab('${sourceSurfaceRoute(item, routeMap[row.route])}')">${escapeHtml(item)}</button>`).join(' ');
-      const statusCls = row.status === 'свежее' || row.status === 'синхронизировано' ? 'ok' : row.status === 'устарело' || row.status === 'требует действия' || row.status === 'требует маппинга' || row.status === 'требует правил' || row.status === 'есть ошибки' ? 'warn' : 'neutral';
-      const action = row.drawer ? `<button class="btn btn-default btn-sm" type="button" onclick="openFinanceDrawer('${escapeHtml(row.drawer)}')">${escapeHtml(row.action)}</button>` : `<button class="btn btn-default btn-sm" type="button" onclick="goSubtab('${escapeHtml(routeMap[row.route] || 'digest')}')">${escapeHtml(row.action)}</button>`;
-      return `<tr ${phase1RowAttrs([row.source, row.pulls, row.period, row.surface.join(' '), row.status, row.freshness, row.quality, row.owner, row.action], row.tags)}><td class="report-sticky"><button class="source-open-btn" type="button" onclick="event.stopPropagation();openSourceDrawer(${sourceRows.indexOf(row)})"><span class="sku">${escapeHtml(row.source)}</span><span class="sub">${escapeHtml(row.quality)}</span></button></td><td>${escapeHtml(row.pulls)}</td><td>${escapeHtml(row.period)}</td><td>${escapeHtml(row.freshness)}</td><td><span class="report-tag ${statusCls}">${escapeHtml(row.status)}</span><span class="sub">${escapeHtml(row.quality)}</span></td><td>${chips}</td><td>${escapeHtml(row.owner)}</td><td>${action}</td></tr>`;
-    }).join('');
-  }
+  // WB source evidence is owned by the React Sources island.
 }
 const FINANCE_DRAWER_CONFIGS = {
   addExpense: {
@@ -22082,47 +22110,6 @@ function renderFinanceDrawerConfig(cfg){
   overlay.setAttribute('aria-hidden', 'false');
   drawer.focus();
 }
-function openSourceDrawer(index){
-  const row = window.WB_SOURCE_ROWS?.[index];
-  if (!row) return;
-  if (row.drawer === 'connector') return openFinanceDrawer('connector');
-  if (row.drawer === 'ddsRule') return openFinanceDrawer('ddsRule');
-  if (row.drawer === 'plan') return openFinanceDrawer('plan');
-  if (row.drawer === 'assignment') return openFinanceDrawer('assignment');
-  const surfaceButtons = row.surface.map(item => `<button class="btn btn-default btn-sm" type="button" onclick="goSubtab('${wbSourceSurfaceRoute(item, row.route)}')">${escapeHtml(item)}</button>`).join('');
-  const statusCls = row.status === 'свежее' ? 'good' : row.status === 'устарело' || row.status === 'требует действия' ? 'warn' : '';
-  renderFinanceDrawerConfig({
-    title: row.source,
-    meta: row.pulls,
-    tag: row.status,
-    primaryAction: row.action,
-    body: `
-      <section class="finance-drawer-section">
-        <h3>Состояние источника</h3>
-        <div class="finance-status-grid">
-          <div class="finance-status-card ${statusCls}"><span>Статус</span><b>${escapeHtml(row.status)}</b></div>
-          <div class="finance-status-card"><span>Период</span><b>${escapeHtml(row.period)}</b></div>
-          <div class="finance-status-card"><span>Ответственный</span><b>${escapeHtml(row.owner)}</b></div>
-        </div>
-      </section>
-      <section class="finance-drawer-section">
-        <h3>Что попадает в отчёты</h3>
-        <div class="finance-value-grid">
-          <div class="finance-value wide"><span>Данные</span><b>${escapeHtml(row.pulls)}</b></div>
-          <div class="finance-value"><span>Последнее обновление</span><b>${escapeHtml(row.freshness)}</b></div>
-          <div class="finance-value"><span>Качество</span><b>${escapeHtml(row.quality)}</b></div>
-          <div class="finance-value wide"><span>Зависимые разделы</span><b>${escapeHtml(row.surface.join(' · '))}</b></div>
-        </div>
-      </section>
-      <section class="finance-drawer-section">
-        <h3>Следующее действие</h3>
-        <div class="finance-action-grid" style="grid-template-columns:1fr">
-          <div class="finance-action-card"><div><b>${escapeHtml(row.action)}</b><span>Откроет связанный рабочий раздел</span></div><button class="btn btn-default btn-sm" type="button" onclick="goSubtab('${escapeHtml(row.route)}')">Открыть</button></div>
-          <div class="finance-action-card"><div><b>Зависимые отчёты</b><span>быстрый переход туда, где используется источник</span></div><div class="finance-drawer-buttons">${surfaceButtons}</div></div>
-        </div>
-      </section>`,
-  });
-}
 function openFinanceDrawer(kind = 'connector'){
   const cfg = FINANCE_DRAWER_CONFIGS[kind] || FINANCE_DRAWER_CONFIGS.connector;
   renderFinanceDrawerConfig(cfg);
@@ -22304,7 +22291,7 @@ function renderSecondaryReports(){
     return `<tr ${reportDataAttrs(r, [i % 4 === 0 ? 'Ниже порога' : 'Рост', below ? 'Маржа ниже' : '', wasOs ? 'был ОС' : ''])}><td>${reportProductCell(r)}</td><td class="num"><span class="metric-stack"><strong>${(3420 + i * 1440).toLocaleString('ru-RU')} ₽</strong><span class="subline">${i % 4 === 0 ? '−' + (6 + i) : '+' + (5 + i)}%</span></span></td><td class="num"><span class="metric-stack"><strong>${orders} шт</strong><span class="subline">${i % 4 === 0 ? '−6%' : '+9%'}</span></span></td><td class="num"><span class="metric-stack"><strong>${sales + 8} корз.</strong><span class="subline">${i % 5 === 0 ? '−18%' : '+' + (8 + i) + '%'}</span></span></td><td class="num"><span class="metric-stack"><strong>${18 + i % 9}%</strong><span class="subline">${i % 3 === 0 ? '−2.' + i % 9 : '+1.' + i % 7} пп</span></span></td><td class="num"><span class="metric-stack"><strong>${(sales * 860).toLocaleString('ru-RU')} ₽</strong><span class="subline">${i % 3 ? '+4%' : '−7%'}</span></span></td><td><span class="report-tag ${wasOs ? 'warn' : 'ok'}">${wasOs ? 'был ОС' : 'нет'}</span></td><td class="num"><span class="stock-days" data-tip="7 daily snapshots по доступному остатку">${days}</span></td><td class="num">${stockOutDays}</td><td class="num">100%</td><td><span class="report-tag ${below ? 'warn' : 'ok'}">${wasOs ? stockOutDays + ' дн. ОС, сравнение искажено' : i % 4 === 0 ? 'ниже прошлого периода' : 'в пределах порога'}</span></td><td>${reportCommentCell(r, 'Неделя')}</td></tr>`;
   });
 
-  document.querySelectorAll('#tab-repricer-stats .report-table-wrap table, #tab-expenses .report-table-wrap table, #tab-sources .report-table-wrap table, #tab-rnp .report-table-wrap table, #tab-pnl .report-table-wrap table, #tab-ads .report-table-wrap table, #tab-stock .report-table-wrap table, #tab-week .report-table-wrap table').forEach(enhanceReportTableSorting);
+  document.querySelectorAll('#tab-expenses .report-table-wrap table, #tab-sources .report-table-wrap table, #tab-rnp .report-table-wrap table, #tab-pnl .report-table-wrap table, #tab-ads .report-table-wrap table, #tab-stock .report-table-wrap table, #tab-week .report-table-wrap table').forEach(enhanceReportTableSorting);
   ['repricer-stats', 'expenses', 'sources', 'rnp', 'pnl', 'ads', 'stock', 'week'].forEach(tab => applyGenericReportFilter(document.getElementById('tab-' + tab)));
   applyReportTrendTone();
 }
@@ -22427,6 +22414,14 @@ function enhanceReportColumnDrag(table){
 }
 function enhanceReportTableSorting(table){
   if (!table) return;
+  // These WB tables own their complete-dataset order and lifecycle in React.
+  // Never attach a second handler to a header which React may replace.
+  if (table.querySelector('thead[data-wb-sort-owner="react"], thead[data-vella-sort-owner="react"]')) {
+    ensureReportColumnIds(table);
+    ensureRowColumnIds(table);
+    applyReportColumnVisibility(table);
+    return;
+  }
   const tab = table.closest('.tab-content')?.id?.replace('tab-', '') || 'report';
   const updateSortHeaders = () => {
     const stack = normalizeReportSortStack(tab);
@@ -22491,6 +22486,10 @@ function ensureReadOnlyControls(){
   });
   bindReportDemoControls();
   document.querySelectorAll('.period-btn').forEach(btn => {
+    if (btn.closest('[data-wb-period-owner="react"]') && btn.dataset.vellaReactHandlers?.split(',').includes('onclick')) {
+      btn.dataset.reportBound = 'react';
+      return;
+    }
     if (!btn.dataset.period) {
       const text = btn.textContent.trim();
       btn.dataset.period = text.includes('1') ? '1' : text.includes('14') ? '14' : text.includes('30') ? '30' : '7';
@@ -22592,13 +22591,15 @@ function rowMatchesChip(tab, row, chipText){
   if (!normalized || /^все/.test(normalized) || normalized === 'sku' || normalized === 'все рк') return true;
   const tags = (row.dataset.reportTags || '').toLowerCase().split('|').filter(Boolean);
   const hasTag = (...needles) => needles.some(needle => tags.some(tag => tag.includes(needle)));
+  if (tab.id === 'tab-sources') return tags.includes(normalized);
   if (tab.id === 'tab-stock') {
-    const days = Number(row.dataset.daysToOos || '999');
+    const days = row.dataset.daysToOos?.trim() ? Number(row.dataset.daysToOos) : NaN;
+    const available = row.dataset.availableUnits?.trim() ? Number(row.dataset.availableUnits) : NaN;
     const ktr = Number(row.dataset.ktr || '0');
     const warehouse = (row.dataset.warehouse || '').toLowerCase();
     const decision = (row.dataset.decision || '').toLowerCase();
-    if (normalized.includes('oos')) return days <= 7 || hasTag('oos риск');
-    if (normalized.includes('избыт')) return days >= 60 || /не везти|не дозагружать/.test(decision) || hasTag('избыт');
+    if (normalized.includes('oos') || normalized.includes('риск нехватки')) return available <= 0 || days < 7 || hasTag('oos риск');
+    if (normalized.includes('избыт')) return days > 60 || /не везти|не дозагружать/.test(decision) || hasTag('избыт');
     if (normalized.includes('акци')) return hasTag('в акции');
     if (normalized.includes('топ-склад')) return ['коледино','электросталь','краснодар','казань'].includes(warehouse) || hasTag('топ-склады');
     if (normalized.includes('ктр')) return ktr >= 1.5 || hasTag('ктр высокий');
@@ -22633,7 +22634,7 @@ function updateReportEmptyState(table){
     empty.appendChild(cell);
     tbody.appendChild(empty);
   }
-  empty.style.display = visibleCount ? 'none' : '';
+  empty.style.display = visibleCount || tbody.querySelector('[data-report-state]') ? 'none' : '';
 }
 function updateReportFilterSummary(tab){
   const summary = tab?.querySelector?.('[data-filter-summary]');
@@ -22648,22 +22649,38 @@ function updateReportFilterSummary(tab){
   const filters = chips.concat(query ? ['поиск: ' + query] : [], selects).filter(Boolean);
   const label = filters.length ? filters.join(' · ') : 'без фильтров';
   const span = summary.querySelector('span');
-  if (span) span.innerHTML = `Показано <b>${visible.toLocaleString('ru-RU')}</b> из ${rows.length.toLocaleString('ru-RU')} · фильтры: ${escapeHtml(label)}`;
+  const total = Number(tab.dataset.reportTotal ?? rows.length);
+  const progress = total > rows.length ? ` · загружено ${rows.length.toLocaleString('ru-RU')} из ${total.toLocaleString('ru-RU')}` : '';
+  if (span) span.innerHTML = `Показано <b>${visible.toLocaleString('ru-RU')}</b> из ${rows.length.toLocaleString('ru-RU')}${progress} · фильтры: ${escapeHtml(label)}`;
 }
 function applyGenericReportFilter(tab){
   if (!tab) return;
+  if (tab.id === 'tab-sources' && tab.dataset.liveSources === 'true') return;
+  if (tab.id === 'tab-ads' && tab.querySelector('[data-vella-island="ads-live-table-body"]')) {
+    tab.dispatchEvent(new CustomEvent('vella:ads-filter-updated'));
+    return;
+  }
   const active = tab.querySelector('.chips .chip.active')?.textContent?.trim() || 'Все';
   const query = tab.querySelector('.search input')?.value?.trim().toLowerCase() || '';
   const manager = managerFilterValue(tab);
   const sku = skuFilterValue(tab);
+  const normalizedChip = normalizeReportFilterText(active);
+  window.dispatchEvent(new CustomEvent('vella:report-render-filter', { detail: {
+    tabId: tab.id,
+    active: Boolean(query || manager !== 'all' || sku !== 'all' || (normalizedChip && !/^все/.test(normalizedChip) && normalizedChip !== 'sku'))
+  } }));
+  const dimensions = [...tab.querySelectorAll('select[data-report-filter]')]
+    .map(select => [select.dataset.reportFilter, select.value])
+    .filter(([key, value]) => key && value && value !== 'all');
   tab.querySelectorAll('tbody tr[data-report-row]').forEach(row => {
-    const searchText = (row.dataset.search || rowText(row)).toLowerCase();
+    const searchText = ((row.dataset.search || rowText(row)) + (tab.id === 'tab-week' ? ' ' + (row.dataset.productStatus || '') : '')).toLowerCase();
     const queryOk = !query || searchText.includes(query);
     const managerKey = row.dataset.managerId === 'unassigned' ? null : (row.dataset.managerId || managerIdFromCode(row.dataset.manager));
     const managerOk = managerFilterMatches(managerKey, manager);
     const skuOk = sku === 'all' || searchText.includes(sku.toLowerCase());
     const chipOk = rowMatchesChip(tab, row, active);
-    row.style.display = queryOk && managerOk && skuOk && chipOk ? '' : 'none';
+    const dimensionsOk = dimensions.every(([key, value]) => row.dataset[key] === value);
+    row.style.display = queryOk && managerOk && skuOk && chipOk && dimensionsOk ? '' : 'none';
   });
   tab.querySelectorAll('.report-table-wrap table').forEach(updateReportEmptyState);
   updateReportFilterSummary(tab);
@@ -22702,7 +22719,7 @@ function bindReportDemoControls(){
   });
   document.querySelectorAll('.tab-content[id^="tab-"] .search input').forEach(input => {
     const tab = input.closest('.tab-content');
-    if (!tab || tab.id === 'tab-abc' || tab.id.startsWith('tab-avito') || tab.id === 'tab-notifications' || input.dataset.demoSearchBound === '1') return;
+    if (!tab || tab.id === 'tab-abc' || tab.id === 'tab-repricer-stats' || tab.id.startsWith('tab-avito') || tab.id === 'tab-notifications' || input.dataset.demoSearchBound === '1') return;
     input.dataset.demoSearchBound = '1';
     input.addEventListener('input', () => applyGenericReportFilter(tab));
   });
@@ -22754,6 +22771,7 @@ function bindReportDemoControls(){
     });
   });
   document.querySelectorAll('button.btn:not([onclick])').forEach(btn => {
+    if (btn.closest('#tab-sources[data-live-sources="true"]')) return;
     if (btn.dataset.demoButtonBound === '1') return;
     const text = btn.textContent.trim();
     if (!text || /экспорт/i.test(text)) return;
@@ -22784,8 +22802,8 @@ function toggleReportColumns(btn){
   ensureRowColumnIds(table);
   const productLabels = {
     sku:'Фото / артикул', nmId:'WB-арт.', status:'Статус товара', abc:'ABC', promo:'Акция', manager:'Ответственный',
-    price:'Цена до СПП', avgPriceSpp:'С СПП', priceWithWallet:'С кошельком', spp:'% СПП', mg:'Маржа',
-    commissionPct:'Комиссия', bsk:'Корзины', ordersPeriod:'Заказы', buyout:'Выкуп', stock:'Остаток WB',
+    price:'Цена до СПП', spp:'% СПП', mg:'Маржа',
+    commissionPct:'Комиссия', bsk:'Корзины', grossSalesUnits:'Продажи, шт.', salesRub:'Продажи, ₽', ordersPeriod:'Заказы, шт.', ordersRub:'Заказы, ₽', buyout:'Выкуп', stock:'Остаток WB',
     tpl:'Стратегия', comment:'Комментарий'
   };
   const abcColumns = [
@@ -23237,7 +23255,7 @@ function ensureDesktopFallback(){
     'avito-repricer': ['Репрайсер Авито доступен в desktop-версии', 'Таблица рекомендаций по цене строится по contactsMessenger и требует широкого рабочего экрана.', '/avito/repricer'],
     'avito-stats': ['Статистика Авито доступна в desktop-версии', 'Графики, аккаунтные таблицы, топ объявлений и детализация источников требуют широкого рабочего экрана.', '/avito/stats'],
     'avito-notifications': ['Уведомления Авито доступны в desktop-версии', 'Правила очереди, события аккаунтов и контроль действий требуют широкого рабочего экрана.', '/avito/notifications'],
-    'orders-print': ['WB лист подбора доступен в desktop-версии', 'WB-лист подбора содержит широкую таблицу с фото, стикером, баркодом, КИЗ-слотом и статусами.', '/orders'],
+    'orders-print': ['WB лист подбора доступен в desktop-версии', 'WB-лист подбора содержит широкую таблицу с фото, стикером, баркодом и статусами.', '/orders'],
     promos: ['Акции WB доступны в desktop-версии', 'Проверка акций и расчёт маржи требуют широкого экрана.', '/wb/promotions'],
     liq: ['Ликвидация доступна в desktop-версии', 'Массовое снижение цены и подтверждение убытка доступны только на desktop.', '/wb/liquidation'],
   };
@@ -23251,12 +23269,49 @@ function ensureDesktopFallback(){
     link.setAttribute('href', desktopOnly ? '#' : cfg[2]);
     link.setAttribute('aria-disabled', desktopOnly ? 'true' : 'false');
   }
+  let mobileNav = fallback.querySelector('.mobile-repricer-nav');
+  if (!mobileNav) {
+    mobileNav = document.createElement('label');
+    mobileNav.className = 'mobile-repricer-nav';
+    mobileNav.append('Раздел репрайсера', document.createElement('select'));
+    fallback.querySelector('.desktop-only-card').appendChild(mobileNav);
+  }
+  mobileNav.hidden = getModuleByTab(tab) !== 'repricer';
+  const mobileSelect = mobileNav.querySelector('select');
+  const navItems = [...document.querySelectorAll('#sidebar [data-nav-group="repricer"] .nav-item')];
+  mobileSelect.replaceChildren(...navItems.map(item => new Option(item.querySelector('.nav-label')?.textContent || '', item.dataset.tab || item.getAttribute('href'))));
+  mobileSelect.value = tab;
+  mobileSelect.onchange = () => navItems.find(item => (item.dataset.tab || item.getAttribute('href')) === mobileSelect.value)?.click();
 }
 function syncHiddenA11y(){
-  document.querySelectorAll('.modal-overlay').forEach(el => {
+  document.querySelectorAll('.modal-overlay').forEach((el, index) => {
     const open = el.classList.contains('open');
     el.setAttribute('aria-hidden', open ? 'false' : 'true');
     if ('inert' in el) el.inert = !open;
+    if (el instanceof HTMLDialogElement) {
+      const title = el.querySelector('h2, h3, .modal-title');
+      if (title && !el.hasAttribute('aria-labelledby') && !el.hasAttribute('aria-label')) {
+        title.id ||= (el.id || 'modal-' + index) + '-title';
+        el.setAttribute('aria-labelledby', title.id);
+      }
+      if (!el.hasAttribute('data-vella-react-modal')) el.oncancel = event => {
+        event.preventDefault();
+        if (el.id.startsWith('m-')) closeModal(el.id.slice(2));
+        else { el.classList.remove('open'); syncHiddenA11y(); }
+      };
+      el.onkeydown = event => {
+        if (event.key !== 'Tab') return;
+        const controls = [...el.querySelectorAll('button, [href], input, select, textarea, [tabindex]')]
+          .filter(control => !control.disabled && control.tabIndex >= 0 && control.getClientRects().length);
+        const first = controls[0], last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first || !event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        }
+      };
+      if (open && !el.open) el.showModal();
+      if (!open && el.open) el.close();
+    }
   });
   const drawer = document.getElementById('dPanel');
   const overlay = document.getElementById('dOverlay');

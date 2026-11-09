@@ -39,7 +39,6 @@ export const ROUTES = {
   orders: {
     root: '/orders',
     archive: '/orders/archive',
-    kiz: '/orders/kiz',
     returns: '/orders/returns',
   },
 

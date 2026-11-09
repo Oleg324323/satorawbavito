@@ -6,11 +6,12 @@ import type {
   ReportId,
   ReportResponse,
 } from './types'
+import { apiRequest } from '@/lib/api'
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init)
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`)
-  return response.json() as Promise<T>
+  const data = await apiRequest<T>(url, init)
+  if (data === null) throw new Error('Сервер вернул пустой ответ')
+  return data
 }
 
 function toQuery(params: Record<string, string | number | boolean | null | undefined>) {

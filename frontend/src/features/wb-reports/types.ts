@@ -180,6 +180,7 @@ export interface ReportChartData {
   xAxisLabel?: string
   yAxisLabel?: string
   points: ChartPoint[]
+  comparisonPoints?: ChartPoint[]
 }
 
 export type TableColumnKind = 'text' | 'number' | 'currency' | 'percent' | 'image' | 'wb-link' | 'abc' | 'promotion'
@@ -417,6 +418,13 @@ export interface ReportResponse {
 }
 
 export interface DigestResponse {
+  availableBrands?: string[]
+  brandScope?: string[]
+  topMovers?: {
+    status: 'ready' | 'partial' | 'unavailable'
+    dateFrom: string; dateTo: string; comparisonFrom: string; comparisonTo: string
+    rows: Array<{ nmId: number; sku: string; title: string; salesDelta: number | null; ordersDelta: number }>
+  }
   meta: ReportMeta
   headline: string
   dateRange: DateRange
@@ -429,6 +437,8 @@ export interface DigestResponse {
   periodCards?: Array<{
     id: string
     label: string
+    openCount: number
+    cartCount: number
     ordersUnits: number
     ordersKopecks: number
     salesUnits: number

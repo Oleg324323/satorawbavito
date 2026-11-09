@@ -18,8 +18,8 @@ def test_background_report_job_fails_when_payload_is_not_persisted(monkeypatch):
 
     saved_jobs: list[dict] = []
     snapshot = SimpleNamespace(source_status="fresh", orders=[], sales=[], stocks=[])
-    monkeypatch.setattr(repricer_tasks, "refresh_wb_data_sources", lambda **_kwargs: {"state": "completed", "steps": []})
-    monkeypatch.setattr(reports, "build_wb_reports_sources_snapshot", lambda **_kwargs: pytest.fail("stock background job must not call live WB builder"))
+    monkeypatch.setattr(repricer_tasks, "_report_snapshot_sources_ready", lambda *_args, **_kwargs: (True, []))
+    monkeypatch.setattr(repricer_tasks, "refresh_wb_data_sources", lambda **_kwargs: pytest.fail("stock cache build must not refresh WB"))
     monkeypatch.setattr(reports, "build_cached_wb_reports_sources_snapshot", lambda **_kwargs: snapshot)
     monkeypatch.setattr(reports, "_apply_report_rules_to_payload", lambda report, _organization_id: report)
     monkeypatch.setattr(

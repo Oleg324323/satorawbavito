@@ -33,7 +33,7 @@ def test_periodic_profiles_use_short_refresh_windows():
     profiles = {profile.profile_id: profile for profile in periodic_sync_profiles(as_of=date(2026, 7, 22))}
 
     assert profiles["hourly-operational"].period_days == 2
-    assert profiles["hourly-operational"].sources == ("period-stats",)
+    assert profiles["hourly-operational"].sources == ("goods", "period-stats")
     assert profiles["sales-funnel-incremental"].period_days == 2
     assert profiles["sales-funnel-incremental"].sources == ("baskets",)
     assert profiles["stock-ads-incremental"].period_days == 3

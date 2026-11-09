@@ -1,0 +1,164 @@
+# Bounded synthetic architecture checks, not the release_gate.py full baseline.
+# No application database, provider credentials, dispatch, deploy or snapshot generation.
+name: Architecture slices (scoped, not full release)
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-slices-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-slices:
+    name: Synthetic backend and disposable PostgreSQL slices
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+        shell: bash
+    env:
+      # Explicitly disable the fixture's optional existing-cluster fallback.
+      ORDERS_TEST_USE_LOCAL_CLUSTER: '0'
+    steps:
+      # Official Node 24 release refs verified 2026-10-16; immutable action pins.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install backend test dependencies and native PostgreSQL binaries
+        run: |
+          python -m pip install '.[test]'
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-16
+          echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
+      - name: Require Unicode 14 and the disposable fixture prerequisites
+        run: |
+          python -c 'import unicodedata; assert unicodedata.unidata_version == "14.0.0"'
+          command -v initdb
+          command -v pg_ctl
+          command -v createdb
+      - name: Notification entrypoints and preferences HTTP; local Review codecs and request boundary
+        run: |
+          python -m pytest -q \
+            tests/test_health.py \
+            tests/test_wb_live_linux_environment.py \
+            tests/test_notification_entrypoints.py \
+            tests/test_notification_preferences_http.py \
+            tests/test_account_discovery_entrypoints.py \
+            tests/test_account_discovery_http.py \
+            tests/test_avito_stats_entrypoints.py \
+            tests/test_account_avito_stats_config.py \
+            tests/test_account_avito_stats.py \
+            tests/test_account_avito_stats_transport.py \
+            tests/test_sku_override_entrypoints.py \
+            tests/test_wb_price_quota.py \
+            tests/test_orders_history_bridge.py \
+            tests/test_production_http.py \
+            tests/test_production_source_recovery_http.py \
+            tests/test_account_avito_order_status.py \
+            tests/test_avito_order_status_entrypoints.py \
+            tests/test_account_avito_order_status_config.py \
+            tests/test_account_avito_reviews.py \
+            tests/test_avito_reviews_preview_entrypoints.py \
+            tests/test_account_avito_reviews_config.py \
+            tests/test_credential_maintenance_registrar.py \
+            tests/test_wb_history_projection_contract.py \
+            tests/test_wb_history_projection_selection.py \
+            tests/test_wb_history_projection_baseline.py \
+            tests/test_wb_history_projection_dispatch.py \
+            tests/test_wb_history_projection_role.py \
+            tests/test_wb_history_projection_service.py \
+            tests/test_orders_history_publication_contract.py \
+            tests/test_review_manual_draft.py \
+            tests/test_review_canonical_avito_decode.py \
+            tests/test_review_avito_shadow.py \
+            tests/test_review_canonical_avito_fetch.py \
+            tests/test_review_canonical_contract.py \
+            tests/test_review_local_http_body.py
+      - name: Final local API role, history lifecycle, and Orders filters on owned temporary clusters
+        # Each fixture allocates its own database/roles and stops its native Unix
+        # socket cluster in finally. No service container or application DB URL.
+        run: |
+          python -m pytest -q \
+            tests/test_notification_local_api_role.py \
+            tests/test_review_local_api_role.py \
+            tests/test_review_avito_shadow_postgres.py \
+            tests/test_review_canonical_avito_sync_postgres.py \
+            tests/test_review_canonical_avito_sync_local_api_role.py \
+            tests/test_wb_live_first_products_path.py \
+            tests/test_wb_history_projection_migration.py \
+            tests/test_wb_history_projection_role_grants.py \
+            tests/test_wb_history_projection_authority.py \
+            tests/test_orders_history_child_publication.py \
+            tests/test_orders_history_replay.py \
+            tests/test_orders_history_saved_view_local_api_role.py \
+            tests/test_orders_history_used_downgrade.py \
+            tests/test_sku_override_local_api_role.py \
+            tests/test_account_avito_stats_local_api_role.py \
+            tests/test_account_avito_order_status_local_api_role.py \
+            tests/test_account_avito_reviews_local_api_role.py \
+            tests/test_orders_local_api_role.py \
+            tests/test_production_http_local_api_role.py \
+            tests/test_wb_repricing_durable_quota_composition.py \
+            tests/test_wb_live_history_postgres.py::test_real_worker_staging_eof_ack_and_immutability \
+            tests/test_wb_live_history_postgres.py::test_abandoned_lease_cannot_seal_and_run_refresh_keeps_page_provenance \
+            tests/test_wb_live_history_postgres.py::test_history_rotation_denies_staging_and_forced_scope_rls \
+            tests/test_orders_filters_postgres.py \
+            tests/test_account_discovery_postgres.py \
+            tests/test_wb_price_quota_postgres.py \
+            tests/test_review_manual_schema.py \
+            tests/test_review_manual_draft_storage.py
+
+  frontend-slices:
+    name: Synthetic Notification and Review clients and Chromium components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Vite 8 requires Node 20.19+ or 22.12+; current Node 22 meets it.
+          node-version: '22'
+      - name: Install locked dependencies and Chromium
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+      - name: Focused clients and synthetic browser workflow
+        run: |
+          npx --no-install vitest run --maxWorkers=2 --minWorkers=2 --fileParallelism \
+            src/App.lazyBrowser.test.ts \
+            src/features/notifications/canonicalNotificationPreferences.test.ts \
+            src/features/notifications/canonicalReviewNotificationsClient.test.ts \
+            src/features/orders/canonicalOrdersClient.test.ts \
+            src/features/marketplace-accounts/canonicalMarketplaceAccounts.test.ts \
+            src/features/wb-live/history.test.ts \
+            src/features/wb-live/validation.test.ts \
+            src/features/wb-live/api.test.ts \
+            src/features/vella-parity/wbLivePageBrowser.test.ts \
+            src/features/avito/canonicalAvitoStatisticsClient.test.ts \
+            src/features/avito/canonicalAvitoStatisticsBrowser.test.ts \
+            src/features/production/canonicalProductionClient.test.ts \
+            src/features/avito/canonicalAvitoOrderStatusPreviewClient.test.ts \
+            src/features/avito/canonicalAvitoReviewsPreviewClient.test.ts \
+            src/features/wb-reviews/canonicalLocalReviewsClient.test.ts \
+            src/features/wb-reviews/canonicalReviewDetail.test.ts \
+            src/features/wb-reviews/canonicalWorkflowBrowser.test.ts
+      - name: Typecheck and direct Vite build without snapshot generator
+        run: |
+          npx --no-install tsc -b
+          npx --no-install vite build

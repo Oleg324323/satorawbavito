@@ -1,0 +1,39 @@
+#!/bin/sh
+# Dedicated local WB reader. No price/message execution is enabled here.
+set -eu
+SATORNA_LIVE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SATORNA_LIVE_ROOT"
+command -v node >/dev/null 2>&1 || { echo 'Node.js is required.' >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo 'Python 3 is required.' >&2; exit 1; }
+test -f frontend/node_modules/vite/bin/vite.js || {
+  echo 'Frontend dependencies are missing: run npm ci in frontend first.' >&2
+  exit 1
+}
+case "${1:-native}" in
+  --vm)
+    SATORNA_LIMA_BIN="$HOME/.local/opt/satorna-lima-2.2.0/bin/limactl"
+    SATORNA_LIMA_STATE="$HOME/.local/state/satorna-lima"
+    test -x "$SATORNA_LIMA_BIN" && test -f "$SATORNA_LIMA_STATE/satorna-db/lima.yaml" || {
+      echo 'The dedicated satorna-db VM must be provisioned first.' >&2; exit 1;
+    }
+    env LIMA_HOME="$SATORNA_LIMA_STATE" "$SATORNA_LIMA_BIN" start --yes --timeout=3m satorna-db
+    curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 \
+      --max-time 3 --retry-max-time 30 http://127.0.0.1:58000/health/ready >/dev/null
+    echo 'Backend runs in the dedicated VM; Ctrl+C stops only the UI.'
+    echo 'Stop the VM: LIMA_HOME="$HOME/.local/state/satorna-lima" "$HOME/.local/opt/satorna-lima-2.2.0/bin/limactl" stop satorna-db'
+    ;;
+  native)
+    python3 backend/ops/wb_live_local.py start
+    echo 'Persistent native services: python3 backend/ops/wb_live_local.py stop'
+    ;;
+  *) echo 'Usage: ./start-wb-live [--vm]' >&2; exit 1 ;;
+esac
+echo 'Satorna UI: http://127.0.0.1:5173'
+echo 'Enter the WB key only in the connection form, never in this terminal.'
+cd frontend
+exec env -i PATH="$PATH" HOME="$HOME" \
+  VITE_ENABLE_MSW=false \
+  VITE_WB_LIVE_ENABLED=true \
+  VITE_API_BASE_URL= \
+  VITE_API_PROXY_TARGET=http://127.0.0.1:58000 \
+  node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort

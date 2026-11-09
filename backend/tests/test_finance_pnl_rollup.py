@@ -51,6 +51,7 @@ def settlement_rows() -> list[dict[str, object]]:
             "nmId": 101,
             "vendorCode": "FBBT_101",
             "docTypeName": "Продажа",
+            "sellerOperName": "Продажа",
             "quantity": 2,
             "retailAmount": "1000.00",
             "ppvzSalesCommission": "100.00",
@@ -63,7 +64,7 @@ def settlement_rows() -> list[dict[str, object]]:
             "additionalPayment": "100.00",
             "acquiringFee": "15.00",
             "saleDt": "2026-08-20",
-            "rrDate": "2026-08-21",
+            "rrDate": "2026-08-20",
         },
         {
             "rrdId": 2,
@@ -72,6 +73,7 @@ def settlement_rows() -> list[dict[str, object]]:
             "nmId": 101,
             "vendorCode": "FBBT_101",
             "docTypeName": "Возврат",
+            "sellerOperName": "Возврат",
             "quantity": 1,
             "retailAmount": "200.00",
             "ppvzSalesCommission": "20.00",
@@ -109,7 +111,7 @@ def test_pnl_source_materializes_signed_settlement_components(session: Session) 
     assert fact.acceptance_kopecks == 1_000
     assert fact.penalty_kopecks == 3_000
     assert fact.deduction_kopecks == 4_000
-    assert fact.additional_payment_kopecks == -7_500
+    assert fact.additional_payment_kopecks == -12_500
     assert fact.acquiring_kopecks == 1_200
     assert session.scalar(
         select(func.count()).select_from(WbFinanceSyncRunSkuPnlRollupRow)
@@ -119,14 +121,35 @@ def test_pnl_source_materializes_signed_settlement_components(session: Session) 
     assert run.is_pnl_rollup_materialized is True
 
 
+def test_exact_pnl_fallback_preserves_all_report_membership(session: Session) -> None:
+    rows = settlement_rows() + [
+        {"rrdId": 3, "nmId": 101, "saleDt": "2026-08-10", "rrDate": "2026-08-20", "penalty": "10"},
+        {"rrdId": 4, "nmId": 101, "rrDate": "2026-08-21", "penalty": "2"},
+    ]
+    service = FinanceService(session, organization_id=1, now=lambda: NOW)
+    snapshot = service.ingest_snapshot(31, PERIOD, rows, observed_at=NOW)
+    materialized = service.get_pnl_source(31, PERIOD)
+    assert materialized.facts[0].operation_count == 4
+    assert materialized.facts[0].penalty_kopecks == 4_200
+
+    run = session.get(WbFinanceSyncRunRow, snapshot.sync_run_id)
+    assert run is not None and run.is_daily_pnl_rollup_materialized
+    run.is_pnl_rollup_materialized = False
+    session.commit()
+
+    assert service.get_pnl_source(31, PERIOD) == materialized
+
+
 def test_pnl_source_materializes_complete_loyalty_money(session: Session) -> None:
     rows = settlement_rows()
     rows[0].update(
+        forPay="885.00",
         cashbackAmount="10.00",
         cashbackDiscount="3.00",
         cashbackCommissionChange="2.00",
     )
     rows[1].update(
+        forPay="177.00",
         cashbackAmount="-1.00",
         cashbackDiscount="0.50",
         cashbackCommissionChange="-0.25",
@@ -139,7 +162,7 @@ def test_pnl_source_materializes_complete_loyalty_money(session: Session) -> Non
     assert fact.cashback_amount_kopecks == 900
     assert fact.cashback_discount_kopecks == 350
     assert fact.cashback_commission_change_kopecks == 175
-    assert fact.loyalty_net_cost_kopecks == 725
+    assert fact.loyalty_net_cost_kopecks == 1_075
 
 
 def test_missing_loyalty_component_stays_unknown_in_exact_and_custom_rollups(
@@ -147,11 +170,13 @@ def test_missing_loyalty_component_stays_unknown_in_exact_and_custom_rollups(
 ) -> None:
     rows = settlement_rows()
     rows[0].update(
+        forPay="885.00",
         cashbackAmount="10.00",
         cashbackDiscount="3.00",
         cashbackCommissionChange="2.00",
     )
     rows[1].update(
+        forPay="177.00",
         cashbackAmount="0",
         cashbackCommissionChange="0",
     )
@@ -185,7 +210,7 @@ def test_missing_loyalty_component_stays_unknown_in_exact_and_custom_rollups(
         first_day.cashback_discount_kopecks,
         first_day.cashback_commission_change_kopecks,
         first_day.loyalty_net_cost_kopecks,
-    ) == (1_000, 300, 200, 900)
+    ) == (1_000, 300, 200, 1_200)
     assert (
         second_day.cashback_amount_kopecks,
         second_day.cashback_discount_kopecks,
@@ -291,28 +316,20 @@ def test_exact_and_custom_pnl_read_daily_materialization(
     assert session.scalar(
         select(func.count()).select_from(WbFinanceSyncRunSkuDailyPnlRollupRow)
     ) == 2
-    monkeypatch.setattr(
-        service,
-        "_daily_net_units",
-        lambda *_args: pytest.fail("materialized daily units expected"),
-    )
     daily_reads: list[Period] = []
     read_daily = service._materialized_daily_bases
 
     def observed_daily_read(
-        run: WbFinanceSyncRunRow, period: Period
+        run: WbFinanceSyncRunRow, period: Period, **kwargs
     ) -> tuple[dict[tuple[int | None, date], int], dict]:
         daily_reads.append(period)
-        return read_daily(run, period)
+        return read_daily(run, period, **kwargs)
 
     monkeypatch.setattr(service, "_materialized_daily_bases", observed_daily_read)
 
     exact = service.get_pnl_source(31, PERIOD)
-    monkeypatch.setattr(
-        service,
-        "_pnl_operation_rows",
-        lambda *_args: pytest.fail("materialized custom P&L expected"),
-    )
+    # Subperiod membership is posting-date based; business-day rollups are
+    # unsuitable for that filter. Exact reports still reuse materialization.
     custom = service.get_pnl_source(
         31, Period(date(2026, 8, 20), date(2026, 8, 20))
     )
@@ -334,10 +351,7 @@ def test_exact_and_custom_pnl_read_daily_materialization(
         key: (basis.revenue_kopecks, basis.sales_units)
         for key, basis in custom.daily_economics_basis.items()
     } == {(101, date(2026, 8, 20)): (100_000, 2)}
-    assert daily_reads == [
-        PERIOD,
-        Period(date(2026, 8, 20), date(2026, 8, 20)),
-    ]
+    assert daily_reads == [PERIOD]  # subperiods filter immutable posting evidence
 
 
 def test_daily_pnl_backfill_is_resumable(session: Session) -> None:

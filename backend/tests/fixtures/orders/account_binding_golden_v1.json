@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "vectors": [
+    {
+      "name": "null_ref",
+      "organization_id": 1,
+      "accounts": [[1, "avito", "synthetic-external", null]],
+      "canonical_ascii": "[1,[[1,\"avito\",\"synthetic-external\",null]]]",
+      "sha256": "419a38b81ea199214e59e6e1ac268bc20ce40c36f4ad8d1326f8287186f2c362"
+    },
+    {
+      "name": "ref",
+      "organization_id": 2,
+      "accounts": [[2, "wb", "000-synthetic-wb", "synthetic-ref"]],
+      "canonical_ascii": "[2,[[2,\"wb\",\"000-synthetic-wb\",\"synthetic-ref\"]]]",
+      "sha256": "c87af42ddd8ba2d5ee96eac53696be9576ced27036bce6b8c27d7d0c878cb956"
+    },
+    {
+      "name": "unicode",
+      "organization_id": 3,
+      "accounts": [[3, "avito", " synthetic-\u043a\ud83d\ude00-e\u0301 ", "synthetic-\tline\nref"]],
+      "canonical_ascii": "[3,[[3,\"avito\",\" synthetic-\\u043a\\ud83d\\ude00-e\\u0301 \",\"synthetic-\\tline\\nref\"]]]",
+      "sha256": "3ed755b1d23c76066e79a33023b9c4f7b38add9b725e7cbf3c448397479556e2"
+    },
+    {
+      "name": "max_int4",
+      "organization_id": 2147483647,
+      "accounts": [[2147483647, "wb", "synthetic-max", null]],
+      "canonical_ascii": "[2147483647,[[2147483647,\"wb\",\"synthetic-max\",null]]]",
+      "sha256": "a289a8d169ede5e420d05dee2144d88fa3d4b0cca274c3b4c6402a44659d90ae"
+    },
+    {
+      "name": "two_accounts",
+      "organization_id": 1,
+      "accounts": [[2, "wb", "synthetic-second", "synthetic-ref"], [1, "avito", "synthetic-first", null]],
+      "canonical_ascii": "[1,[[1,\"avito\",\"synthetic-first\",null],[2,\"wb\",\"synthetic-second\",\"synthetic-ref\"]]]",
+      "sha256": "34a998fce0945207dd3658803c767907c4517c9468c6fc05fff927cf2e59f4a3"
+    }
+  ]
+}

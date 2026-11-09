@@ -1,0 +1,235 @@
+{
+  "synthetic_max_bytes": 16384,
+  "vectors": [
+    {
+      "name": "settings-zero",
+      "kind": "settings",
+      "input": {
+        "organization_id": 1,
+        "actor_membership_id": 2,
+        "command_id": "11111111-1111-4111-8111-111111111111",
+        "expected_version": 0,
+        "formula_compatibility_version": "legacy/v1",
+        "values": {
+          "night_median_enabled": false,
+          "night_median_collect_enabled": false,
+          "night_median_global": false,
+          "night_median_auto_apply_enabled": false,
+          "worker_auto_apply_prices_enabled": false,
+          "min_price_sync_enabled": false,
+          "price_jump_protection_enabled": false,
+          "discount_step_enabled": false,
+          "price_rounding_enabled": false,
+          "liquidation_auto_flag_enabled": false,
+          "target_margin_pct": "-0.00",
+          "price_step_pct": "-0.00",
+          "max_price_change_daily_pct": "-0.00",
+          "promo_margin_threshold_pct": "-0.00",
+          "price_jump_stock_value_min_pct": "-0.00",
+          "price_jump_spp_min_pct": "-0.00",
+          "price_jump_stock_qty_min_pct": "-0.00",
+          "csv_max_cost_drop_pct": "-0.00",
+          "csv_max_price_drop_pct": "-0.00",
+          "discount_step_pct": "-0.00",
+          "night_median_apply_delta_pct": "-0.00",
+          "warmup_margin_pct": "-0.00",
+          "warmup_daily_limit_pct": "-0.00",
+          "liquidation_step_pct": "-0.00",
+          "liquidation_min_cogs_pct": "-0.00",
+          "sync_interval_minutes": 1,
+          "basket_norm_period_days": 1,
+          "cart_comparison_days": 1,
+          "plan_fact_fact_period_days": 1,
+          "plan_fact_interval_hours": 1,
+          "warmup_days": 1,
+          "cart_high_baskets_threshold": 1,
+          "cart_low_baskets_threshold": 1,
+          "basket_norm_auto_min_orders": 1,
+          "warmup_exit_baskets": 1,
+          "night_median_window_start_hour": 1,
+          "night_median_window_end_hour": 1,
+          "night_median_mode": "conservative",
+          "basket_signal_mode": "matrix",
+          "basket_norm_mode": "fallback_by_type",
+          "plan_fact_metric": "orders",
+          "night_median_timezone": "\u041c\u0421\u041a (UTC+3)"
+        },
+        "basket_defaults": [
+          {
+            "garment": "hoodie",
+            "norm_units": 30
+          },
+          {
+            "garment": "longsleeve",
+            "norm_units": 5
+          },
+          {
+            "garment": "tshirt",
+            "norm_units": 0
+          }
+        ]
+      },
+      "canonical_ascii": "{\"actorMembershipId\":2,\"basketDefaults\":[{\"garment\":\"hoodie\",\"normUnits\":30},{\"garment\":\"longsleeve\",\"normUnits\":5},{\"garment\":\"tshirt\",\"normUnits\":0}],\"commandId\":\"11111111-1111-4111-8111-111111111111\",\"commandKind\":\"replace_settings\",\"expectedVersion\":\"0\",\"formulaCompatibilityVersion\":\"legacy/v1\",\"organizationId\":1,\"schema\":\"wb-repricing-algorithm-settings/v1\",\"values\":{\"basket_norm_auto_min_orders\":1,\"basket_norm_mode\":\"fallback_by_type\",\"basket_norm_period_days\":1,\"basket_signal_mode\":\"matrix\",\"cart_comparison_days\":1,\"cart_high_baskets_threshold\":1,\"cart_low_baskets_threshold\":1,\"csv_max_cost_drop_pct\":\"0\",\"csv_max_price_drop_pct\":\"0\",\"discount_step_enabled\":false,\"discount_step_pct\":\"0\",\"liquidation_auto_flag_enabled\":false,\"liquidation_min_cogs_pct\":\"0\",\"liquidation_step_pct\":\"0\",\"max_price_change_daily_pct\":\"0\",\"min_price_sync_enabled\":false,\"night_median_apply_delta_pct\":\"0\",\"night_median_auto_apply_enabled\":false,\"night_median_collect_enabled\":false,\"night_median_enabled\":false,\"night_median_global\":false,\"night_median_mode\":\"conservative\",\"night_median_timezone\":\"\\u041c\\u0421\\u041a (UTC+3)\",\"night_median_window_end_hour\":1,\"night_median_window_start_hour\":1,\"plan_fact_fact_period_days\":1,\"plan_fact_interval_hours\":1,\"plan_fact_metric\":\"orders\",\"price_jump_protection_enabled\":false,\"price_jump_spp_min_pct\":\"0\",\"price_jump_stock_qty_min_pct\":\"0\",\"price_jump_stock_value_min_pct\":\"0\",\"price_rounding_enabled\":false,\"price_step_pct\":\"0\",\"promo_margin_threshold_pct\":\"0\",\"sync_interval_minutes\":1,\"target_margin_pct\":\"0\",\"warmup_daily_limit_pct\":\"0\",\"warmup_days\":1,\"warmup_exit_baskets\":1,\"warmup_margin_pct\":\"0\",\"worker_auto_apply_prices_enabled\":false}}",
+      "byte_count": 1684,
+      "sha256": "0ee9f83fc8a7bc917e7606c703816275a3a702b57876e6e40506b2fc3c0f3383"
+    },
+    {
+      "name": "settings-exact",
+      "kind": "settings",
+      "input": {
+        "organization_id": 2147483647,
+        "actor_membership_id": 2147483647,
+        "command_id": "22222222-2222-4222-8222-222222222222",
+        "expected_version": 1208925819614629174706176,
+        "formula_compatibility_version": "legacy/v1",
+        "values": {
+          "night_median_enabled": false,
+          "night_median_collect_enabled": false,
+          "night_median_global": false,
+          "night_median_auto_apply_enabled": false,
+          "worker_auto_apply_prices_enabled": true,
+          "min_price_sync_enabled": false,
+          "price_jump_protection_enabled": false,
+          "discount_step_enabled": false,
+          "price_rounding_enabled": false,
+          "liquidation_auto_flag_enabled": false,
+          "target_margin_pct": "-1.250000",
+          "price_step_pct": "1.2345678901234567890123456789",
+          "max_price_change_daily_pct": "-0.00",
+          "promo_margin_threshold_pct": "-0.00",
+          "price_jump_stock_value_min_pct": "-0.00",
+          "price_jump_spp_min_pct": "-0.00",
+          "price_jump_stock_qty_min_pct": "-0.00",
+          "csv_max_cost_drop_pct": "-0.00",
+          "csv_max_price_drop_pct": "-0.00",
+          "discount_step_pct": "-0.00",
+          "night_median_apply_delta_pct": "-0.00",
+          "warmup_margin_pct": "-0.00",
+          "warmup_daily_limit_pct": "-0.00",
+          "liquidation_step_pct": "-0.00",
+          "liquidation_min_cogs_pct": "-0.00",
+          "sync_interval_minutes": 1,
+          "basket_norm_period_days": 1,
+          "cart_comparison_days": 1,
+          "plan_fact_fact_period_days": 1,
+          "plan_fact_interval_hours": 1,
+          "warmup_days": 1,
+          "cart_high_baskets_threshold": 1,
+          "cart_low_baskets_threshold": 1,
+          "basket_norm_auto_min_orders": 1,
+          "warmup_exit_baskets": 1,
+          "night_median_window_start_hour": 1,
+          "night_median_window_end_hour": 1,
+          "night_median_mode": "conservative",
+          "basket_signal_mode": "matrix",
+          "basket_norm_mode": "manual",
+          "plan_fact_metric": "orders",
+          "night_median_timezone": "\u041c\u0421\u041a (UTC+3)"
+        },
+        "basket_defaults": []
+      },
+      "canonical_ascii": "{\"actorMembershipId\":2147483647,\"basketDefaults\":[],\"commandId\":\"22222222-2222-4222-8222-222222222222\",\"commandKind\":\"replace_settings\",\"expectedVersion\":\"1208925819614629174706176\",\"formulaCompatibilityVersion\":\"legacy/v1\",\"organizationId\":2147483647,\"schema\":\"wb-repricing-algorithm-settings/v1\",\"values\":{\"basket_norm_auto_min_orders\":1,\"basket_norm_mode\":\"manual\",\"basket_norm_period_days\":1,\"basket_signal_mode\":\"matrix\",\"cart_comparison_days\":1,\"cart_high_baskets_threshold\":1,\"cart_low_baskets_threshold\":1,\"csv_max_cost_drop_pct\":\"0\",\"csv_max_price_drop_pct\":\"0\",\"discount_step_enabled\":false,\"discount_step_pct\":\"0\",\"liquidation_auto_flag_enabled\":false,\"liquidation_min_cogs_pct\":\"0\",\"liquidation_step_pct\":\"0\",\"max_price_change_daily_pct\":\"0\",\"min_price_sync_enabled\":false,\"night_median_apply_delta_pct\":\"0\",\"night_median_auto_apply_enabled\":false,\"night_median_collect_enabled\":false,\"night_median_enabled\":false,\"night_median_global\":false,\"night_median_mode\":\"conservative\",\"night_median_timezone\":\"\\u041c\\u0421\\u041a (UTC+3)\",\"night_median_window_end_hour\":1,\"night_median_window_start_hour\":1,\"plan_fact_fact_period_days\":1,\"plan_fact_interval_hours\":1,\"plan_fact_metric\":\"orders\",\"price_jump_protection_enabled\":false,\"price_jump_spp_min_pct\":\"0\",\"price_jump_stock_qty_min_pct\":\"0\",\"price_jump_stock_value_min_pct\":\"0\",\"price_rounding_enabled\":false,\"price_step_pct\":\"1.2345678901234567890123456789\",\"promo_margin_threshold_pct\":\"0\",\"sync_interval_minutes\":1,\"target_margin_pct\":\"-1.25\",\"warmup_daily_limit_pct\":\"0\",\"warmup_days\":1,\"warmup_exit_baskets\":1,\"warmup_margin_pct\":\"0\",\"worker_auto_apply_prices_enabled\":true}}",
+      "byte_count": 1639,
+      "sha256": "91a541846bc2a8b2d88e8e44ae1f6158076beff1f1e6e8ebaea50b8320153438"
+    },
+    {
+      "name": "liquidation-active",
+      "kind": "liquidation",
+      "input": {
+        "campaign": {
+          "organization_id": 1,
+          "marketplace_account_id": 2,
+          "catalog_sku_id": 3,
+          "campaign_id": "33333333-3333-4333-8333-333333333333",
+          "started_by_membership_id": 4,
+          "created_at": "2026-09-09T12:00:00.123456+00:00",
+          "start_price_kopecks": 100000
+        },
+        "actor_membership_id": 4,
+        "command_id": "44444444-4444-4444-8444-444444444444",
+        "expected_version": 0,
+        "values": {
+          "state": "active",
+          "current_price_kopecks": 100000,
+          "target_price_kopecks": 70000,
+          "step_pct": "3.00",
+          "hold_orders_to": 0,
+          "next_step_at": "2026-09-09T12:00:00.123456+00:00",
+          "requires_negative_margin_confirm": true,
+          "confirmed_by_membership_id": null,
+          "confirmed_at": null,
+          "resulting_approval_id": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":4,\"campaign\":{\"createdAt\":\"2026-09-09T12:00:00.123456Z\",\"startPriceKopecks\":\"100000\",\"startedByMembershipId\":4},\"campaignId\":\"33333333-3333-4333-8333-333333333333\",\"catalogSkuId\":3,\"commandId\":\"44444444-4444-4444-8444-444444444444\",\"commandKind\":\"replace_liquidation\",\"expectedVersion\":\"0\",\"marketplaceAccountId\":2,\"organizationId\":1,\"schema\":\"wb-repricing-liquidation/v1\",\"values\":{\"confirmed_at\":null,\"confirmed_by_membership_id\":null,\"current_price_kopecks\":\"100000\",\"hold_orders_to\":0,\"next_step_at\":\"2026-09-09T12:00:00.123456Z\",\"requires_negative_margin_confirm\":true,\"resulting_approval_id\":null,\"state\":\"active\",\"step_pct\":\"3\",\"target_price_kopecks\":\"70000\"}}",
+      "byte_count": 688,
+      "sha256": "02dff664c1ba1db82589fcd5bd7a356c907d0d64cbd8d1e0b57344abea21b2cf"
+    },
+    {
+      "name": "liquidation-paused",
+      "kind": "liquidation",
+      "input": {
+        "campaign": {
+          "organization_id": 1,
+          "marketplace_account_id": 2,
+          "catalog_sku_id": 3,
+          "campaign_id": "33333333-3333-4333-8333-333333333333",
+          "started_by_membership_id": 4,
+          "created_at": "2026-09-09T12:00:00.123456+00:00",
+          "start_price_kopecks": 100000
+        },
+        "actor_membership_id": 4,
+        "command_id": "44444444-4444-4444-8444-444444444444",
+        "expected_version": 1,
+        "values": {
+          "state": "paused",
+          "current_price_kopecks": 100000,
+          "target_price_kopecks": 70000,
+          "step_pct": "3.00",
+          "hold_orders_to": 0,
+          "next_step_at": null,
+          "requires_negative_margin_confirm": true,
+          "confirmed_by_membership_id": 4,
+          "confirmed_at": "2026-09-09T12:00:00.123456+00:00",
+          "resulting_approval_id": null
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":4,\"campaign\":{\"createdAt\":\"2026-09-09T12:00:00.123456Z\",\"startPriceKopecks\":\"100000\",\"startedByMembershipId\":4},\"campaignId\":\"33333333-3333-4333-8333-333333333333\",\"catalogSkuId\":3,\"commandId\":\"44444444-4444-4444-8444-444444444444\",\"commandKind\":\"replace_liquidation\",\"expectedVersion\":\"1\",\"marketplaceAccountId\":2,\"organizationId\":1,\"schema\":\"wb-repricing-liquidation/v1\",\"values\":{\"confirmed_at\":\"2026-09-09T12:00:00.123456Z\",\"confirmed_by_membership_id\":4,\"current_price_kopecks\":\"100000\",\"hold_orders_to\":0,\"next_step_at\":null,\"requires_negative_margin_confirm\":true,\"resulting_approval_id\":null,\"state\":\"paused\",\"step_pct\":\"3\",\"target_price_kopecks\":\"70000\"}}",
+      "byte_count": 685,
+      "sha256": "9423b976b52675432bda813fd2c585414ce0f49784b8106a6ff3ebf5097830a9"
+    },
+    {
+      "name": "liquidation-terminal-large",
+      "kind": "liquidation",
+      "input": {
+        "campaign": {
+          "organization_id": 1,
+          "marketplace_account_id": 2,
+          "catalog_sku_id": 3,
+          "campaign_id": "33333333-3333-4333-8333-333333333333",
+          "started_by_membership_id": 4,
+          "created_at": "2026-09-09T12:00:00.123456+00:00",
+          "start_price_kopecks": 1208925819614629174706176
+        },
+        "actor_membership_id": 4,
+        "command_id": "44444444-4444-4444-8444-444444444444",
+        "expected_version": 1208925819614629174706176,
+        "values": {
+          "state": "completed",
+          "current_price_kopecks": 1208925819614629174706176,
+          "target_price_kopecks": 1208925819614629174706176,
+          "step_pct": "1E-23",
+          "hold_orders_to": 0,
+          "next_step_at": null,
+          "requires_negative_margin_confirm": true,
+          "confirmed_by_membership_id": null,
+          "confirmed_at": null,
+          "resulting_approval_id": "approval-\u0451\u0436"
+        }
+      },
+      "canonical_ascii": "{\"actorMembershipId\":4,\"campaign\":{\"createdAt\":\"2026-09-09T12:00:00.123456Z\",\"startPriceKopecks\":\"1208925819614629174706176\",\"startedByMembershipId\":4},\"campaignId\":\"33333333-3333-4333-8333-333333333333\",\"catalogSkuId\":3,\"commandId\":\"44444444-4444-4444-8444-444444444444\",\"commandKind\":\"replace_liquidation\",\"expectedVersion\":\"1208925819614629174706176\",\"marketplaceAccountId\":2,\"organizationId\":1,\"schema\":\"wb-repricing-liquidation/v1\",\"values\":{\"confirmed_at\":null,\"confirmed_by_membership_id\":null,\"current_price_kopecks\":\"1208925819614629174706176\",\"hold_orders_to\":0,\"next_step_at\":null,\"requires_negative_margin_confirm\":true,\"resulting_approval_id\":\"approval-\\u0451\\u0436\",\"state\":\"completed\",\"step_pct\":\"0.00000000000000000000001\",\"target_price_kopecks\":\"1208925819614629174706176\"}}",
+      "byte_count": 791,
+      "sha256": "301238d0219b4e6cfb8fac28abc86a018e13a633c2da774d30b609ba6224be26"
+    }
+  ]
+}

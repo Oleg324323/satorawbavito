@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.main import create_app
 from tests.auth_helpers import auth_headers
 
@@ -180,7 +181,7 @@ def test_wb_token_update_does_not_call_wb_api(monkeypatch):
     monkeypatch.setattr(
         cabinet_router,
         "get_settings",
-        lambda: SimpleNamespace(wb_api_mode="fake", repricer_wb_sync_enabled=True),
+        lambda: Settings(wb_api_mode="fake", repricer_wb_sync_enabled=True),
     )
     monkeypatch.setattr(cabinet_router, "_enqueue_wb_onboarding_sync", lambda _organization_id: None)
 
@@ -200,7 +201,7 @@ def test_wb_token_update_enqueues_onboarding_sync_in_real_mode(monkeypatch):
     monkeypatch.setattr(
         cabinet_router,
         "get_settings",
-        lambda: SimpleNamespace(wb_api_mode="real", repricer_wb_sync_enabled=True),
+        lambda: Settings(wb_api_mode="real", repricer_wb_sync_enabled=True),
     )
     monkeypatch.setattr(
         cabinet_router,

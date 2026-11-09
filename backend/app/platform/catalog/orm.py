@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.models import Base
@@ -42,6 +50,7 @@ class CatalogSkuRow(Base):
 class MarketplaceProductRow(Base):
     __tablename__ = "marketplace_products"
     __table_args__ = (
+        UniqueConstraint("organization_id", "marketplace_account_id", "marketplace_product_id", name="uq_orders_product_account"),
         UniqueConstraint(
             "organization_id",
             "marketplace_account_id",
@@ -77,6 +86,12 @@ class MarketplaceProductRow(Base):
 class MarketplaceOfferRow(Base):
     __tablename__ = "marketplace_offers"
     __table_args__ = (
+        UniqueConstraint("organization_id", "marketplace_account_id", "marketplace_product_id", "marketplace_offer_id", name="uq_orders_offer_product_account"),
+        ForeignKeyConstraint(
+            ["organization_id", "marketplace_account_id", "marketplace_product_id"],
+            ["marketplace_products.organization_id", "marketplace_products.marketplace_account_id", "marketplace_products.marketplace_product_id"],
+            name="fk_orders_offer_product_account",
+        ),
         UniqueConstraint(
             "organization_id",
             "marketplace_product_id",

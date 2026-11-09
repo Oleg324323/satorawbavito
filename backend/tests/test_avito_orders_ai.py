@@ -47,10 +47,13 @@ def snapshot_with_two_sizes() -> AvitoOrdersBrowserSnapshot:
             },
             "orders": [
                 {
-                    "orderId": "order-1",
+                    "orderId": "order-1", "accountId": "seller", "status": "ready_to_ship",
                     "items": [
                         {
-                            "title": "Свитшот",
+                            "itemId": "1", "title": "Свитшот",
+                            "chatEvidence": {"state": "collected", "accountId": "seller", "sellerId": "seller", "buyerId": "buyer", "orderId": "order-1", "itemId": "1", "channelId": "channel", "messages": [
+                                {"id": "q", "role": "seller", "text": "Какой размер вам нужен?", "orderId": "order-1", "itemId": "1", "createdAt": "2026-10-07T10:00:00Z"},
+                                {"id": "a", "role": "buyer", "text": "Давайте L", "orderId": "order-1", "itemId": "1", "createdAt": "2026-10-07T10:01:00Z"}]},
                             "chatText": "Сначала M\nНет, тогда L\nДа, фиксируем L",
                             "descriptionSize": "54 (XL)",
                         },
@@ -75,26 +78,18 @@ def settings(api_key: str | None):
     )
 
 
-def test_ai_size_wins_and_all_items_use_one_request(monkeypatch):
+def test_local_sizes_need_no_provider_request(monkeypatch):
     monkeypatch.setattr("app.avito.orders_ai.get_settings", lambda: settings("test-key"))
     client = RecordingClient(
         {
             "items": [
                 {
                     "key": "0:0",
-                    "size": "L",
+                    "size": "L", "sizeMessageId": "a",
                     "color": None,
                     "sellerArticle": None,
                     "confidence": "high",
                     "notes": "final confirmation",
-                },
-                {
-                    "key": "0:1",
-                    "size": "S",
-                    "color": None,
-                    "sellerArticle": None,
-                    "confidence": "low",
-                    "notes": "uncertain guess",
                 },
             ]
         }
@@ -102,26 +97,26 @@ def test_ai_size_wins_and_all_items_use_one_request(monkeypatch):
 
     snapshot, meta = enrich_avito_orders_snapshot_with_ai(snapshot_with_two_sizes(), client=client)
 
-    assert len(client.posts) == 1
+    assert not client.posts
     assert snapshot.orders[0].items[0].size == "L"
     assert snapshot.orders[0].items[0].sources["size"] == "chat_ai"
-    assert snapshot.orders[0].items[1].size == "46 (M)"
-    assert snapshot.orders[0].items[1].sources["size"] == "description_fallback"
-    assert meta["aiSizeCount"] == 1
-    assert meta["descriptionFallbackCount"] == 1
-    assert meta["missingFinalSizeCount"] == 0
+    assert snapshot.orders[0].items[1].size is None
+    assert snapshot.orders[0].items[1].sizeState == "needs_review"
+    assert meta["aiSizeCount"] == 0 and meta["ruleSizeCount"] == 1
+    assert meta["descriptionFallbackCount"] == 0
+    assert meta["missingFinalSizeCount"] == 1
 
 
-def test_missing_openai_key_still_applies_description_fallback(monkeypatch):
+def test_missing_openai_key_never_applies_description_fallback(monkeypatch):
     monkeypatch.setattr("app.avito.orders_ai.get_settings", lambda: settings(None))
     snapshot = snapshot_with_two_sizes()
 
     enriched, meta = enrich_avito_orders_snapshot_with_ai(snapshot)
 
-    assert [item.size for item in enriched.orders[0].items] == ["54 (XL)", "46 (M)"]
-    assert meta["status"] == "skipped"
-    assert meta["descriptionFallbackCount"] == 2
-    assert meta["missingFinalSizeCount"] == 0
+    assert [item.size for item in enriched.orders[0].items] == ["L", None]
+    assert meta["status"] == "completed"
+    assert meta["descriptionFallbackCount"] == 0
+    assert meta["missingFinalSizeCount"] == 1
 
 
 class FailingClient:
@@ -131,13 +126,13 @@ class FailingClient:
         raise TimeoutError("timeout")
 
 
-def test_failed_ai_request_still_applies_description_fallback(monkeypatch):
+def test_failed_ai_request_never_applies_description_fallback(monkeypatch):
     monkeypatch.setattr("app.avito.orders_ai.get_settings", lambda: settings("test-key"))
     enriched, meta = enrich_avito_orders_snapshot_with_ai(snapshot_with_two_sizes(), client=FailingClient())
 
-    assert [item.size for item in enriched.orders[0].items] == ["54 (XL)", "46 (M)"]
-    assert meta["status"] == "failed"
-    assert meta["descriptionFallbackCount"] == 2
+    assert [item.size for item in enriched.orders[0].items] == ["L", None]
+    assert meta["status"] == "completed"
+    assert meta["descriptionFallbackCount"] == 0
 
 
 class MalformedResponse:
@@ -155,10 +150,10 @@ class MalformedClient:
         return MalformedResponse()
 
 
-def test_malformed_ai_output_still_applies_description_fallback(monkeypatch):
+def test_malformed_ai_output_never_applies_description_fallback(monkeypatch):
     monkeypatch.setattr("app.avito.orders_ai.get_settings", lambda: settings("test-key"))
     enriched, meta = enrich_avito_orders_snapshot_with_ai(snapshot_with_two_sizes(), client=MalformedClient())
 
-    assert [item.size for item in enriched.orders[0].items] == ["54 (XL)", "46 (M)"]
-    assert meta["status"] == "failed"
-    assert meta["descriptionFallbackCount"] == 2
+    assert [item.size for item in enriched.orders[0].items] == ["L", None]
+    assert meta["status"] == "completed"
+    assert meta["descriptionFallbackCount"] == 0

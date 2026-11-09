@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from statistics import median
 from typing import Any, Literal
 from uuid import uuid4
@@ -10,18 +13,22 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.modules.wb_repricing_calculation import settings_minimum_price_kopecks
 from app.repricer_cache.store import get_source_cache, save_source_cache
 from app.repricer_persistence.store import append_execution_run, upsert_pending_price_approvals
 from app.repricer_settings import (
     default_typed_strategy_for_mode,
     get_repricer_guard_limits,
     is_auto_strategy_execution_allowed,
+    current_algorithm_settings,
+    with_organization_algorithm,
 )
 from app.repricer_bff import (
     ALGORITHM_SETTINGS_STATE,
     FRONTEND_STRATEGY_BY_ID,
     LIQUIDATION_ACTIVE,
-    _p_min_kopecks,
+    apply_frontend_strategy_assignment,
+    _effective_pmin,
     list_repricer_changelog,
     list_repricer_skus,
     record_repricer_price_change,
@@ -44,6 +51,9 @@ from app.repricer_sprint_c import (
     run_strategy_item_with_guards,
 )
 from app.wb_api.client import WbApiClient
+from app.repricer_price_safety import binding_key, utc_timestamp, checksum
+from app.repricer_dispatch_store import mutate_night_cache, DispatchPersistenceError
+from app.repricer_strategy_sources import prepare_strategy_rows
 
 
 ExecutionSkipReason = Literal[
@@ -66,6 +76,10 @@ PRESET_CONFIG_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 NIGHT_MEDIAN_SOURCE_KEY = "night_median_baskets"
+
+
+def _algorithm_settings():
+    return current_algorithm_settings(ALGORITHM_SETTINGS_STATE)
 
 REVENUE_BANDS: list[tuple[float, float, float, int]] = [
     (-1000.0, 75.0, -5.0, 3000),
@@ -103,6 +117,7 @@ class StrategyExecuteSkuResult(BaseModel):
     draftId: str | None = None
     jobId: str | None = None
     applyState: str | None = None
+    priceConfirmed: bool = False
 
 
 class StrategyExecuteReport(BaseModel):
@@ -130,33 +145,7 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _settings_pmin_kopecks(settings: dict[str, Any]) -> int:
-    try:
-        override = int(settings.get("pMinKopecks") or settings.get("pminKopecks") or 0)
-    except (TypeError, ValueError):
-        override = 0
-    if override > 0:
-        return override
-    base_cost = (
-        _setting_int(settings, "cogsKopecks")
-        + _setting_int(settings, "logisticsKopecks")
-        + _setting_int(settings, "otherExpensePerSaleKopecks")
-        + _setting_int(settings, "storageCostPerSaleKopecks")
-    )
-    pick_pack_pct = _setting_float(settings, "pickPackCostPercent")
-    if pick_pack_pct > 0:
-        base_cost += round(_setting_int(settings, "cogsKopecks") * pick_pack_pct / 100)
-    fixed_margin = _setting_int(settings, "minMarginKopecks")
-    variable_pct = (
-        _setting_float(settings, "wbCommissionPct")
-        + _setting_float(settings, "minMarginPct")
-        + _setting_float(settings, "taxPct")
-        + _effective_price_expense_pct(settings)
-        + _setting_float(settings, "advertCostPercent")
-    )
-    denominator = 1 - variable_pct / 100
-    if denominator <= 0:
-        return max(1, base_cost + fixed_margin)
-    return max(1, int(round((base_cost + fixed_margin) / denominator)))
+    return settings_minimum_price_kopecks(settings)
 
 
 def _settings_pmax_kopecks(settings: dict[str, Any], old_price: int) -> int:
@@ -212,7 +201,7 @@ def _settings_step_interval_minutes(settings: dict[str, Any]) -> int:
         hours = 0
     if hours > 0:
         return max(5, hours * 60)
-    return max(5, int(ALGORITHM_SETTINGS_STATE.get("syncIntervalMinutes") or 60))
+    return max(5, int(_algorithm_settings().get("syncIntervalMinutes") or 60))
 
 
 def _last_price_change_at(article_id: str, organization_id: int | None) -> datetime | None:
@@ -283,16 +272,21 @@ def _economics_from_row(row: dict[str, Any]) -> DraftEconomicsInput:
     current_price = int(row.get("meta", {}).get("currentPriceKopecks") or analytics.get("basePriceKopecks") or 0)
     storage = _setting_int(settings, "storageCostPerSaleKopecks")
     tax_kopecks = round(current_price * _setting_float(settings, "taxPct") / 100) if current_price > 0 else 0
-    buyout_pct = float(analytics.get("buyoutPct") or 80)
-    buyout_pct = max(0.0, min(100.0, buyout_pct))
+    commission_pct = analytics.get("wbCommissionPct")
+    if analytics.get("commissionState") in {"fallback", "no_data"}:
+        commission_pct = None
+    elif commission_pct is None:
+        commission_pct = settings.get("wbCommissionPct")
     return DraftEconomicsInput(
         cogsKopecks=_setting_int(settings, "cogsKopecks"),
-        commissionPct=float(analytics.get("wbCommissionPct") if analytics.get("wbCommissionPct") is not None else settings.get("wbCommissionPct") or 0),
+        commissionPct=commission_pct,
         logisticsKopecks=_setting_int(settings, "logisticsKopecks") + _setting_int(settings, "otherExpensePerSaleKopecks"),
         storageKopecks=storage,
         taxKopecks=tax_kopecks,
-        buyoutPct=buyout_pct,
-        stockUnits=int(stock_units) if stock_units is not None else 1,
+        taxPct=_setting_float(settings, "taxPct") if settings.get("taxPct") is not None else None,
+        taxConfigured=settings.get("taxPct") is not None,
+        buyoutPct=analytics.get("buyoutPct"),
+        stockUnits=stock_units if type(stock_units) is int and stock_units >= 0 else None,
         promoActive=analytics.get("promotionStatus") == "yes",
     )
 
@@ -300,27 +294,47 @@ def _economics_from_row(row: dict[str, Any]) -> DraftEconomicsInput:
 def _baskets_orders_trends(row: dict[str, Any]) -> tuple[Literal["up", "down"], Literal["up", "down"]]:
     meta = row["meta"]
     analytics = row.get("analytics") or {}
-    baskets = int(analytics.get("baskets") if analytics.get("baskets") is not None else meta.get("basketsLast7d") or 0)
+    baskets = int(analytics["baskets"])
     basket_norm = max(1, int(meta.get("basketNorm") or 1))
-    orders = int(analytics.get("ordersUnits") or 0)
+    orders = int(analytics["ordersUnits"])
     baskets_trend: Literal["up", "down"] = "up" if baskets >= basket_norm else "down"
     orders_trend: Literal["up", "down"] = "up" if orders >= max(1, round(basket_norm * 0.6)) else "down"
     return baskets_trend, orders_trend
 
 
+def _order_comparison(row: dict[str, Any], main_days: int) -> tuple[Decimal | None, list[str]]:
+    periods = (row.get("analytics") or {}).get("strategyPeriods")
+    periods = periods if isinstance(periods, dict) else {}
+    values = []
+    blockers = []
+    for name, days in (("main", main_days), ("comparison", 7)):
+        period = periods.get(name)
+        period = period if isinstance(period, dict) else {}
+        count = _observed_number({"analytics": period}, "ordersUnits")
+        if count is None or count < 0 or count != count.to_integral_value() or period.get("periodDays") != days:
+            blockers.append(f"{name}_orders_period_required")
+        if period.get("state") not in {"ok", "fresh", "complete"}:
+            blockers.append(f"{name}_orders_period_incomplete")
+        values.append(count)
+    if blockers:
+        return None, blockers
+    if periods["main"].get("periodTo") != periods["comparison"].get("periodTo"):
+        return None, ["comparison_period_end_mismatch"]
+    if values[1] == 0:
+        return None, ["comparison_zero_baseline"]
+    return values[0] * 7 * 100 / (values[1] * main_days), []
+
+
+def _revenue_index(row: dict[str, Any]) -> Decimal:
+    # Keep the established typed ID and bands; the approved metric is orders.
+    index, blockers = _order_comparison(row, 1)
+    if blockers or index is None:
+        raise ValueError(",".join(blockers))
+    return index
+
+
 def _revenue_trend_pct(row: dict[str, Any]) -> float:
-    analytics = row.get("analytics") or {}
-    meta = row["meta"]
-    revenue = analytics.get("revenueKopecks")
-    base_price = int(analytics.get("basePriceKopecks") or meta.get("currentPriceKopecks") or 0)
-    orders = int(analytics.get("ordersUnits") or 0)
-    if revenue and base_price > 0 and orders > 0:
-        baseline = base_price * orders
-        if baseline > 0:
-            return ((int(revenue) / baseline) - 1.0) * 100.0
-    baskets = int(analytics.get("baskets") if analytics.get("baskets") is not None else meta.get("basketsLast7d") or 0)
-    basket_norm = max(1, int(meta.get("basketNorm") or 1))
-    return ((baskets / basket_norm) - 1.0) * 100.0
+    return float(_revenue_index(row) - 100)
 
 
 def _revenue_band_delta(revenue_index_pct: float) -> tuple[float, int]:
@@ -407,22 +421,92 @@ def _orders_units(row: dict[str, Any]) -> int:
     return int(_analytics_number(row, "ordersUnits", 0.0))
 
 
-def _stock_units(row: dict[str, Any]) -> int:
-    stock = (row.get("analytics") or {}).get("wbStockUnits")
-    if stock is not None:
-        return max(0, int(stock))
-    settings = row.get("settings") or {}
-    total = _setting_int(settings, "stockFbs") + _setting_int(settings, "stockFbm")
-    if total > 0:
-        return total
-    return max(0, int(row.get("meta", {}).get("basketsLast7d") or 0) * 2)
+def _observed_number(row: dict[str, Any], key: str) -> Decimal | None:
+    value = (row.get("analytics") or {}).get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+        return number if number.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _stock_units(row: dict[str, Any]) -> int | None:
+    stock = _observed_number(row, "wbStockUnits")
+    if stock is None or stock < 0 or stock != stock.to_integral_value():
+        return None
+    return int(stock)
 
 
 def _days_to_oos(row: dict[str, Any]) -> float | None:
-    orders = _orders_units(row)
-    if orders <= 0:
+    orders = _observed_number(row, "ordersUnits")
+    days = _observed_number(row, "periodDays")
+    stock = _stock_units(row)
+    if orders is None or orders <= 0 or days is None or days <= 0 or stock is None:
         return None
-    return _stock_units(row) / max(orders / 7.0, 0.01)
+    return float(Decimal(stock) * days / orders)
+
+
+def _strategy_data_blockers(row: dict[str, Any], strategy: str) -> list[str]:
+    """Validate only the signals consumed by this branch; zero is an observation."""
+    analytics = row.get("analytics") or {}
+    required: dict[str, str | None] = {}
+    if strategy in {"stockout_guard", "turnover_control", "plan_fact_daily", "plan_fact_period",
+                    "plan_fact_group", "plan_fact_interval", "illiquid", "baskets_orders"}:
+        orders_state = "basketsState" if analytics.get("ordersSource") == "sales_funnel.orderCount" else "periodStatsState"
+        required.update(ordersUnits=orders_state, periodDays=orders_state)
+        if (analytics.get("ordersSource") in {"finance_sales_fallback", "fallback"}
+            or "ordersSource" in analytics and analytics["ordersSource"] is None):
+            return ["orders_source_required"]
+    if strategy in {"stockout_guard", "turnover_control"}:
+        required["wbStockUnits"] = "stockState"
+    if strategy == "baskets_orders":
+        required["baskets"] = "basketsState"
+        if _setting_float(row.get("meta") or {}, "basketNorm") <= 0:
+            return ["basket_norm_required"]
+    if strategy in {"plan_fact_daily", "plan_fact_period", "plan_fact_interval"}:
+        settings = row.get("settings") or {}
+        if _setting_float(settings, "ordersPlanQty") <= 0 and _setting_float(row.get("meta") or {}, "basketNorm") <= 0:
+            return ["orders_plan_required"]
+        if _setting_float(settings, "ordersPlanQty") > 0 and settings.get("ordersPlanDays") is not None and _setting_float(settings, "ordersPlanDays") <= 0:
+            return ["orders_plan_period_required"]
+    if strategy == "plan_fact_period":
+        metric = str(_algorithm_settings().get("planFactMetric") or row.get("settings", {}).get("repricerMode") or "orders")
+        if metric == "revenue":
+            required["revenueKopecks"] = "financeState"
+        elif metric == "margin":
+            required["marginKopecks"] = "plannedMarginState"
+    blockers = []
+    for key, state_key in required.items():
+        value = _observed_number(row, key)
+        if (value is None or (value < 0 and key != "marginKopecks") or (key == "periodDays" and value <= 0)
+            or key in {"wbStockUnits", "ordersUnits", "baskets", "periodDays"} and value != value.to_integral_value()):
+            blockers.append("stock_missing" if key == "wbStockUnits" else f"{key}_required")
+        state = analytics.get(state_key) if state_key else None
+        if state is not None and state not in {"ok", "fresh", "ready", "complete"}:
+            blockers.append(f"{state_key}_{state}")
+        coverage = (analytics.get("periodCoverageStates") or {}).get(state_key)
+        if coverage is not None and coverage not in {"ok", "complete"}:
+            blockers.append(f"{state_key}_coverage_{coverage}")
+    if strategy in {"optimal_price", "metric_dynamics"}:
+        _index, comparison_blockers = _order_comparison(row, 3 if strategy == "optimal_price" else 1)
+        blockers.extend(comparison_blockers)
+    if strategy == "plan_fact_interval":
+        for key in ("hourlyOrders", "todayHourlyOrders"):
+            buckets = analytics.get(key)
+            if not isinstance(buckets, list) or not buckets or any(
+                not isinstance(item, dict) or type(item.get("hour")) is not int or not 0 <= item["hour"] < 24
+                or type(item.get("ordersUnits")) is not int or item["ordersUnits"] < 0 for item in buckets
+            ):
+                blockers.append("hourly_sales_required" if key == "hourlyOrders" else f"{key}_required")
+        if "todayHourlyObservedAt" in analytics:
+            observed = _parse_iso(str(analytics.get("todayHourlyObservedAt") or ""))
+            local_now = _utc_now().astimezone(ZoneInfo("Europe/Moscow"))
+            start, _end = _interval_bounds(local_now.hour, int(_strategy_config(row).get("intervalHours") or 4))
+            if observed is None or observed < local_now.replace(hour=start, minute=0, second=0, microsecond=0):
+                blockers.append("today_hourly_coverage_required")
+    return list(dict.fromkeys(blockers))
 
 
 def _apply_pct(price_kopecks: int, delta_pct: float) -> int:
@@ -430,7 +514,7 @@ def _apply_pct(price_kopecks: int, delta_pct: float) -> int:
 
 
 def _algorithm_bool_setting(key: str, default: bool = False) -> bool:
-    raw = ALGORITHM_SETTINGS_STATE.get(key)
+    raw = _algorithm_settings().get(key)
     if raw is None:
         return default
     if isinstance(raw, bool):
@@ -442,7 +526,7 @@ def _algorithm_bool_setting(key: str, default: bool = False) -> bool:
 
 def _algorithm_float_setting(key: str, default: float) -> float:
     try:
-        return float(ALGORITHM_SETTINGS_STATE.get(key) or default)
+        return float(_algorithm_settings().get(key) or default)
     except (TypeError, ValueError):
         return default
 
@@ -545,7 +629,7 @@ def _strategy_config(row: dict[str, Any]) -> dict[str, Any]:
 
 def _algorithm_int_setting(key: str, default: int) -> int:
     try:
-        return int(ALGORITHM_SETTINGS_STATE.get(key) or default)
+        return int(_algorithm_settings().get(key) or default)
     except (TypeError, ValueError):
         return default
 
@@ -556,60 +640,61 @@ def _basket_norm_period_days() -> int:
 
 def _row_period_days(row: dict[str, Any]) -> int:
     analytics = row.get("analytics") or {}
-    return max(1, int(analytics.get("periodDays") or ALGORITHM_SETTINGS_STATE.get("planFactFactPeriodDays") or _basket_norm_period_days()))
+    return max(1, int(analytics.get("periodDays") or _algorithm_settings().get("planFactFactPeriodDays") or _basket_norm_period_days()))
 
 
-def _plan_orders_for_row_period(row: dict[str, Any]) -> float:
+def _plan_orders_for_row_period(row: dict[str, Any]) -> Fraction:
     settings = row.get("settings") or {}
     orders_plan = _setting_float(settings, "ordersPlanQty")
     if orders_plan > 0:
         plan_days = max(1.0, _setting_float(settings, "ordersPlanDays", _row_period_days(row)))
-        return max(1.0, orders_plan * (_row_period_days(row) / plan_days))
+        return max(Fraction(1), Fraction(str(orders_plan)) * _row_period_days(row) / Fraction(str(plan_days)))
     meta = row["meta"]
     basket_norm = max(1, int(meta.get("basketNorm") or 1))
-    return max(1.0, basket_norm * (_row_period_days(row) / _basket_norm_period_days()))
+    return max(Fraction(1), Fraction(basket_norm * _row_period_days(row), _basket_norm_period_days()))
 
 
-def _daily_plan_orders(row: dict[str, Any]) -> float:
+def _daily_plan_orders(row: dict[str, Any]) -> Fraction:
     settings = row.get("settings") or {}
     orders_plan = _setting_float(settings, "ordersPlanQty")
     if orders_plan > 0:
-        return max(1.0, orders_plan / max(1.0, _setting_float(settings, "ordersPlanDays", 1)))
+        return max(Fraction(1), Fraction(str(orders_plan)) / Fraction(str(max(1.0, _setting_float(settings, "ordersPlanDays", 1)))))
     meta = row["meta"]
     basket_norm = max(1, int(meta.get("basketNorm") or 1))
-    return max(1.0, basket_norm / _basket_norm_period_days())
+    return max(Fraction(1), Fraction(basket_norm, _basket_norm_period_days()))
 
 
-def _plan_fact_pct(row: dict[str, Any], *, metric: Literal["orders", "revenue", "margin"] = "orders") -> float:
+def _plan_fact_pct(row: dict[str, Any], *, metric: Literal["orders", "revenue", "margin"] = "orders") -> Fraction:
     meta = row["meta"]
     analytics = row.get("analytics") or {}
     plan_orders = _plan_orders_for_row_period(row)
     if metric == "revenue":
-        actual = float(analytics.get("revenueKopecks") or 0)
-        plan = max(1.0, float(meta.get("currentPriceKopecks") or 0) * plan_orders)
+        actual = Fraction(str(analytics["revenueKopecks"]))
+        plan = max(Fraction(1), meta["currentPriceKopecks"] * plan_orders)
         return actual / plan * 100
     if metric == "margin":
-        actual = float(analytics.get("marginKopecks") or 0) * max(1, _orders_units(row))
-        plan = max(1.0, float(meta.get("currentPriceKopecks") or 0) * plan_orders * 0.2)
+        actual = Fraction(str(analytics["marginKopecks"])) * max(1, _orders_units(row))
+        plan = max(Fraction(1), meta["currentPriceKopecks"] * plan_orders * Fraction(1, 5))
         return actual / plan * 100
-    return _orders_units(row) / plan_orders * 100
+    return _orders_units(row) * 100 / plan_orders
 
 
 def _plan_fact_price_from_completion(
     current: int,
     min_price: int,
-    completion_pct: float,
+    completion_pct: float | Fraction,
     *,
     label: str,
 ) -> tuple[int, str]:
+    displayed = float(completion_pct)
     for low, high, delta_pct in PLAN_FACT_BANDS:
         if low <= completion_pct < high:
             if delta_pct is None:
-                return min_price, f"{label} {completion_pct:.1f}%: ниже 10%, ставим минимальную цену"
+                return min_price, f"{label} {displayed:.1f}%: ниже 10%, ставим минимальную цену"
             if delta_pct == 0:
-                return current, f"{label} {completion_pct:.1f}%: 100-110%, держим базовую цену"
-            return _apply_pct(current, delta_pct), f"{label} {completion_pct:.1f}% -> {delta_pct:+.0f}%"
-    return current, f"{label} {completion_pct:.1f}%: правило не изменило цену"
+                return current, f"{label} {displayed:.1f}%: 100-110%, держим базовую цену"
+            return _apply_pct(current, delta_pct), f"{label} {displayed:.1f}% -> {delta_pct:+.0f}%"
+    return current, f"{label} {displayed:.1f}%: правило не изменило цену"
 
 
 def _plan_fact_recommended_price(row: dict[str, Any], min_price: int, *, metric: Literal["orders", "revenue", "margin"] = "orders") -> tuple[int, str]:
@@ -649,7 +734,7 @@ def _sum_interval(values: list[int], start: int, end: int) -> int:
 def _plan_fact_interval_recommended_price(row: dict[str, Any], min_price: int) -> tuple[int | None, str, list[str]]:
     current = int(row["meta"]["currentPriceKopecks"])
     config = _strategy_config(row)
-    interval_hours = int(config.get("intervalHours") or ALGORITHM_SETTINGS_STATE.get("planFactIntervalHours") or 4)
+    interval_hours = int(config.get("intervalHours") or _algorithm_settings().get("planFactIntervalHours") or 4)
     history = _hourly_orders_units(row, "hourlyOrders")
     history_total = sum(history)
     if history_total <= 0:
@@ -658,12 +743,12 @@ def _plan_fact_interval_recommended_price(row: dict[str, Any], min_price: int) -
     now_msk = _utc_now().astimezone(ZoneInfo("Europe/Moscow"))
     start, end = _interval_bounds(now_msk.hour, interval_hours)
     interval_history_orders = _sum_interval(history, start, end)
-    weight = interval_history_orders / history_total
+    weight = Fraction(interval_history_orders, history_total)
     daily_plan = _daily_plan_orders(row)
-    interval_plan = max(1.0, daily_plan * weight)
+    interval_plan = max(Fraction(1), daily_plan * weight)
     today = _hourly_orders_units(row, "todayHourlyOrders")
     interval_fact = _sum_interval(today, start, end)
-    completion_pct = interval_fact / interval_plan * 100.0
+    completion_pct = interval_fact * 100 / interval_plan
     recommended, base_explanation = _plan_fact_price_from_completion(
         current,
         min_price,
@@ -671,8 +756,8 @@ def _plan_fact_interval_recommended_price(row: dict[str, Any], min_price: int) -
         label=f"Интервал {start:02d}:00-{end:02d}:00 МСК",
     )
     explanation = (
-        f"{base_explanation}; вес {weight * 100:.1f}% от дня, "
-        f"план {interval_plan:.1f} заказов, факт {interval_fact}"
+        f"{base_explanation}; вес {float(weight * 100):.1f}% от дня, "
+        f"план {float(interval_plan):.1f} заказов, факт {interval_fact}"
     )
     return recommended, explanation, []
 
@@ -758,6 +843,7 @@ def _plan_fact_group_recommended_price(
     min_price: int,
     *,
     all_rows: list[dict[str, Any]] | None,
+    context: dict[str, Any] | None = None,
 ) -> tuple[int | None, str, list[str]]:
     current = int(row["meta"]["currentPriceKopecks"])
     config = _strategy_config(row)
@@ -765,21 +851,43 @@ def _plan_fact_group_recommended_price(
     if not isinstance(group_ids, list) or not group_ids:
         return None, "План-факт группы: нет состава группы SKU", ["group_scope_required"]
     group_set = {str(article_id) for article_id in group_ids}
-    row_index = {str(item.get("meta", {}).get("articleId") or ""): item for item in (all_rows or [])}
-    group_rows = [item for article_id, item in row_index.items() if article_id in group_set]
-    if not group_rows:
-        group_rows = [row] if str(row["meta"].get("articleId") or "") in group_set else []
-    if not group_rows:
-        return None, "План-факт группы: выбранные SKU не найдены в текущем списке", ["group_skus_not_found"]
+    execution_context = context if context is not None else {}
+    if "group_row_index" not in execution_context:
+        execution_context["group_row_index"] = {
+            str(item.get("meta", {}).get("articleId") or ""): item for item in (all_rows or [])}
+    row_index = execution_context["group_row_index"]
+    group_rows = [row_index[article_id] for article_id in group_set if article_id in row_index]
+    group_rows = [{**item, "analytics": {**item.get("analytics", {}), **item.get("analytics", {}).get("groupFact", {}),
+        "periodCoverageStates": {**item.get("analytics", {}).get("periodCoverageStates", {}), "basketsState": item["analytics"]["groupFact"]["state"]},
+        "ordersSource": "sales_funnel.orderCount", "basketsState": item["analytics"]["groupFact"]["state"]}}
+        if item.get("analytics", {}).get("groupFact") else item for item in group_rows]
+    period = (row.get("analytics") or {}).get("periodDays")
+    scope = row.get("meta", {}).get("accountScope")
+    if len(group_rows) != len(group_set) or any(
+        _strategy_data_blockers(item, "plan_fact_group")
+        or item.get("meta", {}).get("accountScope") != scope
+        or item.get("analytics", {}).get("periodDays") != period
+        or item.get("analytics", {}).get("periodFrom") != row.get("analytics", {}).get("periodFrom")
+        or item.get("analytics", {}).get("periodTo") != row.get("analytics", {}).get("periodTo")
+        for item in group_rows
+    ):
+        return None, "План-факт группы: неполный состав, период или данные участников", ["group_data_incomplete"]
 
     try:
         group_plan = int(config.get("planOrders") or 0)
     except (TypeError, ValueError):
         group_plan = 0
     if group_plan <= 0:
+        if any(_setting_float(item.get("settings") or {}, "ordersPlanQty") <= 0
+               and _setting_float(item.get("meta") or {}, "basketNorm") <= 0 for item in group_rows):
+            return None, "План-факт группы: нужен общий план или подтверждённые планы всех участников", ["group_plan_required"]
         group_plan = round(sum(_plan_orders_for_row_period(item) for item in group_rows))
-    group_fact = sum(_orders_units(item) for item in group_rows)
-    completion_pct = group_fact / max(1, group_plan) * 100.0
+    facts = execution_context.setdefault("group_order_facts", {})
+    group_key = (frozenset(group_set), scope, period)
+    if group_key not in facts:
+        facts[group_key] = sum(_orders_units(item) for item in group_rows)
+    group_fact = facts[group_key]
+    completion_pct = Fraction(group_fact * 100, max(1, group_plan))
     recommended, base_explanation = _plan_fact_price_from_completion(
         current,
         min_price,
@@ -819,7 +927,7 @@ def _stockout_guard_recommended_price(row: dict[str, Any]) -> tuple[int, str]:
     settings = row.get("settings") or {}
     stock = _stock_units(row)
     normal_stock = _setting_int(settings, "normalStockQty")
-    if normal_stock > 0 and stock <= normal_stock:
+    if normal_stock > 0 and stock is not None and stock <= normal_stock:
         delta = 25.0 if stock <= max(1, normal_stock // 2) else 12.0
         return _apply_pct(current, delta), f"OOS-защита: остаток {stock} <= минимум {normal_stock} -> +{delta:.0f}%"
     days = _days_to_oos(row)
@@ -896,7 +1004,7 @@ def _basket_threshold_recommended_price(row: dict[str, Any]) -> tuple[int, str]:
 
 def _illiquid_recommended_price(row: dict[str, Any]) -> tuple[int | None, str, list[str]]:
     article_id = row["meta"]["articleId"]
-    runtime = LIQUIDATION_ACTIVE.get(article_id) or {}
+    runtime = row.get("_previewLiquidationRuntime", LIQUIDATION_ACTIVE.get(article_id)) or {}
     next_step_at = _parse_iso(str(runtime.get("nextStepAt") or "")) if runtime else None
     if next_step_at is not None and _utc_now() < next_step_at:
         return None, "Неликвид: следующий дневной шаг ещё не наступил", ["liquidation_not_due"]
@@ -930,9 +1038,9 @@ def _commit_illiquid_runtime_step(article_id: str, recommended: int, explanation
 
 def _optimal_price_recommended_price(row: dict[str, Any]) -> tuple[int, str]:
     current = int(row["meta"]["currentPriceKopecks"])
-    basket_norm = max(1, int(row["meta"].get("basketNorm") or 1))
-    orders = _orders_units(row)
-    speed_index = orders / basket_norm * 100
+    speed_index, blockers = _order_comparison(row, 3)
+    if blockers or speed_index is None:
+        return current, "Оптимальная цена: нужны полные сопоставимые периоды 3 и 7 дней"
     if speed_index >= 115:
         return _apply_pct(current, 3.0), f"Оптимальная цена: скорость заказов {speed_index:.1f}% к базе -> +3%"
     if speed_index <= 85:
@@ -968,6 +1076,8 @@ def _resolve_strategy_id(row: dict[str, Any]) -> tuple[str | None, StrategyId | 
         return frontend_id, "baskets_orders_4599"
     if frontend_id == "metric_dynamics":
         return frontend_id, "revenue_dynamics_4600"
+    if frontend_id == "night_price_mode":
+        return frontend_id, "night_price_mode"
     global_default = default_typed_strategy_for_mode()
     if repricer_mode == "revenue" or global_default == "revenue_dynamics_4600":
         return frontend_id, "revenue_dynamics_4600"
@@ -995,7 +1105,7 @@ def _night_local_now() -> datetime:
 
 
 def _night_timezone_name() -> str:
-    raw = str(ALGORITHM_SETTINGS_STATE.get("nightMedianTimezone") or "").strip()
+    raw = str(_algorithm_settings().get("nightMedianTimezone") or "").strip()
     mapping = {
         "мск (utc+3)": "Europe/Moscow",
         "мск": "Europe/Moscow",
@@ -1022,7 +1132,7 @@ def _has_explicit_strategy(row: dict[str, Any]) -> bool:
         or row.get("meta", {}).get("assignmentSource")
         or ""
     ).lower().strip()
-    return bool(strategy.get("id")) and source not in {"", "derived"}
+    return bool(strategy.get("id")) and source not in {"", "none", "derived"}
 
 
 def _is_liquidation_scheduled(row: dict[str, Any]) -> bool:
@@ -1036,10 +1146,10 @@ def _is_liquidation_scheduled(row: dict[str, Any]) -> bool:
 def _revenue_recommended_price(row: dict[str, Any], economics: DraftEconomicsInput) -> tuple[int, float, int, str]:
     meta = row["meta"]
     current = int(meta["currentPriceKopecks"])
-    revenue_index = 100.0 + _revenue_trend_pct(row)
+    revenue_index = _revenue_index(row)
     delta_pct, rub_floor = _revenue_band_delta(revenue_index)
     if delta_pct == 0.0:
-        return current, 0.0, 0, f"Revenue index {revenue_index:.1f}% is in hold band"
+        return current, 0.0, 0, f"Индекс заказов {revenue_index:.1f}%: удержание цены"
 
     raw_delta_kopecks = round(current * delta_pct / 100)
     if rub_floor > 0 and raw_delta_kopecks != 0 and abs(raw_delta_kopecks) < rub_floor:
@@ -1050,7 +1160,7 @@ def _revenue_recommended_price(row: dict[str, Any], economics: DraftEconomicsInp
         recommended,
         (raw_delta_kopecks / current * 100) if current > 0 else 0.0,
         raw_delta_kopecks,
-        f"Revenue index {revenue_index:.1f}% -> delta {delta_pct:+.1f}% (floor {rub_floor} kopecks)",
+        f"Индекс заказов за завершённый день к среднему за 7 дней {revenue_index:.1f}% -> {delta_pct:+.1f}% (минимум {rub_floor} коп.)",
     )
 
 
@@ -1064,7 +1174,8 @@ def _build_dry_run_item(
     nm_id = meta.get("nmId")
     if nm_id is None:
         return None
-    baskets_trend, orders_trend = _baskets_orders_trends(row)
+    # Night uses its window median, not the daytime basket/order matrix.
+    baskets_trend, orders_trend = _baskets_orders_trends(row) if night_delta_pct is None else ("down", "down")
     return StrategyDryRunItem(
         articleId=str(meta["articleId"]),
         nmId=int(nm_id),
@@ -1072,14 +1183,14 @@ def _build_dry_run_item(
         economics=economics,
         basketsTrend=baskets_trend,
         ordersTrend=orders_trend,
-        revenueTrendPct=_revenue_trend_pct(row),
+        revenueTrendPct=0,
         nightTargetDeltaPct=night_delta_pct if night_delta_pct is not None else _night_target_delta_pct(),
     )
 
 
 def _night_target_delta_pct() -> float:
     base = abs(_algorithm_float_setting("nightMedianApplyDeltaPct", 4.0))
-    mode = str(ALGORITHM_SETTINGS_STATE.get("nightMedianMode") or "conservative").strip().lower()
+    mode = str(_algorithm_settings().get("nightMedianMode") or "conservative").strip().lower()
     if mode == "aggressive":
         return min(20.0, base)
     return min(20.0, base * 0.75)
@@ -1154,7 +1265,7 @@ def _night_strategy_config_override() -> dict[str, Any]:
 
 
 def _night_execution_explanation() -> str:
-    mode = str(ALGORITHM_SETTINGS_STATE.get("nightMedianMode") or "conservative").strip().lower()
+    mode = str(_algorithm_settings().get("nightMedianMode") or "conservative").strip().lower()
     mode_label = "агрессивный" if mode == "aggressive" else "консервативный"
     return (
         f"Ночная медиана: окно {_night_window_label()} МСК, режим {mode_label}, "
@@ -1176,16 +1287,55 @@ def _night_median_apply_explanation(payload: dict[str, Any] | None) -> str:
     )
 
 
-def _row_baskets_count(row: dict[str, Any]) -> int | None:
+def _night_basket_observation(row: dict[str, Any]) -> tuple[int, datetime] | None:
+    """Use count, coverage and timestamp from one complete observation."""
     analytics = row.get("analytics") if isinstance(row.get("analytics"), dict) else {}
-    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-    raw = analytics.get("baskets")
-    if raw is None:
-        raw = meta.get("basketsLast7d")
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
+    dedicated = any(key in analytics for key in ("nightBaskets", "nightBasketsObservedAt", "nightBasketsState"))
+    field = "nightBaskets" if dedicated else "baskets"
+    state_key = f"{field}State"
+    states = [analytics[state_key]] if state_key in analytics else []
+    coverage = analytics.get("periodCoverageStates")
+    if isinstance(coverage, dict) and state_key in coverage:
+        states.append(coverage[state_key])
+    elif not dedicated and coverage is not None and not isinstance(coverage, dict):
         return None
+    if not states or any(state not in ("ok", "complete") for state in states):
+        return None
+    count = analytics.get(field)
+    observed = utc_timestamp(analytics.get(f"{field}ObservedAt"))
+    if type(count) is not int or count < 0 or observed is None:
+        return None
+    return count, observed
+
+
+def _row_baskets_count(row: dict[str, Any]) -> int | None:
+    observation = _night_basket_observation(row)
+    return observation[0] if observation is not None else None
+
+
+def _night_observed_at(row: dict[str, Any]) -> datetime | None:
+    observation = _night_basket_observation(row)
+    return observation[1] if observation is not None else None
+
+
+def _night_observation_fresh(row: dict[str, Any]) -> bool:
+    observed = _night_observed_at(row)
+    now = _utc_now()
+    return observed is not None and now - timedelta(hours=1) <= observed <= now + timedelta(seconds=30)
+
+
+def _night_contains(key: str, at: datetime) -> bool:
+    try:
+        day = date.fromisoformat(key)
+    except ValueError:
+        return False
+    start, end = _night_window_hours()
+    zone = ZoneInfo(_night_timezone_name())
+    start_at = datetime(day.year, day.month, day.day, start, tzinfo=zone)
+    end_at = datetime(day.year, day.month, day.day, end, tzinfo=zone)
+    if end <= start:
+        end_at += timedelta(days=1)
+    return start_at <= at.astimezone(zone) < end_at
 
 
 def _night_median_cache(organization_id: int) -> dict[str, Any]:
@@ -1208,46 +1358,61 @@ def collect_night_median_baskets(organization_id: int, rows: list[dict[str, Any]
         return {"collected": False, "reason": "night_median_not_collecting"}
     now = _utc_now()
     window_key = _night_window_key(now.astimezone(ZoneInfo(_night_timezone_name())))
-    payload = _night_median_cache(organization_id)
-    windows = payload.setdefault("windows", {})
-    window = windows.setdefault(
-        window_key,
-        {
-            "windowKey": window_key,
-            "windowLabel": _night_window_label(),
-            "timezone": _night_timezone_name(),
-            "samples": {},
-            "applied": {},
-            "createdAt": now.isoformat(),
-        },
-    )
-    window["updatedAt"] = now.isoformat()
-    window["windowLabel"] = _night_window_label()
-    window["timezone"] = _night_timezone_name()
-    samples = window.setdefault("samples", {})
-    collected = 0
+    observations = []
     for row in rows:
         if not _night_median_enabled_for_row(row) or not _has_explicit_strategy(row):
             continue
+        # Collection precedes execution, so it needs the same product/strategy
+        # eligibility checks, but must not depend on a price interval being due.
+        if not row.get("settings", {}).get("automationEnabled", True) or row.get("meta", {}).get("status") in {"manual", "warmup"}:
+            continue
         frontend_id, strategy_id = _resolve_strategy_id(row)
-        if frontend_id == "illiquid":
+        if frontend_id == "illiquid" or FRONTEND_STRATEGY_BY_ID.get(frontend_id, {}).get("status") not in {"active", "special"}:
             continue
         article_id = str((row.get("meta") or {}).get("articleId") or "")
         nm_id = (row.get("meta") or {}).get("nmId")
         baskets = _row_baskets_count(row)
-        if not article_id or baskets is None:
+        scope = (row.get("meta") or {}).get("accountScope")
+        baseline = (row.get("meta") or {}).get("wbPriceBaseline")
+        if isinstance(baseline, dict) and (baseline.get("nmId"), baseline.get("articleId")) != (nm_id, article_id):
             continue
-        item = samples.setdefault(article_id, {"articleId": article_id, "nmId": nm_id, "values": []})
-        values = item.setdefault("values", [])
-        values.append({"at": now.isoformat(), "baskets": baskets})
-        item["values"] = values[-24:]
-        item["lastAt"] = now.isoformat()
-        item["medianBaskets"] = float(median([int(sample.get("baskets") or 0) for sample in item["values"]]))
-        collected += 1
-    payload["lastCollectedAt"] = now.isoformat()
-    payload["activeWindowKey"] = window_key
-    save_source_cache(organization_id, NIGHT_MEDIAN_SOURCE_KEY, _trim_night_median_cache(payload))
-    return {"collected": True, "windowKey": window_key, "skuCount": collected}
+        observed = _night_observed_at(row)
+        if not article_id or type(nm_id) is not int or not scope or baskets is None or not _night_observation_fresh(row) or not _night_contains(window_key, observed):
+            continue
+        observation_id = checksum([organization_id, scope, nm_id, window_key, observed.isoformat()])
+        observations.append((article_id, nm_id, scope, {"at": observed.isoformat(), "baskets": baskets,
+            "observationId": observation_id, "collectedAt": now.isoformat()}))
+    if not observations:
+        return {"collected": False, "reason": "no_valid_fresh_night_observations", "skuCount": 0}
+
+    def merge(payload):
+        window = payload.setdefault("windows", {}).setdefault(window_key, {"windowKey": window_key,
+            "windowLabel": _night_window_label(), "timezone": _night_timezone_name(), "samples": {}, "applied": {}})
+        collected = 0
+        for article_id, nm_id, scope, observation in observations:
+            samples = window.setdefault("samples", {})
+            item = samples.get(article_id)
+            if not isinstance(item, dict) or (item.get("nmId"), item.get("organizationId"), item.get("accountScope")) != (nm_id, organization_id, scope):
+                item = {"articleId": article_id, "nmId": nm_id, "organizationId": organization_id, "accountScope": scope, "values": []}
+            values = [value for value in (item.get("values") or []) if isinstance(value, dict)
+                and type(value.get("baskets")) is int and value["baskets"] >= 0
+                and (at := utc_timestamp(value.get("at"))) is not None and _night_contains(window_key, at)
+                and value.get("observationId") == checksum([organization_id, scope, nm_id, window_key, at.isoformat()])]
+            values = list({value["observationId"]: value for value in values}.values())
+            if any(value.get("observationId") == observation["observationId"] for value in values):
+                continue
+            values.append(observation)
+            item["values"] = sorted(values, key=lambda value: value["at"])[-24:]
+            item["lastAt"] = observation["at"]
+            item["medianBaskets"] = float(median(value["baskets"] for value in item["values"]))
+            samples[article_id] = item
+            collected += 1
+        payload.update(schemaVersion=2, lastCollectedAt=now.isoformat(), activeWindowKey=window_key)
+        return {"collected": True, "windowKey": window_key, "skuCount": collected}
+    try:
+        return mutate_night_cache(organization_id, merge)
+    except DispatchPersistenceError:
+        return {"collected": False, "reason": "night_observation_storage_unavailable", "skuCount": 0}
 
 
 def _night_median_apply_payload(row: dict[str, Any], organization_id: int | None) -> dict[str, Any] | None:
@@ -1261,18 +1426,32 @@ def _night_median_apply_payload(row: dict[str, Any], organization_id: int | None
     window = (payload.get("windows") or {}).get(window_key)
     if not isinstance(window, dict):
         return None
-    if article_id in (window.get("applied") or {}):
+    applied = (window.get("applied") or {}).get(article_id)
+    if isinstance(applied, dict) and applied.get("priceConfirmed") is True and applied.get("accountScope") == (row.get("meta") or {}).get("accountScope"):
         return None
     sample = (window.get("samples") or {}).get(article_id)
+    meta = row.get("meta") or {}
+    if not isinstance(sample, dict) or not meta.get("accountScope") or (sample.get("nmId"), sample.get("organizationId"), sample.get("accountScope")) != (meta.get("nmId"), organization_id, meta["accountScope"]):
+        return None
     values = sample.get("values") if isinstance(sample, dict) else None
     if not isinstance(values, list) or not values:
         return None
-    baskets_values = [int(item.get("baskets") or 0) for item in values if isinstance(item, dict)]
+    baskets_values = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict) or type(item.get("baskets")) is not int or item["baskets"] < 0:
+            continue
+        at = utc_timestamp(item.get("at"))
+        expected_id = checksum([organization_id, meta["accountScope"], meta.get("nmId"), window_key, at.isoformat()]) if at else None
+        if at is None or not _night_contains(window_key, at) or item.get("observationId") != expected_id or expected_id in seen:
+            continue
+        seen.add(expected_id)
+        baskets_values.append(item["baskets"])
     if not baskets_values:
         return None
     median_baskets = float(median(baskets_values))
     current_baskets = _row_baskets_count(row)
-    if current_baskets is None:
+    if current_baskets is None or not _night_observation_fresh(row):
         return None
     base_delta = _night_target_delta_pct()
     delta_pct = base_delta if current_baskets >= median_baskets else -base_delta
@@ -1282,24 +1461,9 @@ def _night_median_apply_payload(row: dict[str, Any], organization_id: int | None
         "currentBaskets": current_baskets,
         "samplesCount": len(baskets_values),
         "deltaPct": delta_pct,
+        "accountScope": meta["accountScope"],
+        "nmId": meta.get("nmId"),
     }
-
-
-def _mark_night_median_applied(organization_id: int | None, article_id: str, payload: dict[str, Any] | None) -> None:
-    if organization_id is None or not payload:
-        return
-    cache = _night_median_cache(organization_id)
-    window = (cache.get("windows") or {}).get(str(payload.get("windowKey") or ""))
-    if not isinstance(window, dict):
-        return
-    applied = window.setdefault("applied", {})
-    applied[article_id] = {
-        "at": _utc_now().isoformat(),
-        "medianBaskets": payload.get("medianBaskets"),
-        "currentBaskets": payload.get("currentBaskets"),
-        "deltaPct": payload.get("deltaPct"),
-    }
-    save_source_cache(organization_id, NIGHT_MEDIAN_SOURCE_KEY, _trim_night_median_cache(cache))
 
 
 def _execute_single_sku(
@@ -1341,6 +1505,10 @@ def _execute_single_sku(
     if frontend_id is None:
         return StrategyExecuteSkuResult(articleId=article_id, status="skipped", skipReason="no_strategy")
 
+    if FRONTEND_STRATEGY_BY_ID[frontend_id].get("status") == "disabled":
+        return StrategyExecuteSkuResult(articleId=article_id, status="blocked", frontendStrategyId=frontend_id,
+            blockedReasons=["strategy_disabled"], explanation="Стратегия отключена в каталоге")
+
     if not options.force and frontend_id != "illiquid" and _should_enforce_strategy_interval(options):
         not_due, next_at, interval_minutes = _strategy_interval_not_due(article_id, settings, organization_id)
         if not_due:
@@ -1372,20 +1540,53 @@ def _execute_single_sku(
     elif strategy_id == "night_price_mode":
         night_apply_payload = _night_median_apply_payload(row, organization_id)
 
+    required_blockers = _strategy_data_blockers(row, frontend_id)
+    if required_blockers:
+        days = (row.get("analytics") or {}).get("periodDays")
+        messages = {
+            "stock_missing": "Нет подтверждённого доступного остатка WB",
+            "ordersUnits_required": "Нет подтверждённых заказов за период анализа",
+            "periodDays_required": "Неизвестна длительность периода заказов",
+            "baskets_required": "Нет подтверждённых корзин WB",
+            "orders_plan_required": "Не задан допустимый план заказов",
+            "basket_norm_required": "Не задана допустимая норма корзин",
+            "comparison_zero_baseline": "Среднее заказов за 7 дней равно нулю; индекс не определён",
+            "main_orders_period_required": f"Нет полных заказов за {'3 завершённых дня' if frontend_id == 'optimal_price' else 'последний завершённый день'}",
+            "comparison_orders_period_required": "Нет полных заказов за 7 завершённых дней",
+            "hourly_sales_required": "Нет пригодной почасовой истории заказов",
+            "todayHourlyOrders_required": "Нет подтверждённых заказов текущего интервала",
+            "today_hourly_coverage_required": "Почасовая статистика не покрывает текущий интервал",
+        }
+        details = [{"code": code, "message": messages.get(code,
+            f"Обязательный источник данных неполный, устарел или недоступен: {code}"), "periodDays": days}
+            for code in required_blockers]
+        return StrategyExecuteSkuResult(articleId=article_id, status="blocked", frontendStrategyId=frontend_id,
+            strategyId=strategy_id, oldPriceKopecks=old_price, blockedReasons=required_blockers,
+            explanation="; ".join(detail["message"] for detail in details), blockerDetails=details)
+
     economics = _economics_from_row(row)
-    min_price = _settings_pmin_kopecks(settings)
-    if frontend_id == "illiquid":
-        min_price = _p_min_kopecks(
-            int(settings["cogsKopecks"]),
-            float(settings["wbCommissionPct"]),
-            int(settings["logisticsKopecks"]),
-            0,
-        )
+    min_price, _ = _effective_pmin(row)
     p_max = _settings_pmax_kopecks(settings, old_price)
+    if p_max < min_price:
+        return StrategyExecuteSkuResult(articleId=article_id, status="blocked", frontendStrategyId=frontend_id,
+            strategyId=strategy_id, oldPriceKopecks=old_price, blockedReasons=["price_bounds_conflict"],
+            explanation="P_MIN превышает P_MAX; проверьте экономические входы и ценовые ограничения")
+    if strategy_id == "night_price_mode" and night_apply_payload is None:
+        return StrategyExecuteSkuResult(
+            articleId=article_id,
+            status="skipped",
+            skipReason="night_mode_disabled",
+            frontendStrategyId=frontend_id,
+            strategyId=strategy_id,
+            explanation=f"Ночная медиана ждёт завершённое ночное окно {_night_window_label()} МСК и подтверждённые snapshots корзин.",
+            oldPriceKopecks=old_price,
+        )
+
     explanation = ""
     recommended: int | None = None
     blocked_reasons: list[str] = []
     guard_checked = False
+    strategy_min = strategy_max = None
 
     if frontend_id == "illiquid":
         recommended, explanation, blocked_reasons = _illiquid_recommended_price(row)
@@ -1407,11 +1608,11 @@ def _execute_single_sku(
     elif frontend_id == "plan_fact_daily":
         recommended, explanation = _plan_fact_recommended_price(row, min_price, metric="orders")
     elif frontend_id == "plan_fact_period":
-        configured_metric = str(ALGORITHM_SETTINGS_STATE.get("planFactMetric") or settings.get("repricerMode") or "orders")
+        configured_metric = str(_algorithm_settings().get("planFactMetric") or settings.get("repricerMode") or "orders")
         metric: Literal["orders", "revenue", "margin"] = "revenue" if configured_metric == "revenue" else ("margin" if configured_metric == "margin" else "orders")
         recommended, explanation = _plan_fact_recommended_price(row, min_price, metric=metric)
     elif frontend_id == "plan_fact_group":
-        recommended, explanation, blocked_reasons = _plan_fact_group_recommended_price(row, min_price, all_rows=all_rows)
+        recommended, explanation, blocked_reasons = _plan_fact_group_recommended_price(row, min_price, all_rows=all_rows, context=apply_context)
         if blocked_reasons:
             return StrategyExecuteSkuResult(
                 articleId=article_id,
@@ -1460,7 +1661,7 @@ def _execute_single_sku(
                 blockedReasons=blocked_reasons,
                 blockerDetails=[{"code": code, "message": explanation} for code in blocked_reasons],
             )
-    elif frontend_id == "baskets_orders" and str(ALGORITHM_SETTINGS_STATE.get("basketSignalMode") or "matrix") == "thresholds":
+    elif frontend_id == "baskets_orders" and str(_algorithm_settings().get("basketSignalMode") or "matrix") == "thresholds":
         recommended, explanation = _basket_threshold_recommended_price(row)
     elif frontend_id in EXTERNAL_STRATEGY_BLOCKERS:
         code, message = EXTERNAL_STRATEGY_BLOCKERS[frontend_id]
@@ -1475,6 +1676,12 @@ def _execute_single_sku(
         )
     elif strategy_id == "revenue_dynamics_4600":
         recommended, _delta_pct, _delta_kopecks, explanation = _revenue_recommended_price(row, economics)
+        _band_delta, rub_floor = _revenue_band_delta(_revenue_index(row))
+        if rub_floor:
+            if recommended > old_price:
+                strategy_min = old_price + rub_floor
+            elif recommended < old_price:
+                strategy_max = old_price - rub_floor
         guard_payload = build_price_recommendation(
             client=client,
             payload=PriceRecommendationRequest(
@@ -1482,6 +1689,8 @@ def _execute_single_sku(
                 articleId=article_id,
                 nmId=int(nm_id),
                 candidateSellerPriceKopecks=recommended,
+                strategyMinPriceKopecks=strategy_min,
+                strategyMaxPriceKopecks=strategy_max,
                 minPriceKopecks=min_price,
                 pMaxKopecks=p_max,
                 economics=economics,
@@ -1503,6 +1712,7 @@ def _execute_single_sku(
                 blockedReasons=blocked_reasons,
                 blockerDetails=_guard_detail_payload(guard_payload.guardReport),
             )
+        recommended = guard_payload.normalized.candidateSellerPriceKopecks
     else:
         dry_item = _build_dry_run_item(
             row,
@@ -1511,17 +1721,6 @@ def _execute_single_sku(
         )
         if dry_item is None:
             return StrategyExecuteSkuResult(articleId=article_id, status="skipped", skipReason="no_nm_id")
-
-        if strategy_id == "night_price_mode" and night_apply_payload is None:
-            return StrategyExecuteSkuResult(
-                articleId=article_id,
-                status="skipped",
-                skipReason="night_mode_disabled",
-                frontendStrategyId=frontend_id,
-                strategyId=strategy_id,
-                explanation=f"Ночная медиана ждёт завершённое ночное окно {_night_window_label()} МСК и собранные snapshots корзин.",
-                oldPriceKopecks=old_price,
-            )
 
         config_override = PRESET_CONFIG_OVERRIDES.get(frontend_id or "", {})
         if strategy_id == "revenue_dynamics_4600":
@@ -1612,6 +1811,8 @@ def _execute_single_sku(
                 blockerDetails=_guard_detail_payload(guard_payload.guardReport),
             )
 
+        recommended = guard_payload.normalized.candidateSellerPriceKopecks
+
     if recommended is None or recommended == old_price:
         return StrategyExecuteSkuResult(
             articleId=article_id,
@@ -1660,6 +1861,12 @@ def _execute_single_sku(
         pMaxKopecks=p_max,
         economics=economics,
         reason=explanation,
+        strategyMinPriceKopecks=strategy_min,
+        strategyMaxPriceKopecks=strategy_max,
+        expectedSettingsRevision=meta.get("pricingSettingsRevision"),
+        strategySourceEvidence=(row.get("analytics") or {}).get(
+            "nightStrategySourceEvidence" if strategy_id == "night_price_mode" else "strategySourceEvidence") or [],
+        nightWindowKey=night_apply_payload.get("windowKey") if night_apply_payload else None,
     )
     draft = create_price_draft(
         actor_id=actor_id,
@@ -1667,6 +1874,7 @@ def _execute_single_sku(
         client=client,
         payload=draft_request,
         sku_row=row,
+        organization_id=organization_id,
     )
     if draft.state == "blocked":
         return StrategyExecuteSkuResult(
@@ -1684,13 +1892,17 @@ def _execute_single_sku(
         )
 
     draft_id = draft.draftId
+    recommended = draft.normalized.candidateSellerPriceKopecks
+    draft_request = draft_request.model_copy(update={"candidateSellerPriceKopecks": recommended,
+        "expectedPriceBaseline": draft.sourceSnapshot.priceBaseline})
     job_id: str | None = None
     apply_state: str | None = None
     effective_auto_approve = bool(options.autoApprove)
     effective_apply_prices = bool(options.applyPrices)
-    if strategy_id == "night_price_mode" and _algorithm_bool_setting("nightMedianAutoApplyEnabled", False):
-        effective_auto_approve = True
-        effective_apply_prices = True
+    if strategy_id == "night_price_mode":
+        night_auto = _algorithm_bool_setting("nightMedianAutoApplyEnabled", False)
+        effective_auto_approve = effective_auto_approve and night_auto
+        effective_apply_prices = effective_apply_prices and night_auto
 
     if effective_auto_approve:
         approval_ref = options.approvalRef or f"strategy-exec-{uuid4().hex[:12]}"
@@ -1710,8 +1922,6 @@ def _execute_single_sku(
                 apply_mode = job.lastApplyResult.applyMode
                 if frontend_id == "illiquid":
                     _commit_illiquid_runtime_step(article_id, recommended, explanation)
-                if strategy_id == "night_price_mode":
-                    _mark_night_median_applied(organization_id, article_id, night_apply_payload)
                 record_repricer_price_change(
                     article_id=article_id,
                     sku_name=str(meta.get("name") or article_id),
@@ -1735,6 +1945,7 @@ def _execute_single_sku(
                     draftId=draft_id,
                     jobId=job_id,
                     applyState=apply_state or apply_mode,
+                    priceConfirmed=bool(job.lastApplyResult.priceConfirmed),
                 )
             if job.state in {"blocked", "failed", "needs_attention"}:
                 if "wb_rate_limited" in set(job.blockerIds):
@@ -1769,8 +1980,6 @@ def _execute_single_sku(
                     ],
                 )
     elif apply_context is not None:
-        if strategy_id == "night_price_mode":
-            _mark_night_median_applied(organization_id, article_id, night_apply_payload)
         pending = apply_context.setdefault("pending_price_approvals", [])
         pending.append(
             {
@@ -1789,6 +1998,7 @@ def _execute_single_sku(
                 "deltaKopecks": recommended - old_price,
                 "explanation": explanation,
                 "draftRequest": draft_request.model_dump(mode="json"),
+                "nightWindowKey": draft_request.nightWindowKey,
             }
         )
 
@@ -1817,7 +2027,30 @@ def preview_repricer_strategies(
     scenario: str = "complete",
     sku_rows: list[dict[str, Any]] | None = None,
     force: bool = False,
+    organization_id: int | None = None,
+    strategy_id_or_name: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> StrategyExecuteReport:
+    if strategy_id_or_name is not None:
+        # Exercise normal assignment validation/normalization against disposable
+        # state, then calculate prospective rows without saving any assignment.
+        rows = deepcopy(sku_rows if sku_rows is not None else list_repricer_skus(scenario, wb_token=wb_token))
+        transient_state: dict[str, Any] = {}
+        assignment = apply_frontend_strategy_assignment(
+            article_ids, strategy_id_or_name=strategy_id_or_name, scenario=scenario,
+            wb_token=wb_token, sku_rows=rows, config=config, state=transient_state,
+        )
+        assigned = {item["articleId"]: item for item in assignment["items"]}
+        for row in rows:
+            item = assigned.get(row["meta"]["articleId"])
+            if item is None:
+                continue
+            row["strategy"] = {**deepcopy(FRONTEND_STRATEGY_BY_ID[item["strategyId"]]),
+                "config": item["config"], "assignmentSource": item["assignmentSource"], "assignedAt": item["assignedAt"]}
+            row["meta"].update(transient_state["skuMetaOverrides"][item["articleId"]])
+            row["settings"].update(transient_state["skuSettingsOverrides"][item["articleId"]])
+            row["_previewLiquidationRuntime"] = transient_state.get("liquidationActive", {}).get(item["articleId"])
+        sku_rows = rows
     return execute_repricer_strategies(
         article_ids,
         client=client,
@@ -1833,12 +2066,13 @@ def preview_repricer_strategies(
             force=force,
         ),
         sku_rows=sku_rows,
-        organization_id=None,
+        organization_id=organization_id,
         trigger="preview",
         persist_run=False,
     )
 
 
+@with_organization_algorithm
 def execute_repricer_strategies(
     article_ids: list[str],
     *,
@@ -1870,13 +2104,22 @@ def execute_repricer_strategies(
             ],
         )
     rows = sku_rows if sku_rows is not None else list_repricer_skus(opts.scenario, wb_token=wb_token)
-    row_index = {row["meta"]["articleId"]: row for row in rows}
     unique_ids = list(dict.fromkeys(article_ids))
-    if organization_id is not None and not opts.force:
-        collect_night_median_baskets(organization_id, rows)
+    if organization_id is not None and wb_token:
+        rows = prepare_strategy_rows(rows, org=organization_id, token=wb_token,
+            algorithm=ALGORITHM_SETTINGS_STATE,
+            default_days=max(1, int(getattr(get_settings(), "repricer_wb_sync_period_days", 7) or 7)),
+            now=_utc_now(), queue_missing=opts.createDrafts, article_ids=unique_ids)
+    scope = binding_key(client, organization_id) or f"offline:{organization_id}"
+    verified_rows = [{**row, "meta": {**row["meta"], "accountScope": scope}} for row in rows
+                     if row.get("meta", {}).get("accountScope") in {None, scope}]
+    row_index = {row["meta"]["articleId"]: row for row in verified_rows}
+    selected_rows = [row_index[article_id] for article_id in unique_ids if article_id in row_index]
+    if organization_id is not None and not opts.force and opts.createDrafts:
+        collect_night_median_baskets(organization_id, selected_rows)
 
     results: list[StrategyExecuteSkuResult] = []
-    apply_context: dict[str, Any] = {}
+    apply_context: dict[str, Any] = {"group_row_index": row_index}
     for article_id in unique_ids:
         row = row_index.get(article_id)
         if row is None:
@@ -1896,7 +2139,7 @@ def execute_repricer_strategies(
                 actor_role=actor_role,
                 options=opts,
                 organization_id=organization_id,
-                all_rows=rows,
+                all_rows=verified_rows,
                 apply_context=apply_context,
             )
         )
@@ -2011,5 +2254,3 @@ def execute_all_assigned_skus(
         trigger=trigger,
         persist_run=persist_run,
     )
-
-

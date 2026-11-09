@@ -15,9 +15,18 @@ __pycache__/
 *.pyc
 .vercel/
 output/
+outputs/
+dist-local/
+*.tsbuildinfo
 .playwright-cli/
 
 # runtime
+.local-preview/
+.superpowers/
+*.sqlite
+*.sqlite-*
+*.db
+backend/daily/
 var/
 *.log
 .DS_Store

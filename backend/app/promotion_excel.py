@@ -93,10 +93,9 @@ def _cell_value(cell: ET.Element, shared: list[str]) -> str:
     return str(raw or "").strip()
 
 
-def _worksheet_rows(content: bytes) -> list[list[str]]:
+def _worksheet_rows(content: bytes, sheet_name: str = "xl/worksheets/sheet1.xml") -> list[list[str]]:
     with zipfile.ZipFile(BytesIO(content)) as zf:
         shared = _shared_strings(zf)
-        sheet_name = "xl/worksheets/sheet1.xml"
         if sheet_name not in zf.namelist():
             sheet_name = next((name for name in zf.namelist() if name.startswith("xl/worksheets/sheet")), sheet_name)
         root = ET.fromstring(zf.read(sheet_name))

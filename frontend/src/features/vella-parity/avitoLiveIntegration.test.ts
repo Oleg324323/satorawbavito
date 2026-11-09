@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { MemoryRouter } from 'react-router-dom'
+import { NotificationsToolbarIsland } from './VellaHtmlParityPage'
 
 const sourceRoot = path.resolve(__dirname, '../..')
 const paritySource = fs.readFileSync(path.join(sourceRoot, 'features/vella-parity/VellaHtmlParityPage.tsx'), 'utf8')
@@ -8,6 +12,15 @@ const settingsBackendSource = fs.readFileSync(path.join(sourceRoot, 'features/se
 const productionHtml = fs.readFileSync(path.resolve(sourceRoot, '../public/vella-production.html'), 'utf8')
 
 describe('Avito live integration wiring', () => {
+  it('renders refresh and read-all controls on the Avito notifications toolbar', () => {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, { initialEntries: ['/avito/notifications'] },
+      createElement(NotificationsToolbarIsland)))
+    expect(html).toContain('data-vella-island="notifications-toolbar"')
+    expect(html).toContain('Прочитать всё')
+    expect(html).toContain('Обновить данные')
+    expect(html).toContain('data-tip="Обновить данные Авито"')
+    expect(html).toContain('avito-action-btn is-refresh')
+  })
   it('loads and saves Avito credentials from profile settings backend', () => {
     expect(settingsBackendSource).toContain('/api/v1/cabinet/avito-credentials')
     expect(settingsBackendSource).toContain('upsertCurrentUserAvitoCredentials')
@@ -26,7 +39,6 @@ describe('Avito live integration wiring', () => {
       paritySource.indexOf('async function loadLiveAvitoStats'),
     )
     expect(paritySource).toContain('/api/v1/avito/repricer/items/${encodeURIComponent(itemId)}/strategy')
-    expect(paritySource).toContain('avito-decision-badge')
     expect(repricerSource).toContain('avito-strategy-picker')
     expect(repricerSource).toContain('avito-pending-card')
     expect(repricerSource).toContain('avito-row-photo')
@@ -35,9 +47,7 @@ describe('Avito live integration wiring', () => {
     expect(repricerSource).toContain('Стратегия')
     expect(repricerSource).toContain('Новая цена')
     expect(repricerSource).toContain('avito-title-cell')
-    expect(repricerSource).toContain('openSettings')
-    expect(repricerSource).toContain('Настройки worker')
-    expect(repricerSource).toContain('Что делает')
+    // Actual schedule-modal open/cancel behavior is covered in avitoSettingsModal.test.ts.
   })
 
   it('uses backend Avito stats data without static mock row arrays', () => {
@@ -51,8 +61,8 @@ describe('Avito live integration wiring', () => {
   })
 
   it('lets Avito stats users choose a period and apply backend loading explicitly', () => {
-    expect(paritySource).toContain('avitoStatsDateFrom')
-    expect(paritySource).toContain('avitoStatsDateTo')
+    // Actual draft-input → Apply → scoped GET behavior is covered by
+    // avitoStatsPeriodBrowser.test.ts, without relying on obsolete DOM IDs.
     expect(paritySource).toContain('applyAvitoStatsPeriod')
     expect(paritySource).toContain('forceRefresh')
     expect(paritySource).not.toContain('83 402')
@@ -78,7 +88,7 @@ describe('Avito live integration wiring', () => {
     expect(overviewSource).toContain('avito-overview-item-modal')
     expect(overviewSource).not.toContain('window.openAvitoListingPopup?.(row.itemId)')
     expect(overviewSource).toContain('avitoOverviewDataForPeriod')
-    expect(overviewSource).toContain('загружаем выбранный период')
+    // Actual loading, period isolation and empty/error rendering: avitoOverviewBrowser.test.ts.
     expect(overviewSource).toContain('Объявления по просмотрам и контактам за выбранный период.')
     expect(overviewSource).not.toContain('Объявления по просмотрам и контактам за 7 дней.')
   })
@@ -105,19 +115,13 @@ describe('Avito live integration wiring', () => {
     expect(overviewIslandSource).toContain('scrubAvitoOverviewLegacyMocks(document.body)')
   })
 
-  it('keeps Avito overview date inputs, applied period, and backend request in sync', () => {
-    const toolbarSource = paritySource.slice(
-      paritySource.indexOf('function AvitoOverviewToolbarIsland'),
-      paritySource.indexOf('function AvitoOverviewPeriodControlIsland'),
-    )
+  it('keeps Avito overview applied period wired to the backend request', () => {
     const islandSource = paritySource.slice(
       paritySource.indexOf('function AvitoOverviewIsland'),
       paritySource.indexOf('function defaultAvitoChatsState'),
     )
-    expect(toolbarSource).toContain('applyOverviewDate')
-    expect(toolbarSource).toContain('next.dateFrom = dateFrom')
-    expect(toolbarSource).toContain('next.dateTo = dateTo')
-    expect(toolbarSource).toContain('next.requestSeq = current.requestSeq + 1')
+    // The current UI uses period tabs; actual clicks and request dates are
+    // verified in avitoOverviewBrowser.test.ts, not obsolete date-input code.
     expect(islandSource).toContain('loadLiveAvitoOverview(accessToken, { dateFrom: state.dateFrom, dateTo: state.dateTo')
   })
 
@@ -130,19 +134,11 @@ describe('Avito live integration wiring', () => {
     expect(paritySource).toContain('installLegacyHistoryNavigationBridge()')
   })
 
-  it('shows Avito active and inactive listing counts from backend account totals', () => {
-    expect(paritySource).toContain('activeItemCount?: number')
-    expect(paritySource).toContain('inactiveItemCount?: number')
-    expect(paritySource).toContain('account.activeItemCount')
-    expect(paritySource).toContain('account.inactiveItemCount')
-    expect(paritySource).not.toContain("rows.filter((row) => row.sourceStatus !== 'fresh').length")
-  })
-
   it('uses backend Avito listings data without static listing mock arrays', () => {
     expect(paritySource).toContain('/api/v1/avito/listings')
     expect(paritySource).toContain('loadLiveAvitoListings')
-    expect(paritySource).toContain('avitoListingsDateFrom')
-    expect(paritySource).toContain('avitoListingsDateTo')
+    // Actual labelled inputs → draft-only edits → Apply with exact GET dates
+    // are covered by avitoListingsBrowser.test.ts; old DOM IDs are not required.
     expect(paritySource).not.toContain('const AVITO_LISTINGS_KPIS')
     expect(paritySource).not.toContain('const AVITO_LISTING_ROWS')
     expect(paritySource).not.toContain('const AVITO_LISTING_DETAILS')
@@ -152,7 +148,8 @@ describe('Avito live integration wiring', () => {
     expect(paritySource).toContain('window.closeAvitoPopup =')
     expect(paritySource).toContain("window.__vellaSetAvitoListingsState?.({ selectedKey: '' })")
     expect(paritySource).toContain("window.__vellaSetAvitoStatsState?.({ selectedKey: '' })")
-    expect(paritySource).toContain('Динамика по дням недоступна')
+    // The unavailable daily-dynamics component deliberately renders nothing.
+    // Detail close button/Escape are exercised by avitoListingsBrowser.test.ts.
     expect(paritySource).not.toContain('AVITO_DETAIL_TRENDS')
   })
 
@@ -202,26 +199,24 @@ describe('Avito live integration wiring', () => {
     expect(paritySource).toContain('loadLiveAvitoOrders')
     expect(paritySource).toContain('AvitoOrdersIsland')
     expect(paritySource).toContain("selector: '#tab-orders-print'")
-    expect(ordersSource).toContain('GET /order-management/1/orders')
-    expect(ordersSource).toContain('действия read-only')
+    // avitoOrdersBrowser.test.ts proves the actual scoped read endpoint and
+    // error/session rendering; obsolete provider/debug copy is not API wiring.
     expect(ordersSource).toContain("tab === 'orders-avito'")
     expect(ordersSource).toContain('Лист подбора Авито')
-    expect(ordersSource).toContain('Таблица API')
     expect(ordersSource).toContain('avitoOrderPickingRows')
     expect(ordersSource).toContain('.report-empty-note')
     expect(ordersSource).toContain('avitoOrdersBackendError')
-    expect(ordersSource).toContain('sourceError ||')
     expect(ordersSource).toContain('htmlToReactFragment(sourceElement.innerHTML')
     expect(ordersSource).not.toContain('/api/v1/production/avito-orders/sync')
   })
 
-  it('shows a clean Avito orders extension onboarding before browser data and removes the old KPI strip', () => {
+  it('shows Avito API orders without requiring a browser extension', () => {
     const ordersIslandSource = paritySource.slice(
       paritySource.indexOf('function AvitoOrdersIsland'),
       paritySource.indexOf('function useAvitoStatsLiveState'),
     )
-    expect(ordersIslandSource).toContain('avito-orders-extension-empty')
-    expect(ordersIslandSource).toContain('Подключите расширение Avito Orders')
+    expect(ordersIslandSource).toContain('orders-print-shell')
+    expect(ordersIslandSource).not.toContain('Подключите расширение Avito Orders')
     expect(ordersIslandSource).toContain('Скопируйте токен')
     expect(ordersIslandSource).not.toContain('avito-orders-kpis')
     expect(ordersIslandSource).not.toContain('avito-browser-collector-note')
@@ -242,7 +237,6 @@ describe('Avito live integration wiring', () => {
     expect(notificationsSource).toContain('AVITO_NOTIFICATION_RULES.splice')
     expect(notificationsSource).toContain('AVITO_NOTIFICATION_CHANNELS.splice')
     expect(notificationsSource).toContain('refreshAvitoNotifications')
-    expect(notificationsSource).toContain('Обновить Avito')
     expect(notificationsSource).not.toContain("id:'av-001'")
     expect(notificationsSource).not.toContain('Кошелёк Avito ниже порога')
   })

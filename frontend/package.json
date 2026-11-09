@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm run snapshot:vella && vite",
     "snapshot:vella": "node scripts/generate-vella-production-snapshot.mjs",
-    "build": "npm run snapshot:vella && tsc -b && vite build",
+    "build": "node ../avito-orders-extension/scripts/build.mjs && npm run snapshot:vella && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "baseline:vella": "npm run build && node scripts/capture-vella-baseline.mjs",
@@ -135,6 +135,7 @@
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "chart.js": "^4.5.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

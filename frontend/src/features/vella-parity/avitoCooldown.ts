@@ -4,33 +4,33 @@ function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === 'object' ? value as JsonRecord : null
 }
 
-function pushRetryAfterCandidate(candidates: number[], value: unknown, nowMs: number) {
+function pushRetryAfterCandidate(absolute: number[], relative: number[], value: unknown, nowMs: number) {
   if (typeof value === 'string') {
     const timestamp = Date.parse(value)
-    if (Number.isFinite(timestamp) && timestamp > nowMs) candidates.push(timestamp)
+    if (Number.isFinite(timestamp)) absolute.push(timestamp)
     return
   }
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    candidates.push(nowMs + value * 1000)
+    relative.push(nowMs + value * 1000)
   }
 }
 
-function collectRetryAfterCandidates(candidates: number[], source: JsonRecord | null, nowMs: number) {
+function collectRetryAfterCandidates(absolute: number[], relative: number[], source: JsonRecord | null, nowMs: number) {
   if (!source) return
-  pushRetryAfterCandidate(candidates, source.retryAfterUntil, nowMs)
-  pushRetryAfterCandidate(candidates, source.retryAfterSeconds, nowMs)
+  pushRetryAfterCandidate(absolute, relative, source.retryAfterUntil, nowMs)
+  pushRetryAfterCandidate(absolute, relative, source.retryAfterSeconds, nowMs)
   for (const value of Object.values(source)) {
-    if (value && typeof value === 'object') collectRetryAfterCandidates(candidates, value as JsonRecord, nowMs)
+    if (value && typeof value === 'object') collectRetryAfterCandidates(absolute, relative, value as JsonRecord, nowMs)
   }
 }
 
 export function avitoCooldownUntilFromPayload(payload: unknown, nowMs = Date.now()) {
   const root = asRecord(payload)
   const source = asRecord(root?.source)
-  const candidates: number[] = []
-  collectRetryAfterCandidates(candidates, source, nowMs)
-  if (!candidates.length) return null
-  return new Date(Math.min(...candidates)).toISOString()
+  const absolute: number[] = [], relative: number[] = []
+  collectRetryAfterCandidates(absolute, relative, source, nowMs)
+  const candidates = absolute.length ? absolute.filter(timestamp => timestamp > nowMs) : relative
+  return candidates.length ? new Date(Math.min(...candidates)).toISOString() : null
 }
 
 export function avitoCooldownRemainingMs(cooldownUntil: string | null | undefined, nowMs = Date.now()) {

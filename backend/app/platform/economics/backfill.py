@@ -707,6 +707,7 @@ def apply_cost_backfill(
     marketplace_account_id: int,
     snapshot: LegacyCostSnapshot,
     chunk_size: int = 100,
+    include_costs: bool = True,
 ) -> BackfillApplyResult:
     if chunk_size < 1:
         raise BackfillValidationError("chunk_size must be positive")
@@ -798,7 +799,7 @@ def apply_cost_backfill(
 
         service = CostsService(session, organization_id)
         for item, catalog_sku_id in identities:
-            for cost in item.costs:
+            for cost in item.costs if include_costs else ():
                 service.set_cost(
                     catalog_sku_id=catalog_sku_id,
                     amount_kopecks=cost.amount_kopecks,
@@ -810,3 +811,59 @@ def apply_cost_backfill(
                 )
                 cost_commands += 1
     return BackfillApplyResult(len(mapped), cost_commands, preview)
+
+
+def confirm_saved_costs(
+    session: Session,
+    *,
+    organization_id: int,
+    marketplace_account_id: int,
+    snapshot: LegacyCostSnapshot,
+    effective_from: datetime,
+) -> dict[str, int]:
+    """Explicit operator confirmation, never called by report reads or syncs.
+
+    Reuse the identity checks/importer, but not its assumed/default cost import.
+    Only values actually entered in legacy settings are eligible. Existing
+    canonical histories are left alone, including later or missing versions.
+    The caller must obtain permission for the values and their effective date.
+    """
+    effective_at = _aware_utc(effective_from)
+    if effective_at > _aware_utc(snapshot.captured_at):
+        raise BackfillValidationError("confirmation cannot begin in the future")
+    result = apply_cost_backfill(session, organization_id=organization_id,
+        marketplace_account_id=marketplace_account_id, snapshot=snapshot,
+        include_costs=False)
+    confirmed = preserved = missing = 0
+    from app.platform.economics.orm import CatalogCostVersionRow
+
+    for item in result.preview.items:
+        if item.status != "mapped":
+            continue
+        candidates = [value for value in item.costs
+                      if value.source not in {"legacy_type_default", "legacy_missing"}]
+        if not candidates or candidates[-1].amount_kopecks is None:
+            missing += 1
+            continue
+        set_tenant_context(session, organization_id)
+        sku = session.scalar(select(CatalogSkuRow).where(
+            CatalogSkuRow.organization_id == organization_id,
+            CatalogSkuRow.code == item.seller_article).with_for_update())
+        if session.scalar(select(CatalogCostVersionRow.cost_version_id).where(
+            CatalogCostVersionRow.organization_id == organization_id,
+            CatalogCostVersionRow.catalog_sku_id == sku.catalog_sku_id).limit(1)) is not None:
+            preserved += 1
+            continue
+        CostsService(session, organization_id).set_cost(
+            catalog_sku_id=sku.catalog_sku_id,
+            amount_kopecks=candidates[-1].amount_kopecks, value_state="configured",
+            effective_from=effective_at, source="user_confirmed_legacy_cost",
+            source_reference=_reference("confirmed", int(item.external_product_id), {
+                "nmId": item.external_product_id, "effectiveFrom": effective_at.isoformat(),
+                "cost": candidates[-1].amount_kopecks,
+            }), evidence_status="dated")
+        confirmed += 1
+    return {"mapped": result.applied_count, "confirmed": confirmed,
+            "preserved": preserved, "missing": missing,
+            "needsReview": result.preview.needs_review_count,
+            "rejected": result.preview.rejected_count}

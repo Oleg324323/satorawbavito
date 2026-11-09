@@ -1,0 +1,4 @@
+{
+  "canonicalUtf8Json": "{\"actorKind\":\"membership\",\"actorMembershipId\":7,\"afterState\":null,\"aggregateId\":\"00000000-0000-4000-8000-000000000002\",\"aggregateVersion\":9223372036854775808,\"attemptId\":null,\"beforeState\":null,\"commandId\":null,\"decisionId\":null,\"draftId\":null,\"eventId\":\"00000000-0000-4000-8000-000000000001\",\"eventKind\":\"policy.created\",\"marketplace\":\"wb\",\"marketplaceAccountId\":11,\"occurredAt\":\"2026-09-09T00:00:00.123456Z\",\"organizationId\":1,\"policyId\":\"00000000-0000-4000-8000-000000000002\",\"reasonCode\":null,\"schemaVersion\":\"review-audit-v1\"}",
+  "sha256": "76c1f81b4cad8eb1fddfbad5f3d7a9705cb9f5e30db58a6398413e67a6412a17"
+}

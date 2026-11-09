@@ -71,6 +71,11 @@ class WbRateLimitWait(BaseModel):
 
 
 DEFAULT_WB_RATE_LIMIT_POLICIES: dict[str, WbRateLimitPolicy] = {
+    # https://dev.wildberries.ru/en/openapi/work-with-products — Content reads.
+    "content_read": WbRateLimitPolicy(
+        category="content_read", periodSeconds=60, limit=100,
+        intervalMs=600, burst=5, defaultRequestCost=1, status409Cost=1,
+    ),
     "prices_discounts": WbRateLimitPolicy(
         category="prices_discounts",
         periodSeconds=6,
@@ -94,7 +99,7 @@ DEFAULT_WB_RATE_LIMIT_POLICIES: dict[str, WbRateLimitPolicy] = {
         periodSeconds=60,
         limit=3,
         intervalMs=20_000,
-        burst=3,
+        burst=1,
         defaultRequestCost=1,
         status409Cost=1,
     ),
@@ -227,6 +232,7 @@ DEFAULT_WB_RATE_LIMIT_POLICIES: dict[str, WbRateLimitPolicy] = {
 }
 
 DEFAULT_PATH_POLICIES: list[tuple[str, str]] = [
+    ("/content/v2/get/cards/list", "content_read"),
     ("/api/v1/calendar/promotions", "promotions_calendar"),
     ("/adv/v3/fullstats", "ads_fullstats"),
     ("/adv/v1/promotion/count", "ads_meta"),
@@ -480,17 +486,48 @@ class RateLimitedWbApiClient:
             }
 
     def request(self, request: WbApiRequest) -> WbApiResponseEnvelope:
+        from app.wb_api.report_reads import active_report_read
+        context = active_report_read.get()
+        if context is not None and isinstance(self.inner, RealWbApiClient):
+            return context.request(self.inner, request, lambda heartbeat: self._request(request, heartbeat, context))
+        return self._request(request)
+
+    def _request(self, request: WbApiRequest, heartbeat=None, report_session=None) -> WbApiResponseEnvelope:
         category = resolve_rate_limit_policy(request.path)
         limiter = self._limiters.get(category)
+        budget = None
+        if report_session is not None and limiter is not None:
+            from app.wb_api.report_rate_limit import ReportReadBudget
+            budget = ReportReadBudget(report_session.organization_id, report_session.credential_digest,
+                                      self.inner.base_url, limiter.policy)
+            limited = budget.acquire(heartbeat)
+            if limited is not None:
+                return WbApiResponseEnvelope(request=request, ok=False, statusCode=429, rateLimit=limited,
+                    error=WbApiError(statusCode=429, code='WB_SHARED_RATE_LIMIT',
+                        message='WB ограничил частоту запросов. Повторите загрузку после паузы.',
+                        retryable=True, rateLimit=limited))
+            limiter = None  # Do not apply a second process-local wait after the shared slot.
 
         if limiter is not None:
             with self._lock:
                 waits = limiter.wait_before_request()
             wait_seconds = max((wait.waitSeconds for wait in waits), default=0.0)
             if wait_seconds > 0:
-                self._sleep(wait_seconds)
+                if heartbeat is None:
+                    self._sleep(wait_seconds)
+                else:
+                    while wait_seconds > 0:
+                        heartbeat()
+                        step = min(1.0, wait_seconds)
+                        self._sleep(step)
+                        wait_seconds -= step
 
+        if heartbeat is not None:
+            heartbeat()
         response = self.inner.request(request)
+
+        if budget is not None:
+            budget.observe(response)
 
         if limiter is not None:
             with self._lock:
@@ -531,6 +568,8 @@ class FakeWbApiClient:
             )
 
         data = self.fixtures.get(request.path)
+        if data is None and request.path.startswith("/api/finance/v1/sales-reports/detailed/"):
+            data = self.fixtures.get("/api/finance/v1/sales-reports/detailed")
         if data is None:
             status_code = 404
             return WbApiResponseEnvelope(
@@ -542,9 +581,32 @@ class FakeWbApiClient:
                 wbRequestId=wb_request_id,
             )
 
+        status_code = 200
+        if (
+            request.path.startswith("/api/finance/v1/sales-reports/detailed")
+            and isinstance(data, dict)
+            and isinstance(data.get("data"), list)
+        ):
+            body = request.jsonBody or {}
+            cursor = int(body.get("rrdId", 0))
+            rows = data["data"]
+            if request.path.startswith("/api/finance/v1/sales-reports/detailed/"):
+                report_id = int(request.path.rsplit("/", 1)[1])
+                rows = [item for item in rows if int(item.get("reportId") or 0) == report_id]
+            if cursor:
+                rows = [item for item in rows if int(item.get("rrdId") or item.get("rrd_id") or 0) > cursor]
+            rows = rows[:int(body.get("limit", 100_000))]
+            data = {**data, "data": rows}
+            status_code = 200 if rows else 204
+
+        if request.path == "/api/finance/v1/sales-reports/list" and isinstance(data, dict) and isinstance(data.get("data"), list):
+            body = request.jsonBody or {}
+            offset = int(body.get("offset", 0))
+            data = {**data, "data": data["data"][offset:offset + int(body.get("limit", 1000))]}
+
         return WbApiResponseEnvelope(
             request=request,
-            statusCode=200,
+            statusCode=status_code,
             ok=True,
             data=data,
             rateLimit=rate_limit,
@@ -1157,6 +1219,7 @@ def build_fake_client(scenario: str) -> FakeWbApiClient:
         "data": [
             {
                 "reportId": 307401554,
+                "currency": "RUB",
                 "retailAmountSum": "2125",
                 "forPaySum": "980",
                 "deliveryServiceSum": "38.5",
@@ -1169,9 +1232,14 @@ def build_fake_client(scenario: str) -> FakeWbApiClient:
     finance_sales_reports_detailed = {
         "data": [
             {
+                "rrdId": 1,
                 "reportId": 307401554,
                 "nmId": 123456,
                 "docTypeName": "Продажа",
+                "sellerOperName": "Продажа",
+                "currency": "RUB",
+                "ppvzSalesCommission": "165",
+                "acquiringFee": "0",
                 "quantity": 1,
                 "retailAmount": "1145",
                 "retailPrice": "1290",

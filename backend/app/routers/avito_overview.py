@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.avito.auth import resolve_user_avito_access_token
+from app.avito.auth import resolve_user_avito_access_token, scoped_avito_cache_key
 from app.avito.chats import AvitoChatsFetchRequest, build_avito_chats_client
 from app.avito.listings import AvitoListingsFetchRequest, build_avito_listings_client
 from app.avito.reviews import AvitoReviewsFetchRequest, build_avito_reviews_client
@@ -14,11 +14,123 @@ from app.cabinet.store import get_organization_avito_credentials_secret, get_use
 from app.config import get_settings
 from app.control_plane.auth import actor_from_request, has_permission
 from app.repricer_cache.store import get_source_cache, save_source_cache
+from app.routers.avito_stats import _cache_key as _stats_cache_key
 
 
 router = APIRouter(tags=["avito-overview"])
 
 AVITO_OVERVIEW_RATE_LIMIT_COOLDOWN_SECONDS = 70
+_ERROR_SECTIONS = ("stats", "listings", "chats", "reviews")
+_ERROR_CODES = frozenset({
+    "auth_required", "forbidden_scope", "rate_limited", "transport_error",
+    "avito_server_error", "avito_request_failed", "avito_reviews_failed",
+    "avito_listings_failed", "avito_listing_details_failed", "avito_section_unavailable",
+})
+_ERROR_BLOCKERS = frozenset({
+    "AVITO_AUTH", "AVITO_SCOPE", "AVITO_RATE_LIMIT", "AVITO_STATS",
+    "AVITO_CHATS", "AVITO_REVIEWS", "AVITO_RATINGS_SCOPE", "AVITO_LISTINGS",
+    "AVITO_LISTING_DETAILS",
+})
+_STATS_SUMMARY_FIELDS = (
+    "impressions", "views", "contacts", "favorites", "spendKopecks", "orders", "buyouts",
+    "conversionPct", "orderConversionPct", "buyoutPct",
+)
+
+
+def _has_cached_stats(cached: Any) -> bool:
+    if not isinstance(cached, dict) or not isinstance(cached.get("summary"), dict):
+        return False
+    if cached.get("status") == "synced":
+        return True
+    source = cached.get("source") if isinstance(cached.get("source"), dict) else {}
+    sections = source.get("sections") if isinstance(source.get("sections"), dict) else {}
+    stats = sections.get("stats") if isinstance(sections.get("stats"), dict) else {}
+    return stats.get("status") == "synced"
+
+
+def _use_cached_stats(payload: dict[str, Any], cached_stats: dict[str, Any] | None) -> dict[str, Any]:
+    if not cached_stats:
+        return payload
+    payload["summary"].update({key: cached_stats[key] for key in _STATS_SUMMARY_FIELDS if key in cached_stats})
+    payload["source"]["cache"]["stats"] = "hit"
+    return payload
+
+
+def _safe_retry_instant(value: Any) -> str | None:
+    if type(value) is not str or not value or len(value) > 64:
+        return None
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        return instant.isoformat()
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _safe_section_error(value: Any) -> dict[str, Any]:
+    safe = {"code": "avito_section_unavailable", "message": "Avito section unavailable",
+            "retryable": True, "blockerIds": []}
+    try:
+        raw = value if type(value) is dict else {
+            key: getattr(value, key, None) for key in ("code", "message", "retryable", "blockerIds")
+        }
+        rate_limited = _is_rate_limited_error(value if isinstance(value, Exception) else raw)
+        code = raw.get("code")
+        if type(code) is str and code in _ERROR_CODES:
+            safe["code"] = code
+        if type(raw.get("retryable")) is bool:
+            safe["retryable"] = raw["retryable"]
+        blockers = raw.get("blockerIds")
+        if type(blockers) in (list, tuple):
+            safe["blockerIds"] = sorted({item for item in blockers
+                                          if type(item) is str and item in _ERROR_BLOCKERS})
+        if rate_limited:
+            safe.update(code="rate_limited", message="Avito rate limit is active")
+            safe["blockerIds"] = sorted(set(safe["blockerIds"]) | {"AVITO_RATE_LIMIT"})
+        instant = _safe_retry_instant(raw.get("retryAfterUntil"))
+        if instant is not None:
+            safe["retryAfterUntil"] = instant
+        seconds = raw.get("retryAfterSeconds")
+        if type(seconds) is int and 1 <= seconds <= 2**31 - 1:
+            safe["retryAfterSeconds"] = seconds
+        return safe
+    except Exception:
+        return {"code": "avito_section_unavailable", "message": "Avito section unavailable",
+                "retryable": True, "blockerIds": []}
+
+
+def _safe_section_errors(value: Any) -> dict[str, Any]:
+    if type(value) is not dict:
+        return {}
+    return {name: _safe_section_error(value[name]) for name in _ERROR_SECTIONS if name in value}
+
+
+def _safe_cached_diagnostics(cached: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(cached)
+    original_source = payload.get("source")
+    source = dict(original_source) if type(original_source) is dict else {}
+    errors = _safe_section_errors(source.get("errors"))
+    source["errors"] = errors
+    original_cache = source.get("cache")
+    cache = dict(original_cache) if type(original_cache) is dict else {}
+    if "retryAfterUntil" in cache:
+        cache["retryAfterUntil"] = _safe_retry_instant(cache["retryAfterUntil"])
+    source["cache"] = cache
+    payload["source"] = source
+    events = payload.get("events")
+    if type(events) is list:
+        clean_events = []
+        for event in events:
+            kind = event.get("kind") if type(event) is dict else None
+            if type(kind) is str and kind in {f"{name}_blocked" for name in _ERROR_SECTIONS}:
+                name = kind[:-8]
+                clean_events.extend(_events(stats_rows=[], listings_summary={}, chats_summary={},
+                                            reviews_summary={}, section_errors={name: errors.get(name, {})}))
+            else:
+                clean_events.append(event)
+        payload["events"] = clean_events
+    return payload
 
 
 def _date_range(date_from: date | None, date_to: date | None, period_days: int) -> tuple[date, date, int]:
@@ -61,11 +173,11 @@ def _ratio(numerator: int | None, denominator: int | None) -> float | None:
 
 
 def _section_error(exc: Exception) -> dict[str, Any]:
-    return {"code": exc.__class__.__name__, "message": str(exc), "retryable": True}
+    return _safe_section_error(exc)
 
 
 def _cache_hit_payload(cached: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(cached)
+    payload = _safe_cached_diagnostics(cached)
     source = dict(payload.get("source") or {})
     cache = dict(source.get("cache") or {})
     cache["status"] = "hit"
@@ -75,13 +187,13 @@ def _cache_hit_payload(cached: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stale_cached_payload(cached: dict[str, Any], errors: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(cached)
+    payload = _safe_cached_diagnostics(cached)
     payload["status"] = "partial"
     source = dict(payload.get("source") or {})
     cache = dict(source.get("cache") or {})
     cache["status"] = "stale"
     source["cache"] = cache
-    source["errors"] = errors
+    source["errors"] = _safe_section_errors(errors)
     payload["source"] = source
     return payload
 
@@ -89,7 +201,7 @@ def _stale_cached_payload(cached: dict[str, Any], errors: dict[str, Any]) -> dic
 def _rate_limit_error(message: str = "Avito rate limit is active") -> dict[str, Any]:
     return {
         "code": "rate_limited",
-        "message": message,
+        "message": "Avito rate limit is active",
         "retryable": True,
         "blockerIds": ["AVITO_RATE_LIMIT"],
     }
@@ -112,7 +224,7 @@ def _has_rate_limited_section(errors: dict[str, Any]) -> bool:
 def _active_rate_limit(cooldown: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(cooldown, dict):
         return None
-    retry_after_until = cooldown.get("retryAfterUntil")
+    retry_after_until = _safe_retry_instant(cooldown.get("retryAfterUntil"))
     if not retry_after_until:
         return None
     try:
@@ -125,26 +237,27 @@ def _active_rate_limit(cooldown: dict[str, Any] | None) -> dict[str, Any] | None
     if retry_at <= now:
         return None
     return {
-        **_rate_limit_error(str(cooldown.get("message") or "Avito API is cooling down after 429")),
+        **_rate_limit_error(),
         "retryAfterUntil": retry_at.isoformat(),
         "retryAfterSeconds": max(1, int((retry_at - now).total_seconds())),
     }
 
 
-def _save_rate_limit(organization_id: int, account_ids: list[str], *, message: str | None = None) -> dict[str, Any]:
+def _save_rate_limit(organization_id: int, account_ids: list[str], access_token: str, *, message: str | None = None) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     retry_after_until = now + timedelta(seconds=AVITO_OVERVIEW_RATE_LIMIT_COOLDOWN_SECONDS)
     payload = {
         "code": "rate_limited",
-        "message": message or "Avito HTTP 429",
+        "message": "Avito rate limit is active",
         "retryAfterUntil": retry_after_until.isoformat(),
         "savedAt": now.isoformat(),
     }
-    save_source_cache(organization_id, _rate_limit_key(account_ids), payload)
+    save_source_cache(organization_id, scoped_avito_cache_key(_rate_limit_key(account_ids), access_token), payload)
     return payload
 
 
 def _empty_rate_limited_payload(start: date, end: date, days: int, error: dict[str, Any]) -> dict[str, Any]:
+    error = _safe_section_error(error)
     listings_summary = {"total": 0, "active": 0, "inactive": 0, "removed": 0, "old": 0, "blocked": 0}
     chats_summary = {"total": 0, "unread": 0, "withItems": 0}
     reviews_summary = {"total": 0, "unanswered": 0, "answered": 0, "lowRating": 0}
@@ -162,9 +275,9 @@ def _empty_rate_limited_payload(start: date, end: date, days: int, error: dict[s
             "conversionPct": None,
             "orderConversionPct": None,
             "buyoutPct": None,
-            "totalListings": 0,
-            "activeListings": 0,
-            "inactiveListings": 0,
+            "totalListings": None,
+            "activeListings": None,
+            "inactiveListings": None,
             "removedListings": 0,
             "oldListings": 0,
             "blockedListings": 0,
@@ -263,7 +376,7 @@ def _events(*, stats_rows: list[AvitoStatsItem], listings_summary: dict[str, int
         "chats": "Сообщения",
         "reviews": "Отзывы",
     }
-    for name, error in section_errors.items():
+    for name, error in _safe_section_errors(section_errors).items():
         source_name = source_names.get(name, "Источник")
         if _is_rate_limited_error(error):
             title = f"{source_name}: Авито просит паузу"
@@ -271,7 +384,7 @@ def _events(*, stats_rows: list[AvitoStatsItem], listings_summary: dict[str, int
             action = "Обновить позже"
         else:
             title = f"{source_name}: нужна проверка"
-            meta = str(error.get("message") or error.get("code") or "ошибка Avito API")
+            meta = "Avito section unavailable"
             action = "Проверить доступы"
         events.append(
             _event_payload(
@@ -299,16 +412,6 @@ def get_avito_overview(
     if not has_permission(actor, "cabinet:read"):
         raise HTTPException(status_code=403, detail="NO_ACCESS:cabinet:read")
     start, end, days = _date_range(date_from, date_to, period_days)
-    source_key = _cache_key(start, end, account_id)
-    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
-    active_rate_limit = _active_rate_limit(get_source_cache(actor.organization_id, _rate_limit_key(account_id), slim=False) or None)
-    if active_rate_limit is not None:
-        if isinstance(cached, dict) and cached.get("summary"):
-            return _stale_cached_payload(cached, {"stats": active_rate_limit})
-        return _empty_rate_limited_payload(start, end, days, active_rate_limit)
-    if not force_refresh and isinstance(cached, dict) and cached.get("summary"):
-        return _cache_hit_payload(cached)
-
     credentials = get_user_avito_credentials_secret(actor.user_id) or get_organization_avito_credentials_secret(actor.organization_id)
     if credentials is None:
         raise HTTPException(status_code=409, detail="AVITO_CREDENTIALS_REQUIRED")
@@ -323,6 +426,30 @@ def get_avito_overview(
         )
     except Exception as exc:
         raise HTTPException(status_code=409, detail="AVITO_OAUTH_FAILED") from exc
+
+    source_key = scoped_avito_cache_key(_cache_key(start, end, account_id), access_token)
+    cached = get_source_cache(actor.organization_id, source_key, slim=False) or None
+    rate_limit_key = scoped_avito_cache_key(_rate_limit_key(account_id), access_token)
+    active_rate_limit = _active_rate_limit(get_source_cache(actor.organization_id, rate_limit_key, slim=False) or None)
+    if active_rate_limit is not None and _has_cached_stats(cached):
+        return _stale_cached_payload(cached, {"stats": active_rate_limit})
+    if not force_refresh and _has_cached_stats(cached):
+        return _cache_hit_payload(cached)
+    stats_cache = get_source_cache(
+        actor.organization_id,
+        scoped_avito_cache_key(_stats_cache_key(start, end, account_id), access_token),
+        slim=False,
+    ) or None
+    cached_stats = (
+        stats_cache["summary"]
+        if isinstance(stats_cache, dict)
+        and isinstance(stats_cache.get("summary"), dict)
+        and stats_cache.get("rows")
+        and stats_cache.get("status") != "blocked"
+        else None
+    )
+    if active_rate_limit is not None:
+        return _use_cached_stats(_empty_rate_limited_payload(start, end, days, active_rate_limit), cached_stats)
 
     section_errors: dict[str, Any] = {}
     accounts: list[Any] = []
@@ -340,13 +467,13 @@ def get_avito_overview(
         accounts = stats_result.accounts
         stats_rows = stats_result.items
         if stats_result.error is not None:
-            section_errors["stats"] = stats_result.error.model_dump(mode="json")
+            section_errors["stats"] = _safe_section_error(stats_result.error)
             if _is_rate_limited_error(section_errors["stats"]):
-                _save_rate_limit(actor.organization_id, account_id, message=section_errors["stats"].get("message"))
+                section_errors["stats"].update(_save_rate_limit(actor.organization_id, account_id, access_token))
     except Exception as exc:
         section_errors["stats"] = _section_error(exc)
         if _is_rate_limited_error(section_errors["stats"]):
-            _save_rate_limit(actor.organization_id, account_id, message=section_errors["stats"].get("message"))
+            section_errors["stats"].update(_save_rate_limit(actor.organization_id, account_id, access_token))
 
     listings_summary = {
         "total": sum(int(account.itemCount or 0) for account in accounts) or len(stats_rows),
@@ -374,13 +501,13 @@ def get_avito_overview(
                 "blocked": sum(1 for row in listings_result.rows if row.status == "blocked"),
             }
             if listings_result.error is not None:
-                section_errors["listings"] = listings_result.error.model_dump(mode="json")
+                section_errors["listings"] = _safe_section_error(listings_result.error)
                 if _is_rate_limited_error(section_errors["listings"]):
-                    _save_rate_limit(actor.organization_id, account_id, message=section_errors["listings"].get("message"))
+                    _save_rate_limit(actor.organization_id, account_id, access_token, message=section_errors["listings"].get("message"))
         except Exception as exc:
             section_errors["listings"] = _section_error(exc)
             if _is_rate_limited_error(section_errors["listings"]):
-                _save_rate_limit(actor.organization_id, account_id, message=section_errors["listings"].get("message"))
+                _save_rate_limit(actor.organization_id, account_id, access_token, message=section_errors["listings"].get("message"))
 
     chats_summary = {"total": 0, "unread": 0, "withItems": 0}
     try:
@@ -395,7 +522,7 @@ def get_avito_overview(
             "withItems": sum(1 for chat in chats_result.chats if chat.itemId),
         }
         if chats_result.error is not None:
-            section_errors["chats"] = chats_result.error.model_dump(mode="json")
+            section_errors["chats"] = _safe_section_error(chats_result.error)
     except Exception as exc:
         section_errors["chats"] = _section_error(exc)
 
@@ -415,11 +542,11 @@ def get_avito_overview(
         }
         rating = reviews_result.rating.model_dump(mode="json") if reviews_result.rating is not None else None
         if reviews_result.error is not None:
-            section_errors["reviews"] = reviews_result.error.model_dump(mode="json")
+            section_errors["reviews"] = _safe_section_error(reviews_result.error)
     except Exception as exc:
         section_errors["reviews"] = _section_error(exc)
 
-    if isinstance(cached, dict) and cached.get("summary") and section_errors and (not stats_rows or _has_rate_limited_section(section_errors)):
+    if _has_cached_stats(cached) and section_errors and (not stats_rows or _has_rate_limited_section(section_errors)):
         return _stale_cached_payload(cached, section_errors)
 
     impressions = _sum_optional(stats_rows, "impressions")
@@ -443,9 +570,9 @@ def get_avito_overview(
             "conversionPct": _ratio(contacts, views),
             "orderConversionPct": _ratio(orders, contacts),
             "buyoutPct": _ratio(buyouts, orders),
-            "totalListings": listings_summary["total"],
-            "activeListings": listings_summary["active"],
-            "inactiveListings": listings_summary["inactive"],
+            "totalListings": listings_summary["total"] if accounts or stats_rows else None,
+            "activeListings": listings_summary["active"] if accounts or stats_rows else None,
+            "inactiveListings": listings_summary["inactive"] if accounts or stats_rows else None,
             "removedListings": listings_summary["removed"],
             "oldListings": listings_summary["old"],
             "blockedListings": listings_summary["blocked"],
@@ -487,5 +614,8 @@ def get_avito_overview(
             "errors": section_errors,
         },
     }
-    save_source_cache(actor.organization_id, source_key, payload)
+    if "stats" in section_errors and not stats_rows:
+        _use_cached_stats(payload, cached_stats)
+    if stats_result_status == "synced":
+        save_source_cache(actor.organization_id, source_key, payload)
     return payload

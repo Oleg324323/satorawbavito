@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from typing import Literal
 
 from app.control_plane.schemas import RepricerTypedSettings
@@ -8,6 +11,53 @@ from app.control_plane.store import list_settings_versions
 
 
 StrategyMode = Literal["manual", "strategy_4599", "strategy_4600"]
+_ALGORITHM_CONTEXT = ContextVar("repricer_execution_algorithm", default=None)
+
+
+def current_algorithm_settings(fallback=None):
+    current = _ALGORITHM_CONTEXT.get()
+    if current is not None:
+        return current[1]
+    if fallback is not None:
+        return fallback
+    from app import repricer_bff
+    return repricer_bff.ALGORITHM_SETTINGS_STATE
+
+
+def current_algorithm_organization_id():
+    current = _ALGORITHM_CONTEXT.get()
+    return current[0] if current is not None else None
+
+
+@contextmanager
+def organization_algorithm_context(organization_id, settings_payload=None):
+    existing = _ALGORITHM_CONTEXT.get()
+    if existing is not None and organization_id is not None and existing[0] != organization_id:
+        raise RuntimeError("REPRICER_ORGANIZATION_CONTEXT_MISMATCH")
+    if organization_id is None or existing is not None:
+        yield
+        return
+    from app import repricer_dispatch_store as ledger
+    from app.repricer_persistence.orm import WbRepricerAlgorithmSettingsRow
+    from app.repricer_bff import DEFAULT_ALGORITHM_SETTINGS
+    if settings_payload is None:
+        with ledger.transaction(org=organization_id, write=False) as session:
+            row = session.get(WbRepricerAlgorithmSettingsRow, organization_id)
+            settings_payload = row.settings_payload if row else {}
+    settings = {**DEFAULT_ALGORITHM_SETTINGS, **settings_payload}
+    token = _ALGORITHM_CONTEXT.set((organization_id, settings))
+    try:
+        yield
+    finally:
+        _ALGORITHM_CONTEXT.reset(token)
+
+
+def with_organization_algorithm(function):
+    @wraps(function)
+    def scoped(*args, **kwargs):
+        with organization_algorithm_context(kwargs.get("organization_id")):
+            return function(*args, **kwargs)
+    return scoped
 
 
 @dataclass(frozen=True)
@@ -56,7 +106,7 @@ def get_repricer_guard_limits() -> RepricerGuardLimits:
     try:
         from app import repricer_bff
 
-        algorithm_settings = getattr(repricer_bff, "ALGORITHM_SETTINGS_STATE", {}) or {}
+        algorithm_settings = current_algorithm_settings()
         limits = replace(
             limits,
             per_update_step_pct=float(algorithm_settings.get("priceStepPct", limits.per_update_step_pct)),
@@ -75,7 +125,7 @@ def get_repricer_spp_accounting_settings() -> RepricerSppAccountingSettings:
     try:
         from app import repricer_bff
 
-        algorithm_settings = getattr(repricer_bff, "ALGORITHM_SETTINGS_STATE", {}) or {}
+        algorithm_settings = current_algorithm_settings()
         mode = str(algorithm_settings.get("sppAccountingMode") or "spp_only")
         if mode not in {"spp_only", "spp_plus_wallet"}:
             mode = "spp_only"

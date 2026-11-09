@@ -608,17 +608,7 @@ function DataImportsTab() {
             <div><span>Audit</span><b>пишется после импорта</b></div>
           </div>
           <div id="costs">
-            <ExcelImportCard
-              title="Себестоимость"
-              description="CostPrice применяется к SKU-настройкам и сразу влияет на маржу, P_min и расчеты алгоритма."
-              endpoint="/api/v1/wb-repricer/imports/costs-excel"
-              sourceHint="Артикул МП (NmId), Арт. поставщика, Себестоимость, Мин. цена, Базовая цена"
-              iconTone="blue"
-              details={[
-                ['replace', 'перезаписывает значения SKU'],
-                ['add', 'прибавляет к текущей себестоимости'],
-              ]}
-            />
+            <CostImportCard />
           </div>
           <div id="stocks">
             <ExcelImportCard
@@ -838,3 +828,4 @@ export function SettingsPage() {
     </div>
   )
 }
+import { CostImportCard } from '@/features/wb-repricer/CostImportCard'

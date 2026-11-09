@@ -21,6 +21,58 @@ AT_20 = datetime(2026, 8, 20, 20, 59, 59, tzinfo=timezone.utc)
 AT_21 = datetime(2026, 8, 21, 20, 59, 59, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("nm,sku,ambiguous", [(None, None, False), (123, None, False), (123, 11, True)])
+def test_service_only_daily_zero_never_requires_product_cost(nm, sku, ambiguous):
+    from types import SimpleNamespace
+    from app.modules.wb_reports.abc_pnl import WbAbcPnlService
+    assert WbAbcPnlService._cost_result(SimpleNamespace(nm_id=nm, net_units=0, sales_units=0, returns_units=0),
+        catalog_sku_id=sku, ambiguous=ambiguous, daily=[(AT_20, 0)], costs={}) == (0, "configured", None, ())
+
+
+def test_sale_and_later_return_still_require_dated_cost_when_net_units_zero():
+    from types import SimpleNamespace
+    from app.modules.wb_reports.abc_pnl import WbAbcPnlService
+    result = WbAbcPnlService._cost_result(SimpleNamespace(nm_id=123, net_units=0, sales_units=1, returns_units=1),
+        catalog_sku_id=None, ambiguous=False, daily=[(AT_20, 1), (AT_21, -1)], costs={})
+    assert result[0] is None and result[3] == ("WB_PNL_COST_MAPPING_MISSING",)
+
+
+def test_missing_daily_basis_with_gross_trades_is_not_service_only_zero():
+    from types import SimpleNamespace
+    from app.modules.wb_reports.abc_pnl import WbAbcPnlService
+    result = WbAbcPnlService._cost_result(SimpleNamespace(nm_id=123, net_units=0, sales_units=1, returns_units=1),
+        catalog_sku_id=None, ambiguous=False, daily=[], costs={})
+    assert result[0] is None and result[3] == ("WB_PNL_COST_DAILY_COVERAGE_MISMATCH",)
+
+
+def test_same_undated_legacy_import_preserves_confirmed_cost_in_all_readers(session):
+    service = CostsService(session, 1)
+    confirmed = service.set_cost(
+        catalog_sku_id=11, amount_kopecks=10000, value_state="configured",
+        effective_from=AT_20, source="manual", source_reference="confirmed",
+        evidence_status="dated",
+    )
+    service.set_cost(
+        catalog_sku_id=11, amount_kopecks=10000, value_state="assumed",
+        effective_from=AT_21, source="legacy_sku_override", source_reference="reimport",
+        evidence_status="undated",
+    )
+    assert service.get_cost_at(11, AT_21) == confirmed
+    assert service.get_costs_at([11], AT_21)[11] == confirmed
+    assert service.get_costs_on_dates([11], [AT_20, AT_21]) == {
+        (11, AT_20): confirmed, (11, AT_21): confirmed,
+    }
+    assert len(service.list_cost_history(11)) == 2
+    for day, amount, state in [(1, 20000, "assumed"), (2, 10000, "assumed"), (3, None, "missing")]:
+        instant = datetime(2026, 9, day, tzinfo=timezone.utc)
+        changed = service.set_cost(
+            catalog_sku_id=11, amount_kopecks=amount, value_state=state,
+            effective_from=instant, source="legacy_sku_override", source_reference=f"change-{day}",
+            evidence_status="undated",
+        )
+        assert service.get_cost_at(11, instant) == changed
+
+
 @pytest.fixture
 def session() -> Session:
     engine = create_engine("sqlite+pysqlite:///:memory:")

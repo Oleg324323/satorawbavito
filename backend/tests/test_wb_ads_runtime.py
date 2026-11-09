@@ -8,6 +8,19 @@ from app.wb_api.ads_runtime import build_ads_attribution_snapshot
 from app.wb_api.client import FakeWbApiClient
 
 
+def test_budget_rate_limit_stops_remaining_requests_and_preserves_partial_snapshot(monkeypatch):
+    fake = FakeWbApiClient(fixtures={
+        '/adv/v1/promotion/count': {'adverts': [{'type': 8, 'status': 9, 'advert_list': [11, 12, 13]}]},
+        '/adv/v1/balance': {}, '/adv/v1/upd': [], '/api/advert/v2/adverts': [],
+        '/adv/v3/fullstats': [{'advertId': 11, 'sum': 100, 'views': 20}],
+    }, errors={'/adv/v1/budget': 429})
+    monkeypatch.setattr(ads_runtime, 'build_wb_ads_client', lambda *a, **kw: fake)
+    snapshot = build_ads_attribution_snapshot(date_from=date(2026, 7, 1), date_to=date(2026, 7, 1), group_by='campaign')
+    assert snapshot.source_status == 'partial'
+    assert len([r for r in fake.requests if r.path == '/adv/v1/budget']) == 1
+    assert snapshot.rows[0].budget_total_kopecks is None
+
+
 def test_ads_snapshot_falls_back_to_upd_when_fullstats_has_no_campaigns(monkeypatch):
     fake = FakeWbApiClient(
         fixtures={

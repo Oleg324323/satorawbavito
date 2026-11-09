@@ -11,6 +11,10 @@ from starlette.middleware.gzip import GZipMiddleware
 from app.config import get_settings, validate_security_settings
 from app.contracts.envelopes import ErrorEnvelope, ErrorEnvelopeItem
 from app.infra.health import readiness_status
+from app.orders.router import router as canonical_orders_router
+from app.reviews.canonical_read import router as canonical_review_read_router
+from app.reviews.canonical_router import router as canonical_reviews_router
+from app.reviews.local_http import router as canonical_review_local_router
 from app.routers.account_health import router as account_health_router
 from app.routers.avito_chats import router as avito_chats_router
 from app.routers.avito_listings import router as avito_listings_router
@@ -29,9 +33,11 @@ from app.routers.notifications import router as notifications_router
 from app.routers.one_c_cash_flow import router as one_c_cash_flow_router
 from app.routers.source_registry import router as source_registry_router
 from app.routers.wb_discovery import router as wb_discovery_router
+from app.routers.wb_browser_prices import router as wb_browser_prices_router
 from app.routers.wb_19_05 import router as wb_19_05_router
 from app.routers.wb_reports_sprint_d import router as wb_reports_sprint_d_router
 from app.routers.wb_reports_bff import router as wb_reports_bff_router
+from app.routers.wb_sales_funnel import router as wb_sales_funnel_router
 from app.routers.wb_reports_v2 import router as wb_reports_v2_router
 from app.routers.wb_reviews import router as wb_reviews_router
 from app.routers.wb_repricer_bff import router as wb_repricer_bff_router
@@ -96,11 +102,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        issues = [
+            {
+                key: value
+                for key, value in issue.items()
+                if key not in {"input", "ctx"}
+            }
+            for issue in exc.errors()
+        ]
         payload = ErrorEnvelope(
             error=ErrorEnvelopeItem(
                 code="VALIDATION_ERROR",
                 message="Request validation failed",
-                details={"issues": exc.errors()},
+                details={"issues": issues},
             )
         )
         return JSONResponse(status_code=422, content=payload.model_dump(mode="json"))
@@ -111,6 +125,8 @@ def create_app() -> FastAPI:
             "status": "ok",
             "environment": settings.environment,
             "contractVersion": settings.contract_version,
+            "wbApiMode": settings.wb_api_mode,
+            "wbLiveSyncEnabled": settings.wb_live_sync_enabled,
             "realPriceApplyEnabled": settings.real_price_apply_enabled,
             "repricerLocalPriceApplyEnabled": settings.repricer_local_price_apply_enabled,
             "repricerPreserveLocalPriceOverrides": settings.repricer_preserve_local_price_overrides,
@@ -145,13 +161,48 @@ def create_app() -> FastAPI:
     app.include_router(avito_repricer_router)
     app.include_router(avito_reviews_router)
     app.include_router(avito_stats_router)
+    if getattr(settings, "canonical_avito_stats_enabled", False) is True:
+        from app.avito_stats_bootstrap import register_avito_stats_routes
+
+        register_avito_stats_routes(app)
+    if getattr(settings, "canonical_avito_order_status_enabled", False) is True:
+        from app.avito_order_status_bootstrap import register_avito_order_status_routes
+
+        register_avito_order_status_routes(app)
+    if getattr(settings, "canonical_avito_reviews_preview_enabled", False) is True:
+        from app.avito_reviews_preview_bootstrap import register_avito_reviews_preview_routes
+
+        register_avito_reviews_preview_routes(app)
     app.include_router(cabinet_router)
+    if settings.canonical_account_discovery_enabled:
+        from app.account_discovery_bootstrap import register_account_discovery_routes
+
+        register_account_discovery_routes(app)
+    if settings.wb_sku_overrides_enabled:
+        from app.sku_override_bootstrap import register_sku_override_routes
+
+        register_sku_override_routes(app)
+    if getattr(settings, "canonical_notifications_enabled", False) is True:
+        from app.notification_bootstrap import register_notification_routes
+
+        register_notification_routes(app)
+    if settings.wb_live_sync_enabled:
+        from app.wb_live.products_router import router as wb_live_products_router
+        from app.wb_live.router import router as wb_live_router
+
+        app.include_router(wb_live_router)
+        app.include_router(wb_live_products_router)
     app.include_router(catalog_v2_router)
+    app.include_router(canonical_orders_router)
+    app.include_router(canonical_reviews_router)
+    app.include_router(canonical_review_read_router)
+    app.include_router(canonical_review_local_router)
     app.include_router(finance_v2_router)
     app.include_router(wb_reports_v2_router)
     app.include_router(notifications_router)
     if settings.one_c_enabled:
         app.include_router(one_c_cash_flow_router)
+    app.include_router(wb_sales_funnel_router)
     app.include_router(wb_reports_sprint_d_router)
     app.include_router(wb_reports_bff_router)
     app.include_router(wb_reviews_router)
@@ -160,6 +211,7 @@ def create_app() -> FastAPI:
     app.include_router(control_plane_router)
     app.include_router(source_registry_router)
     app.include_router(wb_discovery_router)
+    app.include_router(wb_browser_prices_router)
     app.include_router(wb_repricer_bff_router)
     app.include_router(wb_repricer_wb23_router)
     app.include_router(wb_repricer_sprint_b_router)

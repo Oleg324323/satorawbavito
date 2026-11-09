@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.reviews.schemas import ReviewAiGenerationResult
 from app.main import create_app
+from app.reviews.schemas import ReviewAiGenerationResult
 from tests.auth_helpers import auth_headers
 
 
@@ -25,6 +25,19 @@ def _mock_openai_review_reply(monkeypatch):
         )
 
     monkeypatch.setattr("app.reviews.service.generate_openai_review_reply", fake_generate_openai_review_reply)
+
+
+def _configure_synthetic_review_prompt(api, headers):
+    # Real generation requires an explicit prompt; do not weaken its 409 guard.
+    configured = api.put(
+        "/api/v1/wb-reviews/sync-settings", headers=headers,
+        json={"enabled": False, "aiPrompt": "Synthetic local review test instruction"},
+    )
+    assert configured.status_code == 200
+    assert configured.json()["data"]["aiPrompt"] == "Synthetic local review test instruction"
+    assert configured.json()["data"]["enabled"] is False
+    assert configured.json()["data"]["reviewSettings"]["automationMode"] == "draft-first"
+    assert configured.json()["data"]["reviewSettings"]["lowStarsAction"] == "alert-block"
 
 
 def test_reviews_settings_bundle_is_available_for_editor():
@@ -166,6 +179,7 @@ def test_reviews_sync_generate_approve_and_send_workflow(monkeypatch):
     api = client()
     editor_headers = auth_headers(api, "settings_editor")
     admin_headers = auth_headers(api, "admin")
+    _configure_synthetic_review_prompt(api, editor_headers)
 
     sync = api.post(
         "/api/v1/wb-reviews/sync",
@@ -195,7 +209,8 @@ def test_reviews_sync_generate_approve_and_send_workflow(monkeypatch):
     draft = draft_response.json()["data"]
     assert draft["approvalState"] == "required"
     assert draft["externalSendAllowed"] is False
-    assert draft["sendState"] == "draft_only"
+    # Default lowStarsAction=alert-block keeps a two-star draft blocked.
+    assert draft["sendState"] == "blocked"
     assert draft["promptTraceId"] is not None
 
     prompt_trace = api.get(
@@ -222,7 +237,7 @@ def test_reviews_sync_generate_approve_and_send_workflow(monkeypatch):
     assert approved.status_code == 200
     assert approved.json()["data"]["approvalState"] == "approved"
     assert approved.json()["data"]["externalSendAllowed"] is False
-    assert approved.json()["data"]["sendState"] == "draft_only"
+    assert approved.json()["data"]["sendState"] == "blocked"
 
     approval_snapshot = api.get("/api/v1/wb-reviews/low-rating-review-001/approval", params={"rating": 2})
     assert approval_snapshot.status_code == 200
@@ -252,6 +267,7 @@ def test_safe_review_generation_stays_draft_only_without_live_send(monkeypatch):
     monkeypatch.setattr("app.routers.wb_reviews.get_user_wb_token_secret", lambda _user_id: "cabinet-token")
     api = client()
     editor_headers = auth_headers(api, "settings_editor")
+    _configure_synthetic_review_prompt(api, editor_headers)
 
     sync = api.post(
         "/api/v1/wb-reviews/sync",
@@ -272,7 +288,8 @@ def test_safe_review_generation_stays_draft_only_without_live_send(monkeypatch):
 
     assert draft_response.status_code == 200
     draft = draft_response.json()["data"]
-    assert draft["approvalState"] == "not_required"
+    # Default draft-first still requires review, including a clean five-star reply.
+    assert draft["approvalState"] == "required"
     assert draft["externalSendAllowed"] is False
     assert draft["sendState"] == "draft_only"
 
@@ -283,6 +300,7 @@ def test_reviews_send_requires_reviews_send_permission(monkeypatch):
     api = client()
     editor_headers = auth_headers(api, "settings_editor")
     admin_headers = auth_headers(api, "admin")
+    _configure_synthetic_review_prompt(api, editor_headers)
 
     api.post(
         "/api/v1/wb-reviews/sync",
@@ -294,6 +312,7 @@ def test_reviews_send_requires_reviews_send_permission(monkeypatch):
         headers=editor_headers,
         json={"feedbackId": "low-rating-review-001", "brandVoiceId": "wb-default", "regenerate": True},
     )
+    assert draft_response.status_code == 200, draft_response.text
     draft_id = draft_response.json()["data"]["draftId"]
     api.post(
         f"/api/v1/wb-reviews/drafts/{draft_id}/approve",
@@ -309,3 +328,23 @@ def test_reviews_send_requires_reviews_send_permission(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["error"]["message"] == "NO_ACCESS:reviews:send"
+
+
+def test_missing_ai_prompt_blocks_before_generation(monkeypatch):
+    def forbidden_generation(**_kwargs):
+        pytest.fail("missing prompt reached generation")
+
+    monkeypatch.setattr("app.reviews.service.generate_openai_review_reply", forbidden_generation)
+    monkeypatch.setattr("app.routers.wb_reviews.get_user_wb_token_secret", lambda _user_id: "synthetic-token")
+    api = client()
+    headers = auth_headers(api, "settings_editor")
+    configured = api.put("/api/v1/wb-reviews/sync-settings", headers=headers,
+                         json={"enabled": False, "aiPrompt": ""})
+    assert configured.status_code == 200
+    sync = api.post("/api/v1/wb-reviews/sync", headers=headers,
+                    json={"scenario": "complete", "take": 100, "skip": 0, "order": "dateDesc"})
+    assert sync.status_code == 200
+    response = api.post("/api/v1/wb-reviews/drafts/generate", headers=headers,
+                        json={"feedbackId": "safe-review-001", "brandVoiceId": "wb-default"})
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == "REVIEW_AI_PROMPT_REQUIRED"

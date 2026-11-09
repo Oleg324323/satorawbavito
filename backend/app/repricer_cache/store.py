@@ -6,18 +6,29 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import Text, and_, cast, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.infra.db import get_session_factory
 from app.infra.redis_client import get_redis_client
 from app.repricer_cache.orm import WbRepricerGoodsCacheRow, WbRepricerSourceCacheRow
+from app.wb_browser_prices import CONNECTION_KEY, PRICES_KEY, apply_browser_prices
 
 _REDIS_CACHE_TTL_SECONDS = 45
 _REDIS_DISABLED_UNTIL = 0.0
-FINANCE_REVENUE_BASIS = "retailAmount"
-FINANCE_SCHEMA_VERSION = "v3"
+FINANCE_REVENUE_BASIS = "retailPriceWithDisc*quantity"
+FINANCE_SCHEMA_VERSION = "v6"
+
+
+def _db_timestamp(value: Any) -> str | None:
+    """Raw SQL returns datetime in PostgreSQL and ISO text in SQLite."""
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def finance_cache_uses_current_revenue_basis(payload: dict[str, Any]) -> bool:
@@ -222,6 +233,10 @@ def _slim_good_payload(item: dict[str, Any]) -> dict[str, Any]:
         "objectID": item.get("objectID"),
         "objectId": item.get("objectId"),
         "clubDiscount": item.get("clubDiscount"),
+        "discount": item.get("discount"),
+        "editableSizePrice": item.get("editableSizePrice"),
+        "priceObservedAt": item.get("priceObservedAt"),
+        "priceBaseline": item.get("priceBaseline"),
         "photos": item.get("photos"),
         "mediaFiles": item.get("mediaFiles"),
         "photoUrl": item.get("photoUrl") or item.get("imageUrl"),
@@ -290,13 +305,21 @@ def _slim_promotion(promotion: dict[str, Any]) -> dict[str, Any]:
         "thresholdNmIds": threshold_nm_ids,
         "thresholdStatusesByNmId": threshold_statuses_by_nm_id,
         "articleIds": [str(item) for item in article_ids if item],
+        **{key: promotion.get(key) for key in (
+            "startDateTime", "endDateTime", "wbType", "membershipVersion",
+            "membershipState", "membershipFetchedAt", "participantNmIds",
+        )},
     }
 
 
 def slim_source_cache_payload(source_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     slim = dict(payload)
+    if source_key.startswith("repricer_finance_"):
+        slim.pop("operations", None)
+        return slim
     if source_key.startswith("finance_"):
         slim.pop("rows", None)
+        slim.pop("revenueOperations", None)
         return slim
     if source_key == "content_cards":
         cards = payload.get("cards")
@@ -311,11 +334,23 @@ def slim_source_cache_payload(source_key: str, payload: dict[str, Any]) -> dict[
     return slim
 
 
+def get_goods_price_revision(organization_id: int) -> str | None:
+    """DB metadata only: price confirmation must survive a missed Redis eviction.
+
+    updated_at changes for the patched page; fetched_at remains the observation
+    time of the other products. Never use this revision as catalogue freshness.
+    """
+    with get_session_factory()() as session:
+        return _db_timestamp(session.scalar(select(func.max(WbRepricerGoodsCacheRow.updated_at)).where(
+            WbRepricerGoodsCacheRow.organization_id == organization_id)))
+
+
 def list_cached_goods(organization_id: int) -> list[dict[str, Any]]:
-    redis_key = _goods_list_cache_key(organization_id)
+    revision = get_goods_price_revision(organization_id)
+    redis_key = f"{_goods_list_cache_key(organization_id)}:{revision}"
     cached = _redis_get_json_list(redis_key)
     if cached is not None:
-        return cached
+        return _goods_with_browser_prices(organization_id, cached)
 
     goods: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -324,13 +359,29 @@ def list_cached_goods(organization_id: int) -> list[dict[str, Any]]:
             if not isinstance(item, dict):
                 continue
             vendor_code = str(item.get("vendorCode") or "")
-            dedupe_key = vendor_code or str(item.get("nmID") or "")
+            dedupe_key = str(item.get("nmID") or "") or vendor_code
             if not dedupe_key or dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
-            goods.append(_slim_good_payload(item))
+            enriched = _slim_good_payload(item)
+            from app.repricer_price_safety import price_baseline
+            observed_at = item.get("priceObservedAt") or _db_timestamp(page.fetched_at)
+            enriched["priceObservedAt"] = observed_at
+            enriched["priceBaseline"] = price_baseline(item, observed_at)
+            goods.append(enriched)
     _redis_set_json_list(redis_key, goods)
-    return goods
+    return _goods_with_browser_prices(organization_id, goods)
+
+
+def browser_prices_selected(organization_id: int) -> bool:
+    return bool((get_source_cache(organization_id, CONNECTION_KEY, strict=True) or {}).get("marketplaceAccountId"))
+
+
+def _goods_with_browser_prices(organization_id: int, goods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not goods:
+        return goods
+    connection = get_source_cache(organization_id, CONNECTION_KEY, strict=True)
+    return apply_browser_prices(goods, connection, get_source_cache(organization_id, PRICES_KEY) if connection else None)
 
 
 def cached_goods_meta(organization_id: int) -> dict[str, Any]:
@@ -355,7 +406,7 @@ def cached_goods_meta(organization_id: int) -> dict[str, Any]:
             ),
             {"organization_id": organization_id},
         ).mappings().first()
-        latest_fetched_at = row["latest_fetched_at"].isoformat() if row and row["latest_fetched_at"] else None
+        latest_fetched_at = _db_timestamp(row["latest_fetched_at"]) if row else None
         return {
             "pagesCached": int(row["pages_cached"] or 0) if row else 0,
             "totalCached": int(row["total_cached"] or 0) if row else 0,
@@ -373,6 +424,46 @@ def cached_goods_meta(organization_id: int) -> dict[str, Any]:
     }
     _redis_set_json(redis_key, meta)
     return meta
+
+
+def replace_goods_pages(*, organization_id: int, pages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Publish only a complete WB catalog, atomically; failed refreshes keep old rows."""
+    from app.repricer_bff import validate_catalog_goods_page
+
+    if not pages:
+        raise ValueError("WB catalog refresh has no pages")
+    limit = pages[0]["limit"]
+    seen: set[int] = set()
+    for index, page in enumerate(pages):
+        if page["offset"] != index * limit or page["limit"] != limit:
+            raise ValueError("WB catalog pages are not contiguous")
+        validate_catalog_goods_page(page["goods"], limit=limit, seen=seen)
+        if index < len(pages) - 1 and len(page["goods"]) != limit:
+            raise ValueError("WB catalog ended before its final page")
+    if len(pages[-1]["goods"]) >= limit:
+        raise ValueError("WB catalog refresh did not reach its final page")
+
+    now = datetime.now(timezone.utc)
+    # Do not use _run_db here: a failed write must not be reported as success.
+    with get_session_factory()() as session:
+        session.execute(delete(WbRepricerGoodsCacheRow).where(
+            WbRepricerGoodsCacheRow.organization_id == organization_id,
+        ))
+        session.add_all([
+            WbRepricerGoodsCacheRow(
+                organization_id=organization_id, page_offset=page["offset"],
+                page_limit=limit, goods_payload=page["goods"],
+                wb_request_id=page.get("wbRequestId"), fetched_at=now, updated_at=now,
+            )
+            for page in pages
+        ])
+        session.commit()
+    _redis_delete(_goods_meta_cache_key(organization_id), _goods_list_cache_key(organization_id))
+    return {
+        "pagesCached": len(pages), "totalCached": len(seen),
+        "nextOffset": len(pages) * limit, "pageLimit": limit,
+        "latestFetchedAt": now.isoformat(),
+    }
 
 
 def save_goods_page(
@@ -425,6 +516,47 @@ def save_goods_page(
     }
 
 
+def update_confirmed_goods_in_session(session: Session, organization_id: int, goods: list[dict[str, Any]], observed_at: datetime) -> None:
+    """Patch price fields only, within the caller's receipt transaction.
+
+    Do not mark the other products in a page fresh or replace/flatten the catalog.
+    The caller must supply only goods verified against its immutable intent.
+    """
+    from copy import deepcopy
+    from app.repricer_price_safety import price_baseline
+    by_nm = {item["nmID"]: item for item in goods}
+    pages = session.scalars(select(WbRepricerGoodsCacheRow).where(
+        WbRepricerGoodsCacheRow.organization_id == organization_id).with_for_update()).all()
+    for page in pages:
+        payload = deepcopy(page.goods_payload or [])
+        changed = False
+        for index, old in enumerate(payload):
+            actual = by_nm.get(old.get("nmID"))
+            if actual is None:
+                continue
+            if old.get("vendorCode") != actual.get("vendorCode"):
+                raise ValueError("CONFIRMED_PRICE_CATALOG_IDENTITY_MISMATCH")
+            item = {**old, **{key: actual[key] for key in ("discount", "clubDiscount", "editableSizePrice", "sizes") if key in actual}}
+            item["priceObservedAt"] = observed_at.isoformat()
+            item["priceBaseline"] = price_baseline(actual, observed_at.isoformat())
+            payload[index] = item
+            changed = True
+        if changed:
+            page.goods_payload = payload
+            page.updated_at = observed_at
+    # Only price-dependent repricer views. Finance/funnel/report facts stay intact.
+    session.execute(delete(WbRepricerSourceCacheRow).where(
+        WbRepricerSourceCacheRow.organization_id == organization_id,
+        or_(WbRepricerSourceCacheRow.source_key.startswith("sku_list_snapshot_"),
+            WbRepricerSourceCacheRow.source_key.startswith("stats_list_snapshot_"))))
+
+
+def invalidate_confirmed_price_views(organization_id: int) -> None:
+    _redis_delete(_goods_list_cache_key(organization_id))
+    _redis_delete_pattern(f"vella:repricer:source-cache:{organization_id}:sku_list_snapshot_*")
+    _redis_delete_pattern(f"vella:repricer:source-cache:{organization_id}:stats_list_snapshot_*")
+
+
 def compact_heavy_source_cache_rows(organization_id: int) -> None:
     """Drop finance raw rows in Postgres without loading the full JSON into app memory."""
     _redis_delete_pattern(f"vella:repricer:source-cache:{organization_id}:finance_*")
@@ -454,7 +586,14 @@ def get_source_cache(
     source_key: str,
     *,
     slim: bool = False,
+    strict: bool = False,
 ) -> dict[str, Any] | None:
+    if source_key.startswith("baskets_"):
+        start, end = _source_cache_range_from_key(source_key)
+        if start and end:
+            exported = get_source_cache(organization_id, f"funnel_seller_{start}_{end}", strict=strict)
+            if exported and exported.get("source") == "seller_export":
+                return exported
     redis_key = _source_cache_key(organization_id, source_key, slim=slim)
     redis_allowed = _source_cache_redis_allowed(source_key, slim=slim)
     if redis_allowed:
@@ -477,7 +616,12 @@ def get_source_cache(
             return slim_source_cache_payload(source_key, payload)
         return payload
 
-    payload = _run_db(_db)
+    if strict:
+        # Source selection must distinguish a missing row from unavailable storage.
+        with get_session_factory()() as session:
+            payload = _db(session)
+    else:
+        payload = _run_db(_db)
     if payload is not None and redis_allowed:
         _redis_set_json(redis_key, payload)
     return payload
@@ -587,7 +731,17 @@ def list_source_cache_ranges_by_prefix(
             key_date_from, key_date_to = _source_cache_range_from_key(row["source_key"])
             range_date_from = row["range_date_from"] or key_date_from
             range_date_to = row["range_date_to"] or key_date_to
-            daily_dates = sorted(str(value)[:10] for value in (row["daily_aggregate_dates"] or []) if value)
+            raw_dates = row["daily_aggregate_dates"]
+            # Raw SQL returns decoded JSON on PostgreSQL, but JSON text on
+            # SQLite. Iterating that text would turn dates into characters and
+            # make every saved period look missing to the refresh planner.
+            if isinstance(raw_dates, str):
+                try:
+                    raw_dates = json.loads(raw_dates)
+                except (ValueError, TypeError):
+                    raw_dates = None
+            daily_dates = sorted({parsed.isoformat() for value in raw_dates
+                if (parsed := _optional_date(value)) is not None}) if isinstance(raw_dates, list) else []
             result.append(
                 {
                     "sourceKey": row["source_key"],
@@ -604,11 +758,11 @@ def list_source_cache_ranges_by_prefix(
                     "dailyDetailPreservedBy": row["daily_detail_preserved_by"],
                     "dailyDetailRequestsCompleted": row["daily_detail_requests_completed"],
                     "dailyDetailRequestsTotal": row["daily_detail_requests_total"],
-                    "dailyAggregatesDays": len(daily_dates) if daily_dates else None,
+                    "dailyAggregatesDays": len(daily_dates) if isinstance(raw_dates, list) else None,
                     "dailyAggregateDates": daily_dates,
                     "revenueBasis": row["revenue_basis"],
                     "financeSchemaVersion": row["finance_schema_version"],
-                    "fetchedAt": row["fetched_at"].isoformat() if row["fetched_at"] else None,
+                    "fetchedAt": _db_timestamp(row["fetched_at"]),
                 }
             )
         return result
@@ -625,17 +779,24 @@ def get_covering_source_cache(
     slim: bool = False,
 ) -> dict[str, Any] | None:
     def _db(session: Session) -> dict[str, Any] | None:
+        conditions = [
+            WbRepricerSourceCacheRow.organization_id == organization_id,
+            WbRepricerSourceCacheRow.source_key.like(f"{source_key_prefix}%"),
+            text("""json_typeof(payload) = 'object'
+                AND json_typeof(payload->'dailyAggregates') = 'object'
+                AND (payload->'dailyAggregates')::jsonb <> '{}'::jsonb
+                AND (payload->>'dateFrom') <= :date_from
+                AND (payload->>'dateTo') >= :date_to"""),
+        ]
+        if source_key_prefix == "finance_":
+            conditions.append(~WbRepricerSourceCacheRow.source_key.like("finance_revenue_%"))
+        if source_key_prefix in {"finance_", "baskets_", "period_stats_", "ads_"}:
+            # Match the partial index to avoid scanning large saved report bodies.
+            conditions.append(text("""(source_key LIKE 'finance_%' OR source_key LIKE 'baskets_%'
+                OR source_key LIKE 'period_stats_%' OR source_key LIKE 'ads_%')"""))
         row = session.scalar(
             select(WbRepricerSourceCacheRow)
-            .where(
-                WbRepricerSourceCacheRow.organization_id == organization_id,
-                WbRepricerSourceCacheRow.source_key.like(f"{source_key_prefix}%"),
-                text("(payload::jsonb ? 'dailyAggregates')"),
-                text("jsonb_typeof((payload::jsonb)->'dailyAggregates') = 'object'"),
-                text("(payload::jsonb)->'dailyAggregates' <> '{}'::jsonb"),
-                text("(payload->>'dateFrom') <= :date_from"),
-                text("(payload->>'dateTo') >= :date_to"),
-            )
+            .where(*conditions)
             .params(date_from=date_from.isoformat(), date_to=date_to.isoformat())
             .order_by(WbRepricerSourceCacheRow.fetched_at.desc())
             .limit(1)
@@ -667,6 +828,79 @@ def get_source_cache_fetched_at(organization_id: int, source_key: str) -> str | 
         return row.isoformat() if row is not None else None
 
     return _run_db(_db)
+
+
+def get_repricer_sources_revision(organization_id: int, *, date_from: date | None = None, date_to: date | None = None) -> str | None:
+    """Small metadata read; never deserialize period payloads to check freshness."""
+    def _db(session: Session) -> str | None:
+        row = session.scalar(
+            select(func.max(WbRepricerSourceCacheRow.fetched_at)).where(
+                WbRepricerSourceCacheRow.organization_id == organization_id,
+                or_(
+                    WbRepricerSourceCacheRow.source_key.in_(("content_cards", "commission_tariffs", "stocks", "promotions", "promotion_thresholds", CONNECTION_KEY)),
+                    and_(
+                        or_(*(WbRepricerSourceCacheRow.source_key.like(f"{prefix}_%") for prefix in ("finance", "repricer_finance", "baskets", "period_stats", "ads", "funnel_seller"))),
+                        or_(WbRepricerSourceCacheRow.range_date_from.is_(None), WbRepricerSourceCacheRow.range_date_from <= date_to) if date_to else True,
+                        or_(WbRepricerSourceCacheRow.range_date_to.is_(None), WbRepricerSourceCacheRow.range_date_to >= date_from) if date_from else True,
+                    ),
+                ),
+                ~WbRepricerSourceCacheRow.source_key.like("baskets_detail_%"),
+                ~WbRepricerSourceCacheRow.source_key.like("repricer_finance_progress_%"),
+            )
+        )
+        return row.isoformat() if row is not None else None
+
+    return _run_db(_db)
+
+
+def get_source_cache_range_revision(
+    organization_id: int, source_key_prefix: str, *, date_from: date, date_to: date,
+) -> str | None:
+    """Detect source updates from metadata, including overlapping daily windows."""
+    def _db(session: Session) -> str | None:
+        fetched_at = session.scalar(select(func.max(WbRepricerSourceCacheRow.fetched_at)).where(
+            WbRepricerSourceCacheRow.organization_id == organization_id,
+            WbRepricerSourceCacheRow.source_key.like(f"{source_key_prefix}%"),
+            or_(WbRepricerSourceCacheRow.range_date_from.is_(None), WbRepricerSourceCacheRow.range_date_from <= date_to),
+            or_(WbRepricerSourceCacheRow.range_date_to.is_(None), WbRepricerSourceCacheRow.range_date_to >= date_from),
+        ))
+        return fetched_at.isoformat() if fetched_at is not None else None
+    return _run_db(_db)
+
+
+def get_source_cache_completion_flags(organization_id: int, source_key: str) -> dict[str, Any]:
+    """Project only receipt flags, not a multi-megabyte operation ledger.
+
+    Keep native JSON types: a missing flag or the string "true" is not a
+    confirmed completed cursor. No Redis payload hydration is required.
+    """
+    def _db(session: Session) -> dict[str, Any]:
+        def confirmed(key):
+            if session.bind.dialect.name == "sqlite":
+                # json_extract maps JSON true to integer 1 on SQLite; inspect
+                # its type so strings/numbers cannot masquerade as receipts.
+                return func.json_type(WbRepricerSourceCacheRow.payload, f"$.{key}") == "true"
+            return cast(WbRepricerSourceCacheRow.payload[key], Text) == "true"
+        row = session.execute(select(
+            confirmed("sourceComplete"), confirmed("aggregateComplete"),
+            WbRepricerSourceCacheRow.payload["requestedFields"],
+            WbRepricerSourceCacheRow.payload["reportPeriod"],
+            WbRepricerSourceCacheRow.payload["reportId"],
+            WbRepricerSourceCacheRow.payload["sourceVersion"],
+            WbRepricerSourceCacheRow.payload["operationCount"],
+            WbRepricerSourceCacheRow.payload["currencies"],
+            WbRepricerSourceCacheRow.payload["availableFields"],
+        ).where(
+            WbRepricerSourceCacheRow.organization_id == organization_id,
+            WbRepricerSourceCacheRow.source_key == source_key,
+        )).first()
+        if not row:
+            return {}
+        result = {"sourceComplete": row[0] is True, "aggregateComplete": row[1] is True}
+        result.update({key: value for key, value in zip(
+            ("requestedFields", "reportPeriod", "reportId", "sourceVersion", "operationCount", "currencies", "availableFields"), row[2:]) if value is not None})
+        return result
+    return _run_db(_db) or {}
 
 
 def get_source_cache_meta_fields(organization_id: int, source_key: str) -> dict[str, Any]:
@@ -714,7 +948,7 @@ def get_source_cache_meta_fields(organization_id: int, source_key: str) -> dict[
         ).mappings().first()
         if row is None:
             return {}
-        fetched_at = row["fetched_at"].isoformat() if row["fetched_at"] else None
+        fetched_at = _db_timestamp(row["fetched_at"])
         if source_key.startswith("finance_"):
             return {
                 "fetchedAt": fetched_at,
@@ -732,9 +966,23 @@ def get_source_cache_meta_fields(organization_id: int, source_key: str) -> dict[
     return _run_db(_db) or {}
 
 
-def save_source_cache(organization_id: int, source_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+def save_source_cache(organization_id: int, source_key: str, payload: dict[str, Any], *, strict: bool = False) -> dict[str, Any]:
+    if source_key == "stocks":
+        from zoneinfo import ZoneInfo
+        observed_day = datetime.now(ZoneInfo("Europe/Moscow")).date()
+        save_source_cache(organization_id, f"stock_history_{observed_day.isoformat()}", payload, strict=strict)
     stored_payload = dict(payload)
     if source_key.startswith("finance_"):
+        if isinstance(stored_payload.get("rows"), list):
+            # Retain the small trade ledger needed for arbitrary date selections.
+            # Full fee/diagnostic rows remain in the HTTP checkpoints.
+            fields = ("rrdId", "nmId", "saleDt", "rrDate", "docTypeName", "quantity",
+                      "retailPriceWithDisc", "retailAmount")
+            stored_payload["revenueOperations"] = [
+                {key: row.get(key) for key in fields}
+                for row in stored_payload["rows"]
+                if str(row.get("docTypeName") or "").strip().lower() in {"продажа", "возврат"}
+            ]
         stored_payload.pop("rows", None)
     now = datetime.now(timezone.utc)
     metadata = _source_cache_metadata(source_key, stored_payload)
@@ -784,6 +1032,8 @@ def save_source_cache(organization_id: int, source_key: str, payload: dict[str, 
     result = _run_db(_db)
     if result is not None:
         return result
+    if strict:
+        raise RuntimeError("Не удалось сохранить данные в БД. Повторите после восстановления соединения.")
     fallback = dict(stored_payload)
     fallback["fetchedAt"] = now.isoformat()
     return fallback

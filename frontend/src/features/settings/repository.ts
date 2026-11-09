@@ -105,7 +105,7 @@ let users: UserAccessProfile[] = [
       {
         marketplace: 'wb',
         status: 'limited',
-        modules: ['Заказы', 'Лист печати', 'КИЗ'],
+        modules: ['Заказы', 'Лист печати'],
         accountIds: ['wb-ogni-main'],
         dangerousPermissions: [],
         blockers: ['Финансы скрыты'],

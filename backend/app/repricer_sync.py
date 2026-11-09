@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -27,6 +28,8 @@ from app.repricer_bff import (
     fetch_baskets_daily_detail,
     fetch_ads_spend_aggregates,
     fetch_catalog_goods_page,
+    validate_catalog_goods_page,
+    fetch_commission_tariffs,
     fetch_finance_report_aggregates,
     fetch_period_stats_aggregates,
     fetch_stock_aggregates,
@@ -35,11 +38,16 @@ from app.repricer_bff import (
     WbSalesFunnelDeferred,
 )
 from app.repricer_cache.store import (
+    cached_goods_meta,
+    browser_prices_selected,
     get_source_cache,
     list_cached_goods,
+    replace_goods_pages,
     list_source_cache_ranges_by_prefix,
-    save_goods_page,
     save_source_cache,
+)
+from app.repricer_source_provenance import (
+    daily_source_evidence, oldest_source_observation, source_binding_matches, source_observations_fresh,
 )
 from app.notifications import record_wb_sync_notification
 from app.platform.advertising.service import (
@@ -65,6 +73,12 @@ SYNC_DEFAULT_SOURCES = ("goods", "content", "promotions", "stocks", "period-stat
 EXTERNAL_SPP_BATCH_SIZE = 100
 EXTERNAL_SPP_BATCH_INTERVAL_SECONDS = 10.0
 logger = logging.getLogger(__name__)
+
+
+class ExternalSppRateLimited(RuntimeError):
+    def __init__(self, prices: dict[int, int]) -> None:
+        self.prices = prices
+        super().__init__("Источник цен ограничил запросы (HTTP 429)")
 
 
 def _good_article_id(good: dict[str, Any]) -> str:
@@ -217,18 +231,15 @@ def fetch_external_spp_prices(
     sleep_fn: Callable[[float], None] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[int, int]:
-    """Fetch live buyer prices after SPP from the 41-spp API.
-
-    The API accepts up to 100 nm IDs joined by semicolon and requires a
-    10-second gap between batched requests.
-    """
+    """Fetch buyer prices in batches of 100, preserving the provider's units."""
     if httpx is None:
         raise RuntimeError("httpx is required for external SPP price fetch")
     settings = get_settings()
-    token = api_token or settings.spp_api_token
-    if not token:
-        return {}
     base_url = (api_base_url or settings.spp_api_base_url).rstrip("/")
+    public_api = base_url == "https://prices.wbcon.su"
+    token = api_token or settings.spp_api_token
+    if not public_api and not token:
+        return {}
     timeout = float(timeout_seconds if timeout_seconds is not None else settings.spp_api_timeout_seconds)
     sleeper = sleep_fn or time.sleep
     unique_nm_ids = []
@@ -245,11 +256,15 @@ def fetch_external_spp_prices(
 
     prices: dict[int, int] = {}
     batch_total = (len(unique_nm_ids) + EXTERNAL_SPP_BATCH_SIZE - 1) // EXTERNAL_SPP_BATCH_SIZE
-    headers = {
-        "accept": "application/json",
-        "Authorization": token if token.startswith("Bearer ") else f"Bearer {token}",
-    }
-    verify_ssl = ssl.create_default_context() if settings.spp_api_verify_ssl else False
+    headers = {"accept": "application/json"}
+    if not public_api:
+        headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
+    verify_ssl = ssl.create_default_context() if public_api or settings.spp_api_verify_ssl else False
+    if public_api:
+        # WBCON omits its intermediate. Complete the chain to the system's trusted
+        # GlobalSign root; hostname, expiry and root verification remain required.
+        verify_ssl.load_verify_locations(cafile=Path(__file__).parent / "wb_api/globalsign-gcc-r6-alphassl-2025.pem")
+        verify_ssl.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
     with httpx.Client(timeout=timeout, verify=verify_ssl) as client:
         for start in range(0, len(unique_nm_ids), EXTERNAL_SPP_BATCH_SIZE):
             if start > 0:
@@ -258,24 +273,31 @@ def fetch_external_spp_prices(
             if not batch:
                 continue
             response = client.get(
-                f"{base_url}/prices",
-                params={"nm": ";".join(str(item) for item in batch)},
+                f"{base_url}/{'get' if public_api else 'prices'}",
+                params={"articles" if public_api else "nm": ";".join(str(item) for item in batch)},
                 headers=headers,
             )
+            if public_api and getattr(response, "status_code", None) == 429:
+                raise ExternalSppRateLimited(prices)
             response.raise_for_status()
             payload = response.json()
-            rows = payload.get("prices") if isinstance(payload, dict) else None
+            rows = payload if public_api else payload.get("prices") if isinstance(payload, dict) else None
             if not isinstance(rows, list):
                 continue
             for row in rows:
                 if not isinstance(row, dict):
+                    continue
+                if public_api:
+                    nm_id, product = row.get("id"), row.get("salePriceU")
+                    if type(nm_id) is int and nm_id in batch and type(product) is int and product > 0:
+                        prices[nm_id] = product
                     continue
                 try:
                     nm_id = int(row.get("nm") or 0)
                     product = wb_goods_price_to_kopecks(row.get("product"))
                 except (TypeError, ValueError):
                     continue
-                if nm_id > 0 and product > 0 and str(row.get("status") or "ok") == "ok":
+                if nm_id in batch and product > 0 and str(row.get("status") or "ok") == "ok":
                     prices[nm_id] = product
             if progress_callback is not None:
                 progress_callback(
@@ -291,6 +313,7 @@ def fetch_external_spp_prices(
 
 def _apply_external_spp_prices_to_goods(goods: list[dict[str, Any]], prices_by_nm: dict[int, int]) -> int:
     matched = 0
+    source = "prices.wbcon.su" if get_settings().spp_api_base_url.rstrip("/") == "https://prices.wbcon.su" else "41-spp"
     for good in goods:
         nm_id = _good_nm_id(good)
         if nm_id is None:
@@ -309,7 +332,12 @@ def _apply_external_spp_prices_to_goods(goods: list[dict[str, Any]], prices_by_n
         target_size["buyerPriceKopecks"] = buyer_price_kopecks
         target_size["buyerPrice"] = buyer_price_rubles
         target_size["clientPrice"] = buyer_price_rubles
-        good["sizes"] = [target_size]
+        target_size["buyerPriceSource"] = source
+        target_size["buyerPriceObservedAt"] = _utc_now().isoformat()
+        target_size["buyerPriceSellerKopecks"] = seller_price_kopecks
+        # Keep other source sizes intact; the legacy nm-level enrichment does
+        # not establish buyer-price provenance for each individual offer.
+        good["sizes"] = [target_size, *target_sizes[1:]]
         matched += 1
     return matched
 
@@ -440,34 +468,31 @@ def _baskets_daily_seed_from_recent_cache(
     *,
     range_start: datetime,
     range_end: datetime,
+    strategy_fingerprint: str | None = None,
+    observation_evidence: dict | None = None,
+    previous_cache: dict | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], list[dict[str, Any]]]:
     seed_start = max(range_start.date(), range_end.date() - timedelta(days=6))
     seed_end = range_end.date()
     if seed_start > seed_end:
         return {}, []
     seed_key = f"baskets_{_period_cache_suffix((seed_end - seed_start).days + 1, date_from=seed_start, date_to=seed_end)}"
-    seed_caches: list[dict[str, Any]] = []
+    # Keep the exact resume snapshot available even outside the recent-range cap.
+    seed_caches: list[dict[str, Any]] = [previous_cache] if previous_cache else []
     exact_cache = get_source_cache(organization_id, seed_key, slim=False) or {}
+    from app.wb_api.source_freshness import source_is_fresh
+    if exact_cache.get("fetchedAt") and not source_is_fresh(exact_cache):
+        exact_cache = {}
     if isinstance(exact_cache.get("dailyAggregates"), dict):
         seed_caches.append(exact_cache)
-        if exact_cache.get("dateFrom") and exact_cache.get("dateTo"):
-            selected_daily = {
-                day_key: rows
-                for day_key, rows in exact_cache["dailyAggregates"].items()
-                if isinstance(day_key, str)
-                and isinstance(rows, dict)
-                and range_start.date().isoformat() <= day_key <= range_end.date().isoformat()
-            }
-            selected_chunks = [
-                dict(chunk)
-                for chunk in (exact_cache.get("chunks") if isinstance(exact_cache.get("chunks"), list) else [])
-                if isinstance(chunk, dict) and range_start.date().isoformat() <= str(chunk.get("date") or "") <= range_end.date().isoformat()
-            ]
-            return selected_daily, selected_chunks
+        # A partial exact-range cache is not the only reusable source. Continue
+        # looking through overlapping fresh ranges before scheduling WB calls.
     overlap_start = range_start.date()
     overlap_end = range_end.date()
     for cache_meta in list_source_cache_ranges_by_prefix(organization_id, "baskets_", limit=100):
         if not isinstance(cache_meta, dict):
+            continue
+        if cache_meta.get("fetchedAt") and not source_is_fresh(cache_meta):
             continue
         cache_range = _cache_range_from_payload(cache_meta)
         if cache_range is None:
@@ -485,8 +510,15 @@ def _baskets_daily_seed_from_recent_cache(
             seed_caches.append(cache)
     selected_daily: dict[str, dict[str, dict[str, Any]]] = {}
     selected_chunks: list[dict[str, Any]] = []
-    seen_chunk_keys: set[tuple[str, int]] = set()
+    selected_scores: dict[str, tuple[int, str]] = {}
+    selected_evidence = {}
     for seed_cache in seed_caches:
+        if strategy_fingerprint is not None and not (
+            source_binding_matches(seed_cache, organization_id=organization_id, fingerprint=strategy_fingerprint)
+            and seed_cache.get("aggregateComplete", True) is True
+            and seed_cache.get("coverageState", "ok") in {"ok", "complete", "partial"}
+        ):
+            continue
         seed_daily = seed_cache.get("dailyAggregates")
         if isinstance(seed_daily, dict):
             for day_key, rows in seed_daily.items():
@@ -495,22 +527,39 @@ def _baskets_daily_seed_from_recent_cache(
                     and isinstance(rows, dict)
                     and overlap_start.isoformat() <= day_key <= overlap_end.isoformat()
                 ):
-                    selected_daily[day_key] = rows
-        for chunk in (seed_cache.get("chunks") if isinstance(seed_cache.get("chunks"), list) else []):
-            if not isinstance(chunk, dict):
-                continue
-            day = str(chunk.get("date") or "")
-            if not (overlap_start.isoformat() <= day <= overlap_end.isoformat()):
-                continue
-            try:
-                chunk_key = (day, int(chunk.get("chunkIndex")))
-            except (TypeError, ValueError):
-                continue
-            if chunk_key in seen_chunk_keys:
-                continue
-            selected_chunks.append(dict(chunk))
-            seen_chunk_keys.add(chunk_key)
+                    evidence = daily_source_evidence(seed_cache, day_key)
+                    if strategy_fingerprint is not None and not (
+                        source_binding_matches(evidence, organization_id=organization_id, fingerprint=strategy_fingerprint)
+                        and source_observations_fresh(evidence, now=_utc_now(), date_to=seed_end.isoformat())
+                    ):
+                        continue
+                    source_chunks = seed_cache.get("chunks")
+                    day_chunks = [dict(chunk) for chunk in (source_chunks if isinstance(source_chunks, list) else [])
+                        if isinstance(chunk, dict) and chunk.get("type") == "daily" and chunk.get("date") == day_key]
+                    # Pick ONE consistent snapshot per day. Unioning completed
+                    # chunks while replacing their rows could falsely skip data.
+                    complete = bool(day_chunks) and all(chunk.get("status") == "done" for chunk in day_chunks)
+                    legacy_complete = not day_chunks and seed_cache.get("dailyDetailStatus") == "complete"
+                    observed_at = (oldest_source_observation(evidence).isoformat() if strategy_fingerprint is not None
+                                   else str(seed_cache.get("fetchedAt") or ""))
+                    score = (100000 if complete or legacy_complete else sum(chunk.get("status") == "done" for chunk in day_chunks), observed_at)
+                    if day_key not in selected_scores or score > selected_scores[day_key]:
+                        selected_scores[day_key] = score
+                        selected_daily[day_key] = rows
+                        selected_chunks = [chunk for chunk in selected_chunks if chunk.get("date") != day_key] + day_chunks
+                        if strategy_fingerprint is not None:
+                            selected_evidence[day_key] = {"strategyTokenFingerprint": strategy_fingerprint,
+                                "fetchedAt": oldest_source_observation(evidence).isoformat()}
+    if observation_evidence is not None:
+        observation_evidence.update(selected_evidence)
     return selected_daily, selected_chunks
+
+
+def _merge_baskets_daily_seed(previous_daily: dict, previous_chunks: list, seed_daily: dict, seed_chunks: list) -> tuple[dict, list]:
+    # Rows and completion checkpoints belong to the same daily snapshot.
+    retained = [chunk for chunk in previous_chunks
+                if isinstance(chunk, dict) and chunk.get("date") not in seed_daily]
+    return {**previous_daily, **seed_daily}, retained + seed_chunks
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -976,10 +1025,13 @@ def refresh_wb_data_sources(
     estimate_explanation: str | None = None,
     _progress_callback: Callable[[dict[str, Any]], None] | None = None,
     _parallelize: bool = True,
+    _catalog_recovery: bool = False,
 ) -> dict[str, Any]:
     resolved_sources = _normalize_sources(sources)
     resolved_token_fingerprint = token_fingerprint or wb_token_fingerprint(wb_token)
     range_start, range_end, resolved_period_days = _normalize_period_range(period_days, date_from=date_from, date_to=date_to)
+    # Rolling yesterday-based ranges need the individual days from short syncs.
+    baskets_include_daily_detail = baskets_include_daily_detail or resolved_period_days <= 2
     period_suffix = _period_cache_suffix(period_days, date_from=date_from, date_to=date_to)
     status = initial_status if initial_status is not None else (
         begin_wb_sync(
@@ -1217,7 +1269,7 @@ def refresh_wb_data_sources(
                 from app import repricer_bff as repricer_bff_module
                 from app.routers.wb_repricer_bff import _build_repricer_sku_snapshot
 
-                repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, force=True)
+                repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, organization_id=organization_id)
                 snapshot = _build_repricer_sku_snapshot(
                     organization_id,
                     scenario,
@@ -1253,17 +1305,27 @@ def refresh_wb_data_sources(
         if "goods" in resolved_sources:
             step = start_step("goods")
             try:
+                if not _catalog_recovery:
+                    fetch_commission_tariffs(scenario, wb_token=wb_token, organization_id=organization_id)
                 previous_goods = list_cached_goods(organization_id)
+                use_browser_prices = browser_prices_selected(organization_id)
                 fetched_goods: list[dict[str, Any]] = []
                 total_saved = 0
                 external_spp_matched_count = 0
+                external_spp_rate_limit: ExternalSppRateLimited | None = None
                 wb_sync_price_change_count = 0
                 offset = 0
                 limit = 1000
                 cache: dict[str, Any] = {}
+                pages: list[dict[str, Any]] = []
+                seen_nm_ids: set[int] = set()
                 while True:
-                    page = fetch_catalog_goods_page(scenario, wb_token=wb_token, limit=limit, offset=offset)
-                    goods = page.get("goods") or []
+                    page = fetch_catalog_goods_page(
+                        scenario, wb_token=wb_token, limit=limit, offset=offset,
+                        enrich_spp=not use_browser_prices and not _catalog_recovery,
+                    )
+                    goods = page.get("goods")
+                    validate_catalog_goods_page(goods, limit=limit, seen=seen_nm_ids)
                     estimated_total = max(len(previous_goods), offset + len(goods))
                     update_step(
                         step,
@@ -1290,44 +1352,42 @@ def refresh_wb_data_sources(
                                 progressCurrent=completed,
                                 progressTotal=total or None,
                                 message=f"Получаем цены после СПП: пачка {batch_current} из {batch_total}",
-                                request="41-SPP · до 100 артикулов в запросе",
+                                request="Цены WB · до 100 артикулов в запросе",
                             )
 
-                        external_spp_prices = fetch_external_spp_prices(page_nm_ids, progress_callback=report_spp_progress)
+                        external_spp_prices = (
+                            fetch_external_spp_prices(page_nm_ids, progress_callback=report_spp_progress)
+                            if external_spp_rate_limit is None and not use_browser_prices and not _catalog_recovery else {}
+                        )
                         external_spp_matched_count += _apply_external_spp_prices_to_goods(goods, external_spp_prices)
+                    except ExternalSppRateLimited as exc:
+                        external_spp_rate_limit = exc
+                        external_spp_matched_count += _apply_external_spp_prices_to_goods(goods, exc.prices)
                     except Exception as exc:
                         logger.warning("External SPP price fetch failed org=%s offset=%s: %s", organization_id, offset, exc)
                     fetched_goods.extend([item for item in goods if isinstance(item, dict)])
-                    wb_sync_price_change_count += record_wb_sync_price_change_events(
+                    wb_sync_price_change_count += 0 if _catalog_recovery else record_wb_sync_price_change_events(
                         previous_goods,
                         goods,
                         organization_id=organization_id,
                         run_id=str(status.get("runId") or ""),
                     )
                     total_saved += len(goods)
-                    cache = save_goods_page(
-                        organization_id=organization_id,
-                        page_offset=offset,
-                        page_limit=limit,
-                        goods=goods,
-                        wb_request_id=page.get("wbRequestId"),
-                        replace_all=offset == 0,
-                    )
+                    pages.append({**page, "goods": goods, "offset": offset, "limit": limit})
                     if len(goods) < limit or not goods:
                         break
                     offset += limit
-                new_warmup_count = _mark_new_goods_as_warmup(previous_goods, fetched_goods)
-                finish_step(
-                    step,
-                    _step_ok(
-                        "goods",
-                        count=total_saved,
-                        cache=cache,
-                        newWarmupCount=new_warmup_count,
-                        externalSppMatchedCount=external_spp_matched_count,
-                        wbSyncPriceChangeCount=wb_sync_price_change_count,
-                    ),
+                cache = replace_goods_pages(organization_id=organization_id, pages=pages)
+                new_warmup_count = 0 if _catalog_recovery else _mark_new_goods_as_warmup(previous_goods, fetched_goods)
+                goods_result = _step_ok(
+                    "goods", count=total_saved, cache=cache, newWarmupCount=new_warmup_count,
+                    externalSppMatchedCount=external_spp_matched_count,
+                    wbSyncPriceChangeCount=wb_sync_price_change_count,
                 )
+                if external_spp_rate_limit is not None:
+                    goods_result.update(status="partial", error=str(external_spp_rate_limit),
+                                        externalSppStatus="rate_limited", externalSppHttpStatus=429)
+                finish_step(step, goods_result)
             except Exception as exc:
                 finish_step(step, _step_error("goods", exc))
 
@@ -1351,9 +1411,21 @@ def refresh_wb_data_sources(
                         retryAfterSeconds=progress.get("retryAfterSeconds"),
                     )
 
-                cards = _fetch_content_cards(scenario, wb_token=wb_token, progress_callback=report_content_progress)
-                save_source_cache(organization_id, "content_cards", {"cards": cards, "count": len(cards)})
-                finish_step(step, _step_ok("content", count=len(cards)))
+                from app.platform.catalog.photos import save_missing_catalog_photos
+                saved_photos = 0
+                def save_photo_page(page):
+                    nonlocal saved_photos
+                    saved_photos += save_missing_catalog_photos(organization_id, page)['saved']
+                cards = _fetch_content_cards(scenario, wb_token=wb_token,
+                    progress_callback=report_content_progress, page_callback=save_photo_page)
+                save_source_cache(organization_id, "content_cards", {"cards": cards, "count": len(cards)}, strict=True)
+                photos = save_missing_catalog_photos(organization_id, cards)
+                photos['saved'] += saved_photos
+                result = _step_ok("content", count=len(cards), catalogPhotos=photos)
+                if photos.get('reason'):
+                    result.update(status='partial', error=photos['reason'],
+                        message='Карточки WB сохранены. Для сохранения фото в общий каталог требуется однозначное подключение кабинета WB.')
+                finish_step(step, result)
             except Exception as exc:
                 finish_step(step, _step_error("content", exc))
 
@@ -1371,7 +1443,9 @@ def refresh_wb_data_sources(
             step = start_step("stocks")
             try:
                 aggregates = fetch_stock_aggregates(scenario, wb_token=wb_token, date_from=range_start, date_to=range_end)
-                save_source_cache(organization_id, "stocks", {"aggregates": aggregates, "count": len(aggregates)})
+                save_source_cache(organization_id, "stocks", {"aggregates": aggregates, "count": len(aggregates),
+                    "strategyTokenFingerprint": resolved_token_fingerprint,
+                    "dateTo": _utc_now().astimezone(_MOSCOW_TZ).date().isoformat()})
                 finish_step(step, _step_ok("stocks", count=len(aggregates)))
             except Exception as exc:
                 finish_step(step, _step_error("stocks", exc))
@@ -1391,6 +1465,7 @@ def refresh_wb_data_sources(
                         "periodDays": resolved_period_days,
                         "dateFrom": range_start.date().isoformat(),
                         "dateTo": range_end.date().isoformat(),
+                        "strategyTokenFingerprint": resolved_token_fingerprint,
                     },
                 )
                 finish_step(step, _step_ok("period-stats", count=len(aggregates)))
@@ -1400,7 +1475,8 @@ def refresh_wb_data_sources(
         if "finance" in resolved_sources:
             step = start_step("finance")
             try:
-                finance_payload = fetch_finance_report_aggregates(scenario, wb_token=wb_token, date_from=range_start, date_to=range_end)
+                finance_options = {"repricer_operations_org": organization_id} if trigger.startswith("reports-") else {}
+                finance_payload = fetch_finance_report_aggregates(scenario, wb_token=wb_token, date_from=range_start, date_to=range_end, **finance_options)
                 canonical_snapshot = shadow_ingest_legacy_finance_payload(
                     organization_id,
                     finance_payload,
@@ -1415,6 +1491,7 @@ def refresh_wb_data_sources(
                     {
                         **finance_payload,
                         "canonicalSnapshot": canonical_snapshot,
+                        "strategyTokenFingerprint": resolved_token_fingerprint,
                         "periodDays": resolved_period_days,
                         "cachedGoodsNmIds": len(cached_goods_nm_ids),
                         "matchedCachedGoodsNmIds": matched_cached_goods_nm_ids,
@@ -1500,45 +1577,28 @@ def refresh_wb_data_sources(
                 cached_goods = list_cached_goods(organization_id)
                 nm_ids = _nm_ids_from_goods(cached_goods)
                 if not nm_ids:
-                    finish_step(step, {"source": "baskets", "status": "skipped", "reason": "no_cached_goods_nm_ids"})
+                    from app.platform.economics.legacy_catalog import catalog_facts
+                    nm_ids = sorted(nm for nm in catalog_facts(organization_id, include_costs=False) if nm > 0)
+                if not nm_ids and not int(cached_goods_meta(organization_id).get("pagesCached") or 0):
+                    raise RuntimeError("WB_CATALOG_CACHE_REQUIRED: нет подтверждённого каталога для загрузки корзин")
                 else:
                     baskets_cache_key = f"baskets_{period_suffix}"
                     previous_baskets_cache = get_source_cache(organization_id, baskets_cache_key, slim=False) or {}
-                    previous_daily_aggregates = previous_baskets_cache.get("dailyAggregates") if isinstance(previous_baskets_cache.get("dailyAggregates"), dict) else {}
-                    previous_chunks = previous_baskets_cache.get("chunks") if isinstance(previous_baskets_cache.get("chunks"), list) else []
-                    previous_cache_from = _parse_iso(previous_baskets_cache.get("dateFrom"))
-                    previous_cache_to = _parse_iso(previous_baskets_cache.get("dateTo"))
-                    if not (
-                        previous_cache_from
-                        and previous_cache_to
-                        and previous_cache_from.date() == range_start.date()
-                        and previous_cache_to.date() == range_end.date()
-                    ):
-                        previous_daily_aggregates = {}
-                        previous_chunks = []
-                    seed_daily_aggregates, seed_chunks = _baskets_daily_seed_from_recent_cache(
+                    daily_evidence = {}
+                    previous_daily_aggregates, previous_chunks = _baskets_daily_seed_from_recent_cache(
                         organization_id,
                         range_start=range_start,
                         range_end=range_end,
+                        strategy_fingerprint=resolved_token_fingerprint,
+                        observation_evidence=daily_evidence,
+                        previous_cache=previous_baskets_cache,
                     )
-                    if seed_daily_aggregates:
-                        previous_daily_aggregates = {**previous_daily_aggregates, **seed_daily_aggregates}
-                        existing_chunk_keys: set[tuple[str, int]] = set()
-                        for item in previous_chunks:
-                            if not isinstance(item, dict) or item.get("date") is None or item.get("chunkIndex") is None:
-                                continue
-                            try:
-                                existing_chunk_keys.add((str(item.get("date")), int(item.get("chunkIndex"))))
-                            except (TypeError, ValueError):
-                                continue
-                        for chunk in seed_chunks:
-                            try:
-                                chunk_key = (str(chunk.get("date")), int(chunk.get("chunkIndex")))
-                            except (TypeError, ValueError):
-                                continue
-                            if chunk_key not in existing_chunk_keys:
-                                previous_chunks.append(chunk)
-                                existing_chunk_keys.add(chunk_key)
+
+                    # Refresh short rolling windows; retain checkpoints only when resuming a partial fetch.
+                    if resolved_period_days <= 2 and previous_baskets_cache.get("dailyDetailStatus") != "partial":
+                        previous_daily_aggregates = {}
+                        previous_chunks = []
+                        daily_evidence = {}
 
                     def report_baskets_progress(progress: dict[str, Any]) -> None:
                         current = int(progress.get("processedNmIds") or 0)
@@ -1565,6 +1625,7 @@ def refresh_wb_data_sources(
                         include_daily=False,
                         progress_callback=report_baskets_progress,
                     )
+                    payload["strategyTokenFingerprint"] = resolved_token_fingerprint
                     preserved_daily_aggregates = previous_daily_aggregates if not baskets_include_daily_detail else {}
                     preserved_chunks = previous_chunks if not baskets_include_daily_detail else []
                     if baskets_include_daily_detail:
@@ -1578,10 +1639,12 @@ def refresh_wb_data_sources(
                         daily_status = "deferred"
                     payload = {
                         **payload,
+                        "aggregateComplete": True,
                         "dailyAggregates": daily_aggregates,
+                        "dailySourceEvidence": daily_evidence,
                         "dailyAggregatesDays": len(daily_aggregates),
                         "dailyDetailStatus": daily_status,
-                        **({"chunks": preserved_chunks} if preserved_chunks else {}),
+                        **({"dailyBatchCount": max(1, (len(nm_ids) + 999) // 1000), "chunks": previous_chunks} if baskets_include_daily_detail else ({"chunks": preserved_chunks} if preserved_chunks else {})),
                         **({"dailyDetailDeferredAt": _utc_now().isoformat()} if not baskets_include_daily_detail and not preserved_daily_aggregates else {}),
                         **({"dailyDetailPreservedAt": _utc_now().isoformat(), "dailyDetailPreservedBy": "aggregate_refresh"} if not baskets_include_daily_detail and preserved_daily_aggregates else {}),
                     }
@@ -1590,9 +1653,16 @@ def refresh_wb_data_sources(
                     if baskets_include_daily_detail:
                         detail_failed_step: dict[str, Any] | None = None
 
+                        def record_daily_observation(day: str) -> None:
+                            previous = oldest_source_observation(daily_evidence.get(day, {}))
+                            observed = min(previous, _utc_now()) if previous is not None else _utc_now()
+                            daily_evidence[day] = {"strategyTokenFingerprint": resolved_token_fingerprint,
+                                "fetchedAt": observed.isoformat()}
+
                         def save_baskets_detail_day(day: str, day_rows: dict[str, Any], progress: dict[str, Any]) -> None:
                             existing_daily = payload.get("dailyAggregates") if isinstance(payload.get("dailyAggregates"), dict) else {}
                             next_daily = {**existing_daily, day: day_rows}
+                            record_daily_observation(day)
                             payload.update(
                                 {
                                     "dailyAggregates": next_daily,
@@ -1611,6 +1681,8 @@ def refresh_wb_data_sources(
                             next_daily = {**existing_daily, day: {**existing_day, **day_rows}}
                             existing_chunks = payload.get("chunks") if isinstance(payload.get("chunks"), list) else []
                             chunk_status = str(progress.get("status") or ("failed" if progress.get("phase") == "failed" else "done"))
+                            if chunk_status == "done":
+                                record_daily_observation(day)
                             chunk_record = {
                                 "type": "daily",
                                 "date": day,
@@ -1724,7 +1796,7 @@ def refresh_wb_data_sources(
                 from app import repricer_bff as repricer_bff_module
                 from app.routers.wb_repricer_bff import _build_repricer_sku_snapshot
 
-                repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, force=True)
+                repricer_bff_module.fetch_commission_tariffs(scenario, wb_token=wb_token, organization_id=organization_id)
                 snapshot = _build_repricer_sku_snapshot(
                     organization_id,
                     scenario,

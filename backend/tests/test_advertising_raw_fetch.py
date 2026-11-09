@@ -145,6 +145,26 @@ class SiblingDataAdsClient(QueryAwareAdsClient):
         return super()._payload(request)
 
 
+def test_raw_fullstats_obeys_existing_wb_request_interval(monkeypatch):
+    client = QueryAwareAdsClient(campaign_ids=list(range(1, 52)))
+    intervals = []
+
+    def request(client, item, *, min_interval_s):
+        intervals.append((item.path, min_interval_s))
+        return client.request(item)
+
+    monkeypatch.setattr(raw_module, "_request_with_retry", request)
+    result = raw_module._execute_plan(client, PERIOD)
+    assert result.state == "ready"
+    assert intervals == [
+        ("/adv/v1/promotion/count", 0.0),
+        ("/adv/v1/upd", 0.0),
+        ("/api/advert/v2/adverts", 0.0),
+        ("/adv/v3/fullstats", 20.0),
+        ("/adv/v3/fullstats", 20.0),
+    ]
+
+
 def test_raw_fetch_batches_campaigns_and_windows_in_exact_order(monkeypatch):
     campaign_ids = list(range(1000, 1051))
     fake = QueryAwareAdsClient(campaign_ids=campaign_ids)
